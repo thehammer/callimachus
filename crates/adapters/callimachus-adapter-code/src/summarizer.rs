@@ -53,7 +53,9 @@ Return ONLY the summary text, no JSON, no preamble."#,
         language = language,
         symbol_name = symbol_name,
         kind = chunk.kind,
-        content = &chunk.content[..chunk.content.floor_char_boundary(3000.min(chunk.content.len()))],
+        content = &chunk.content[..chunk
+            .content
+            .floor_char_boundary(3000.min(chunk.content.len()))],
     );
 
     let req = CompletionRequest {
