@@ -1,0 +1,34 @@
+[package]
+name = "callimachus-cli"
+description = "calli — the Callimachus command-line tool"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "calli"
+path = "src/main.rs"
+
+[dependencies]
+callimachus-core = { path = "../callimachus-core" }
+callimachus-llm = { path = "../callimachus-llm" }
+callimachus-mcp = { path = "../callimachus-mcp" }
+callimachus-http = { path = "../callimachus-http" }
+callimachus-adapter-book = { path = "../adapters/callimachus-adapter-book" }
+callimachus-adapter-code = { path = "../adapters/callimachus-adapter-code" }
+callimachus-adapter-wiki = { path = "../adapters/callimachus-adapter-wiki" }
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+dirs.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }

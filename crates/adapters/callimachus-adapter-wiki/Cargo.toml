@@ -1,0 +1,24 @@
+[package]
+name = "callimachus-adapter-wiki"
+description = "Callimachus adapter for Markdown wiki trees — Obsidian, GitHub wikis, MkDocs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+callimachus-core = { path = "../../callimachus-core" }
+callimachus-llm = { path = "../../callimachus-llm" }
+anyhow = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = "0.1"
+tokio = { workspace = true }
+tracing = { workspace = true }
+walkdir = "2"
+pulldown-cmark = "0.12"
+pulldown-cmark-to-cmark = "15"
+regex = "1"
+sha2 = "0.10"
+hex = "0.4"

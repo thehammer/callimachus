@@ -1,0 +1,23 @@
+[package]
+name = "callimachus-http"
+description = "HTTP API server for Callimachus — REST mirror of the MCP tool surface"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+callimachus-core = { path = "../callimachus-core" }
+axum = { version = "0.7", features = ["json"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+axum-test = "15"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

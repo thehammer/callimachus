@@ -1,0 +1,9 @@
+/target
+Cargo.lock
+*.db-shm
+*.db-wal
+# Ignore all DBs except the bundled demo index
+*.db
+!data/callimachus.db
+.env
+.DS_Store

@@ -1,0 +1,251 @@
+use std::path::Path;
+
+use callimachus_adapter_wiki::{WikiAdapter, create};
+use callimachus_core::adapter::SourceAdapter;
+use callimachus_llm::DryRunProvider;
+
+const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample_wiki");
+
+// ── discover ──────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn discover_returns_three_md_files() {
+    let adapter = WikiAdapter::new();
+    let sources = adapter.discover(FIXTURE).await.unwrap();
+    // Should find index.md, characters.md, places.md — NOT anything in _images/
+    assert_eq!(
+        sources.len(),
+        3,
+        "expected 3 .md files (got {}: {:?})",
+        sources.len(),
+        sources.iter().map(|s| &s.path).collect::<Vec<_>>()
+    );
+    for src in &sources {
+        assert!(src.path.ends_with(".md"), "expected .md file: {}", src.path);
+        assert!(
+            !src.path.contains("_images"),
+            "should not include _images: {}",
+            src.path
+        );
+    }
+}
+
+#[tokio::test]
+async fn discover_rejects_nonexistent_path() {
+    let adapter = WikiAdapter::new();
+    let result = adapter.discover("/nonexistent/path/to/wiki").await;
+    assert!(result.is_err());
+}
+
+// ── chunk ─────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn chunk_produces_page_and_section_chunks() {
+    let adapter = WikiAdapter::new();
+    let sources = adapter.discover(FIXTURE).await.unwrap();
+
+    let mut all_chunks = Vec::new();
+    for src in &sources {
+        let mut src = src.clone();
+        // Inject corpus_id into meta.
+        src.meta = serde_json::json!({ "root": FIXTURE, "corpus_id": "testwiki" });
+        let chunks = adapter.chunk(&src).await.unwrap();
+        all_chunks.extend(chunks);
+    }
+
+    let page_chunks: Vec<_> = all_chunks.iter().filter(|c| c.kind == "page").collect();
+    let section_chunks: Vec<_> = all_chunks.iter().filter(|c| c.kind == "section").collect();
+
+    assert!(
+        page_chunks.len() >= 3,
+        "expected ≥3 page chunks, got {}",
+        page_chunks.len()
+    );
+    assert!(
+        !section_chunks.is_empty(),
+        "expected at least one section chunk"
+    );
+
+    // All page location URIs should start with wiki/.
+    for chunk in &page_chunks {
+        assert!(
+            chunk.location.path.starts_with("wiki/"),
+            "page URI should have wiki/ prefix: {}",
+            chunk.location.path
+        );
+    }
+
+    // Section chunks should have page as parent.
+    for chunk in &section_chunks {
+        assert!(
+            chunk.parent_path.is_some(),
+            "section chunk should have parent_path set"
+        );
+        let parent = chunk.parent_path.as_ref().unwrap();
+        assert!(
+            parent.starts_with("wiki/"),
+            "parent_path should have wiki/ prefix: {parent}"
+        );
+        // Section URI should contain '#'.
+        assert!(
+            chunk.location.path.contains('#'),
+            "section URI should contain '#': {}",
+            chunk.location.path
+        );
+    }
+}
+
+// ── extract_structure ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn extract_structure_characters_page() {
+    let adapter = WikiAdapter::new();
+
+    let file = Path::new(FIXTURE).join("characters.md");
+    let content = std::fs::read_to_string(&file).unwrap();
+
+    let loc = callimachus_core::types::Location::new("testwiki", "wiki/characters");
+    let chunk =
+        callimachus_core::types::Chunk::new("testwiki".into(), None, "page".into(), loc, content);
+
+    let extracted = adapter.extract_structure(&chunk).await.unwrap();
+
+    // Should produce at least one entity (the page entity).
+    assert!(
+        !extracted.structural_entities.is_empty(),
+        "expected structural entities"
+    );
+
+    // The page entity kind should come from type front-matter ("character-index").
+    let kinds: Vec<_> = extracted
+        .structural_entities
+        .iter()
+        .map(|e| e.kind.as_str())
+        .collect();
+    assert!(
+        kinds
+            .iter()
+            .any(|k| *k == "character-index" || *k == "topic"),
+        "entity kind should reflect type front-matter: {kinds:?}"
+    );
+
+    // Should have references edges for [[Eisenhorn]] and [[Bequin]] wikilinks.
+    let ref_edges: Vec<_> = extracted
+        .structural_edges
+        .iter()
+        .filter(|e| e.kind == "references")
+        .collect();
+    assert!(
+        !ref_edges.is_empty(),
+        "expected references edges for wikilinks"
+    );
+}
+
+// ── extract_with_llm ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn extract_with_llm_section_returns_semantic() {
+    let adapter = WikiAdapter::new();
+    let llm = DryRunProvider::new();
+
+    let loc = callimachus_core::types::Location::new("testwiki", "wiki/characters#eisenhorn");
+    let chunk = callimachus_core::types::Chunk::new(
+        "testwiki".into(),
+        Some("wiki/characters".into()),
+        "section".into(),
+        loc,
+        "## Eisenhorn\n\nGregor Eisenhorn is an Inquisitor.".into(),
+    );
+
+    let result = adapter.extract_with_llm(&chunk, &llm).await.unwrap();
+    assert!(
+        result.is_some(),
+        "section chunk should return ExtractedSemantic"
+    );
+    let sem = result.unwrap();
+    // DryRunProvider returns "[dry-run]" for non-entity prompts.
+    assert!(
+        sem.summary_text.is_some(),
+        "expected summary_text from section extraction"
+    );
+}
+
+#[tokio::test]
+async fn extract_with_llm_page_returns_none() {
+    let adapter = WikiAdapter::new();
+    let llm = DryRunProvider::new();
+
+    let loc = callimachus_core::types::Location::new("testwiki", "wiki/characters");
+    let chunk = callimachus_core::types::Chunk::new(
+        "testwiki".into(),
+        None,
+        "page".into(),
+        loc,
+        "# Characters\n\nFull page content.".into(),
+    );
+
+    let result = adapter.extract_with_llm(&chunk, &llm).await.unwrap();
+    assert!(
+        result.is_none(),
+        "page chunk should return None from extract_with_llm"
+    );
+}
+
+// ── resolve_aliases ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn resolve_aliases_returns_empty() {
+    let adapter = WikiAdapter::new();
+    let llm = DryRunProvider::new();
+
+    let merges = adapter.resolve_aliases(&[], &llm).await.unwrap();
+    assert!(merges.is_empty(), "wiki adapter returns no merges in v1");
+}
+
+// ── format_location / parse_location ─────────────────────────────────────────
+
+#[tokio::test]
+async fn location_round_trip() {
+    let adapter = WikiAdapter::new();
+
+    let cases = [
+        "calli://mywiki/wiki/authentication",
+        "calli://mywiki/wiki/authentication#oauth-flow",
+        "calli://mywiki/wiki/guides/getting-started",
+    ];
+
+    for uri in &cases {
+        let loc_ref = adapter.parse_location(uri).unwrap();
+        // Re-format into a calli:// URI.
+        let reconstructed = format!("calli://{}/{}", loc_ref.corpus_id, loc_ref.path);
+        assert_eq!(reconstructed, *uri, "round-trip failed for {uri}");
+    }
+}
+
+// ── heading slug ──────────────────────────────────────────────────────────────
+
+#[test]
+fn heading_slug_oauth_flow() {
+    let slug = callimachus_adapter_wiki::chunker::heading_slug("OAuth Flow");
+    assert_eq!(slug, "oauth-flow");
+}
+
+// ── wikilink extraction ───────────────────────────────────────────────────────
+
+#[test]
+fn wikilink_with_display_text() {
+    use callimachus_adapter_wiki::links::{WikiLinkKind, extract_links};
+    let links = extract_links("home", "[[Eisenhorn|the Inquisitor]] arrived.");
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].to_page, "Eisenhorn");
+    assert_eq!(links[0].display_text, Some("the Inquisitor".into()));
+    assert_eq!(links[0].kind, WikiLinkKind::Wikilink);
+}
+
+// ── create() factory ─────────────────────────────────────────────────────────
+
+#[test]
+fn create_factory_works() {
+    let adapter = create();
+    assert_eq!(adapter.kind(), "wiki");
+}

@@ -1,0 +1,10 @@
+pub mod collection;
+pub mod corpus;
+pub mod correct;
+pub mod export;
+pub mod index;
+pub mod inspect;
+pub mod mcp;
+pub mod reindex;
+pub mod serve;
+pub mod watch;

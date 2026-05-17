@@ -1,0 +1,34 @@
+[package]
+name = "callimachus-adapter-code"
+description = "Callimachus adapter for codebases — tree-sitter AST-based chunking and extraction"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+callimachus-core = { path = "../../callimachus-core" }
+callimachus-llm = { path = "../../callimachus-llm" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+walkdir = "2"
+tree-sitter = "0.23"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-go = "0.23"
+sha2.workspace = true
+hex.workspace = true
+git2 = { version = "0.19", default-features = false }
+
+[dev-dependencies]
+tokio = { workspace = true }
+callimachus-llm = { path = "../../callimachus-llm" }
+tempfile = "3"

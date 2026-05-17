@@ -1,0 +1,25 @@
+pub mod backend;
+pub mod block_store;
+pub mod chunk_store;
+pub mod collection_store;
+pub mod contract_store;
+pub mod corpus_store;
+pub mod correction_store;
+pub mod db;
+pub mod edge_store;
+pub mod embedding_store;
+pub mod entity_store;
+pub mod fts;
+pub mod postgres;
+pub mod purpose_store;
+pub mod run_log;
+pub mod sqlite;
+pub mod sqlite_graph;
+pub mod summary_store;
+pub mod theme_store;
+
+pub use backend::StorageBackend;
+pub use db::Database;
+pub use edge_store::EdgeDirection;
+pub use postgres::PostgresBackend;
+pub use sqlite::SqliteBackend;

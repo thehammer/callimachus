@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "callimachus": {
+      "command": "calli",
+      "args": ["--db", "${workspaceFolder}/data/callimachus.db", "mcp"],
+      "description": "Callimachus index server — queryable entity graph, summaries, contracts, and purposes for this codebase"
+    }
+  }
+}
