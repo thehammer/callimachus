@@ -2,6 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
 use callimachus_llm::{LlmError, LlmProvider};
 use tokio::task::JoinSet;
@@ -15,6 +16,14 @@ use crate::{
 use super::pipeline::IndexOptions;
 
 const MAX_RETRIES: u32 = 5;
+const TASK_TIMEOUT_SECS: u64 = 120;
+const HEARTBEAT_SECS: u64 = 60;
+
+enum TaskOutcome {
+    Ok(Option<ExtractedSemantic>),
+    Err(String),
+    TimedOut,
+}
 
 pub async fn run(
     db: Arc<dyn StorageBackend>,
@@ -34,44 +43,71 @@ pub async fn run(
 
     if llm.supports_parallel() {
         let concurrency = opts.concurrency.unwrap_or(5);
-        let mut join_set: JoinSet<(String, Result<Option<ExtractedSemantic>, String>)> =
-            JoinSet::new();
+        let mut join_set: JoinSet<(String, TaskOutcome)> = JoinSet::new();
         let completed = Arc::new(AtomicUsize::new(0));
 
-        for chunk in chunks {
-            // Throttle to `concurrency` in-flight tasks.
-            while join_set.len() >= concurrency {
-                if let Some(res) = join_set.join_next().await {
-                    apply_join_result(res, &db, &mut stats, opts.dry_run)?;
-                    let n = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if (n as u64).is_multiple_of(25) {
-                        tracing::info!("[semantic] {}/{} chunks", n, total);
+        // Heartbeat: log progress every HEARTBEAT_SECS seconds independently of chunk pace.
+        let total_for_hb = total;
+        let completed_hb = Arc::clone(&completed);
+        let heartbeat = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(HEARTBEAT_SECS));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await; // skip immediate first tick
+            loop {
+                ticker.tick().await;
+                let n = completed_hb.load(Ordering::Relaxed);
+                tracing::info!("[semantic] still running — {}/{} complete", n, total_for_hb);
+            }
+        });
+
+        let parallel_result: anyhow::Result<()> = async {
+            for chunk in chunks {
+                // Throttle to `concurrency` in-flight tasks.
+                while join_set.len() >= concurrency {
+                    if let Some(res) = join_set.join_next().await {
+                        apply_join_result(res, &db, &mut stats, opts.dry_run)?;
+                        let n = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                        if (n as u64).is_multiple_of(25) {
+                            tracing::info!("[semantic] {}/{} chunks", n, total);
+                        }
                     }
+                }
+
+                let adapter_c = Arc::clone(&adapter);
+                let llm_c = Arc::clone(&llm);
+                let chunk_id = chunk.id.clone();
+
+                join_set.spawn(async move {
+                    let fut = extract_with_retry(&*adapter_c, &chunk, &*llm_c);
+                    let outcome =
+                        match tokio::time::timeout(Duration::from_secs(TASK_TIMEOUT_SECS), fut)
+                            .await
+                        {
+                            Ok(Ok(v)) => TaskOutcome::Ok(v),
+                            Ok(Err(e)) => TaskOutcome::Err(e.to_string()),
+                            Err(_elapsed) => TaskOutcome::TimedOut,
+                        };
+                    (chunk_id, outcome)
+                });
+            }
+
+            // Drain remaining tasks.
+            while let Some(res) = join_set.join_next().await {
+                apply_join_result(res, &db, &mut stats, opts.dry_run)?;
+                let n = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                if (n as u64).is_multiple_of(25) {
+                    tracing::info!("[semantic] {}/{} chunks", n, total);
                 }
             }
 
-            let adapter_c = Arc::clone(&adapter);
-            let llm_c = Arc::clone(&llm);
-            let chunk_id = chunk.id.clone();
-
-            join_set.spawn(async move {
-                let result = extract_with_retry(&*adapter_c, &chunk, &*llm_c).await;
-                let mapped = match result {
-                    Ok(v) => Ok(v),
-                    Err(e) => Err(e.to_string()),
-                };
-                (chunk_id, mapped)
-            });
+            Ok(())
         }
+        .await;
 
-        // Drain remaining tasks.
-        while let Some(res) = join_set.join_next().await {
-            apply_join_result(res, &db, &mut stats, opts.dry_run)?;
-            let n = completed.fetch_add(1, Ordering::Relaxed) + 1;
-            if (n as u64).is_multiple_of(25) {
-                tracing::info!("[semantic] {}/{} chunks", n, total);
-            }
-        }
+        heartbeat.abort();
+        let _ = heartbeat.await;
+
+        parallel_result?;
     } else {
         // Sequential path (e.g. ClaudeCodeProvider).
         for (i, chunk) in chunks.iter().enumerate() {
@@ -205,10 +241,7 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn extract_structure(
-            &self,
-            _chunk: &Chunk,
-        ) -> anyhow::Result<ExtractedStructure> {
+        async fn extract_structure(&self, _chunk: &Chunk) -> anyhow::Result<ExtractedStructure> {
             Ok(ExtractedStructure {
                 parent_path: None,
                 child_paths: vec![],
@@ -292,16 +325,13 @@ mod tests {
 }
 
 fn apply_join_result(
-    join_result: Result<
-        (String, Result<Option<ExtractedSemantic>, String>),
-        tokio::task::JoinError,
-    >,
+    join_result: Result<(String, TaskOutcome), tokio::task::JoinError>,
     db: &Arc<dyn StorageBackend>,
     stats: &mut PassStats,
     dry_run: bool,
 ) -> anyhow::Result<()> {
     match join_result {
-        Ok((chunk_id, Ok(Some(sem)))) => {
+        Ok((chunk_id, TaskOutcome::Ok(Some(sem)))) => {
             if !dry_run {
                 for entity in &sem.entities {
                     db.entity_upsert(entity)?;
@@ -313,15 +343,23 @@ fn apply_join_result(
             }
             stats.processed += 1;
         }
-        Ok((chunk_id, Ok(None))) => {
+        Ok((chunk_id, TaskOutcome::Ok(None))) => {
             if !dry_run {
                 db.chunk_set_semantic_processed(&chunk_id)?;
             }
             stats.skipped += 1;
         }
-        Ok((_chunk_id, Err(msg))) => {
+        Ok((_chunk_id, TaskOutcome::Err(msg))) => {
             tracing::warn!("semantic pass error: {msg}");
             stats.failed += 1;
+        }
+        Ok((chunk_id, TaskOutcome::TimedOut)) => {
+            tracing::warn!(
+                "[semantic] task timed out for chunk {}, will retry on next run",
+                chunk_id
+            );
+            stats.failed += 1;
+            // Intentionally do NOT call chunk_set_semantic_processed so next run retries it.
         }
         Err(e) => {
             tracing::warn!("task join error: {e}");
