@@ -14,7 +14,7 @@ use crate::{
 
 use super::pipeline::IndexOptions;
 
-const MAX_RETRIES: u32 = 3;
+const MAX_RETRIES: u32 = 5;
 
 pub async fn run(
     db: Arc<dyn StorageBackend>,
@@ -140,9 +140,154 @@ async fn extract_with_retry(
                     continue;
                 }
 
+                let msg = format!("{e:#}");
+                let is_transient_parse = msg.contains("EOF while parsing")
+                    || msg.contains("failed to parse LLM JSON")
+                    || msg.contains("empty response");
+                if is_transient_parse && attempts < MAX_RETRIES {
+                    let backoff = 5u64 * 2u64.pow(attempts - 1);
+                    tracing::warn!(
+                        "transient LLM parse failure; backing off {backoff}s (attempt {attempts}): {msg}"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+                    continue;
+                }
+
                 return Err(e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use async_trait::async_trait;
+    use callimachus_llm::DryRunProvider;
+
+    use crate::{
+        adapter::{
+            DiscoveredSource, EntityMerge, ExtractedSemantic, ExtractedStructure, LocationRef,
+            SourceAdapter,
+        },
+        types::{Chunk, Location},
+    };
+
+    use super::extract_with_retry;
+
+    struct FailOnceThenSucceedAdapter {
+        calls: AtomicU32,
+    }
+
+    impl FailOnceThenSucceedAdapter {
+        fn new() -> Self {
+            Self {
+                calls: AtomicU32::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SourceAdapter for FailOnceThenSucceedAdapter {
+        fn kind(&self) -> &str {
+            "test"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+
+        async fn discover(&self, _source: &str) -> anyhow::Result<Vec<DiscoveredSource>> {
+            Ok(vec![])
+        }
+
+        async fn chunk(&self, _source: &DiscoveredSource) -> anyhow::Result<Vec<Chunk>> {
+            Ok(vec![])
+        }
+
+        async fn extract_structure(
+            &self,
+            _chunk: &Chunk,
+        ) -> anyhow::Result<ExtractedStructure> {
+            Ok(ExtractedStructure {
+                parent_path: None,
+                child_paths: vec![],
+                structural_entities: vec![],
+                structural_edges: vec![],
+            })
+        }
+
+        async fn extract_with_llm(
+            &self,
+            _chunk: &Chunk,
+            _llm: &dyn callimachus_llm::LlmProvider,
+        ) -> anyhow::Result<Option<ExtractedSemantic>> {
+            let call_n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call_n == 1 {
+                Err(anyhow::anyhow!(
+                    "failed to parse LLM JSON: EOF while parsing a value at line 1 column 0"
+                ))
+            } else {
+                Ok(Some(ExtractedSemantic {
+                    entities: vec![],
+                    edges: vec![],
+                    summary_text: None,
+                }))
+            }
+        }
+
+        async fn summarize(
+            &self,
+            _chunk: &Chunk,
+            _llm: &dyn callimachus_llm::LlmProvider,
+            _depth: &str,
+        ) -> anyhow::Result<Option<String>> {
+            Ok(None)
+        }
+
+        async fn resolve_aliases(
+            &self,
+            _entities: &[crate::types::Entity],
+            _llm: &dyn callimachus_llm::LlmProvider,
+        ) -> anyhow::Result<Vec<EntityMerge>> {
+            Ok(vec![])
+        }
+
+        fn format_location(&self, chunk: &Chunk) -> String {
+            chunk.location.path.clone()
+        }
+
+        fn parse_location(&self, uri: &str) -> anyhow::Result<LocationRef> {
+            Ok(LocationRef {
+                corpus_id: "test".to_string(),
+                path: uri.to_string(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn extract_with_retry_retries_on_empty_response() {
+        tokio::time::pause();
+
+        let adapter = FailOnceThenSucceedAdapter::new();
+        let chunk = Chunk::new(
+            "test-corpus".to_string(),
+            None,
+            "section".to_string(),
+            Location::new("test-corpus", "ch/1"),
+            "some content".to_string(),
+        );
+        let llm = DryRunProvider::new();
+
+        let result = extract_with_retry(&adapter, &chunk, &llm).await;
+
+        assert!(result.is_ok(), "expected Ok but got Err");
+        assert!(result.unwrap().is_some(), "expected Some(_)");
+        assert_eq!(
+            adapter.calls.load(Ordering::SeqCst),
+            2,
+            "adapter should have been called exactly twice"
+        );
     }
 }
 
