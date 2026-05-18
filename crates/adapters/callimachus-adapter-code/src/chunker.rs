@@ -109,10 +109,10 @@ pub async fn chunk_directory(
             Some(l) => l,
             None => {
                 // Text files without a tree-sitter grammar get a single file-level chunk.
-                if is_text_extension(ext) {
-                    if let Some(chunk) = emit_text_file_chunk(abs_path, corpus_id, &rel_str) {
-                        chunks.push(chunk);
-                    }
+                if is_text_extension(ext)
+                    && let Some(chunk) = emit_text_file_chunk(abs_path, corpus_id, &rel_str)
+                {
+                    chunks.push(chunk);
                 }
                 continue;
             }
