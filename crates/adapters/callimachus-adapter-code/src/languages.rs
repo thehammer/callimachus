@@ -125,7 +125,7 @@ pub const TEXT_EXTENSIONS: &[&str] = &[
     "tf", "tfvars", "hcl", // Database
     "sql", // Templates
     "ftl", "html", // Scripts
-    "sh", // Styles
+    "sh",   // Styles
     "css", "scss", // Docs
     "md",
 ];
