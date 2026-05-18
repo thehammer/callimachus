@@ -328,11 +328,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_all_twenty_three() {
+    async fn tools_list_returns_all_tools() {
         let server = make_server();
         let resp = server.handle("tools/list", Value::Null, json!(1)).await;
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 23);
+        // 23 original + 2 taxonomy tools (entity_search_by_abstract_kind, list_abstract_kinds)
+        assert_eq!(tools.len(), 25);
     }
 
     #[tokio::test]

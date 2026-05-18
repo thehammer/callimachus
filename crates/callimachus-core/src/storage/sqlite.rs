@@ -79,6 +79,10 @@ impl StorageBackend for SqliteBackend {
         corpus_store::set_last_indexed(&db!(self), id, at)
     }
 
+    fn corpus_set_pipeline_version(&self, id: &str, version: u32) -> Result<()> {
+        corpus_store::set_pipeline_version(&db!(self), id, version)
+    }
+
     fn corpus_delete(&self, id: &str) -> Result<bool> {
         corpus_store::delete(&db!(self), id)
     }
@@ -169,6 +173,18 @@ impl StorageBackend for SqliteBackend {
 
     fn entities_at_location(&self, corpus_id: &str, uri: &str) -> Result<Vec<Entity>> {
         entity_store::at_location(&db!(self), corpus_id, uri)
+    }
+
+    fn entity_list_by_abstract_kind(
+        &self,
+        corpus_ids: &[&str],
+        abstract_kind: &str,
+    ) -> Result<Vec<Entity>> {
+        entity_store::list_by_abstract_kind(&db!(self), corpus_ids, abstract_kind)
+    }
+
+    fn kind_taxonomy_list(&self) -> Result<Vec<(String, String, String)>> {
+        entity_store::list_taxonomy(&db!(self))
     }
 
     // ── Edge ──────────────────────────────────────────────────────────────────

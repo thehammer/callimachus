@@ -75,6 +75,9 @@ impl StorageBackend for PostgresBackend {
     fn corpus_set_last_indexed(&self, _id: &str, _at: &str) -> Result<()> {
         Err(unimplemented())
     }
+    fn corpus_set_pipeline_version(&self, _id: &str, _version: u32) -> Result<()> {
+        Err(unimplemented())
+    }
     fn corpus_delete(&self, _id: &str) -> Result<bool> {
         Err(unimplemented())
     }
@@ -141,6 +144,16 @@ impl StorageBackend for PostgresBackend {
         Err(unimplemented())
     }
     fn entities_at_location(&self, _corpus_id: &str, _uri: &str) -> Result<Vec<Entity>> {
+        Err(unimplemented())
+    }
+    fn entity_list_by_abstract_kind(
+        &self,
+        _corpus_ids: &[&str],
+        _abstract_kind: &str,
+    ) -> Result<Vec<Entity>> {
+        Err(unimplemented())
+    }
+    fn kind_taxonomy_list(&self) -> Result<Vec<(String, String, String)>> {
         Err(unimplemented())
     }
 

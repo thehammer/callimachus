@@ -463,3 +463,36 @@ pub struct ExplainComponentOutput {
     pub narrative: String,
     pub nodes: Vec<ExplainNode>,
 }
+
+// ── entity_search_by_abstract_kind ───────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntitySearchByAbstractKindInput {
+    pub corpus_ids: Vec<String>,
+    pub abstract_kind: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntitySearchByAbstractKindOutput {
+    pub entities: Vec<Entity>,
+    pub count: usize,
+}
+
+// ── list_abstract_kinds ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListAbstractKindsInput {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaxonomyRow {
+    pub concrete_kind: String,
+    pub corpus_kind: String,
+    pub abstract_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListAbstractKindsOutput {
+    pub rows: Vec<TaxonomyRow>,
+    pub count: usize,
+}

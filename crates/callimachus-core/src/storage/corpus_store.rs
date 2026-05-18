@@ -6,8 +6,8 @@ use std::str::FromStr;
 
 pub fn insert(db: &Database, corpus: &Corpus) -> Result<()> {
     db.conn().execute(
-        "INSERT INTO corpora (id, name, kind, source, config, status, created_at, last_indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO corpora (id, name, kind, source, config, status, created_at, last_indexed_at, pipeline_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             corpus.id,
             corpus.name,
@@ -17,6 +17,7 @@ pub fn insert(db: &Database, corpus: &Corpus) -> Result<()> {
             corpus.status.to_string(),
             corpus.created_at,
             corpus.last_indexed_at,
+            corpus.pipeline_version as i64,
         ],
     )?;
     Ok(())
@@ -24,7 +25,7 @@ pub fn insert(db: &Database, corpus: &Corpus) -> Result<()> {
 
 pub fn list(db: &Database) -> Result<Vec<Corpus>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, name, kind, source, config, status, created_at, last_indexed_at
+        "SELECT id, name, kind, source, config, status, created_at, last_indexed_at, pipeline_version
          FROM corpora ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map([], row_to_corpus)?;
@@ -34,7 +35,7 @@ pub fn list(db: &Database) -> Result<Vec<Corpus>> {
 
 pub fn get(db: &Database, id: &str) -> Result<Option<Corpus>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, name, kind, source, config, status, created_at, last_indexed_at
+        "SELECT id, name, kind, source, config, status, created_at, last_indexed_at, pipeline_version
          FROM corpora WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], row_to_corpus)?;
@@ -83,6 +84,17 @@ pub fn exists(db: &Database, id: &str) -> Result<bool> {
     Ok(count > 0)
 }
 
+pub fn set_pipeline_version(db: &Database, id: &str, version: u32) -> Result<()> {
+    let updated = db.conn().execute(
+        "UPDATE corpora SET pipeline_version = ?1 WHERE id = ?2",
+        params![version as i64, id],
+    )?;
+    if updated == 0 {
+        return Err(CalError::CorpusNotFound(id.to_string()));
+    }
+    Ok(())
+}
+
 fn row_to_corpus(row: &rusqlite::Row<'_>) -> rusqlite::Result<Corpus> {
     let config_str: String = row.get(4)?;
     let config: serde_json::Value =
@@ -98,6 +110,7 @@ fn row_to_corpus(row: &rusqlite::Row<'_>) -> rusqlite::Result<Corpus> {
         status,
         created_at: row.get(6)?,
         last_indexed_at: row.get(7)?,
+        pipeline_version: row.get::<_, i64>(8)? as u32,
     })
 }
 

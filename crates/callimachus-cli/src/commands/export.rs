@@ -308,6 +308,7 @@ mod tests {
             corpus_id: CORPUS.to_string(),
             canonical_name: name.to_string(),
             kind: "character".to_string(),
+            abstract_kind: String::new(),
             aliases: vec![],
             description: None,
             first_location: None,

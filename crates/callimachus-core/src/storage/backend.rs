@@ -33,6 +33,7 @@ pub trait StorageBackend: Send + Sync {
     fn corpus_require(&self, id: &str) -> Result<Corpus>;
     fn corpus_update_status(&self, id: &str, status: CorpusStatus) -> Result<()>;
     fn corpus_set_last_indexed(&self, id: &str, at: &str) -> Result<()>;
+    fn corpus_set_pipeline_version(&self, id: &str, version: u32) -> Result<()>;
     fn corpus_delete(&self, id: &str) -> Result<bool>;
     fn corpus_exists(&self, id: &str) -> Result<bool>;
 
@@ -65,6 +66,14 @@ pub trait StorageBackend: Send + Sync {
     fn entity_merge(&self, keep_id: &str, absorb_id: &str) -> Result<()>;
     /// Returns entities whose `first_location_uri` or `last_location_uri` equals `uri`.
     fn entities_at_location(&self, corpus_id: &str, uri: &str) -> Result<Vec<Entity>>;
+    /// Returns entities with the given abstract taxonomy kind across the specified corpora.
+    fn entity_list_by_abstract_kind(
+        &self,
+        corpus_ids: &[&str],
+        abstract_kind: &str,
+    ) -> Result<Vec<Entity>>;
+    /// Returns all rows from kind_taxonomy as (concrete_kind, corpus_kind, abstract_kind).
+    fn kind_taxonomy_list(&self) -> Result<Vec<(String, String, String)>>;
 
     // ── Edge ──────────────────────────────────────────────────────────────────
 

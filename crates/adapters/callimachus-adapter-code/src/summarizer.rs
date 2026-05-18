@@ -75,6 +75,57 @@ Return ONLY the summary text, no JSON, no preamble."#,
     }
 }
 
+/// Generate a 2-3 sentence overview of a source file.
+pub async fn summarize_file(chunk: &Chunk, llm: &dyn LlmProvider) -> Result<Option<String>> {
+    let language = detect_language_from_chunk(chunk);
+    let filename = chunk
+        .location
+        .path
+        .split('/')
+        .next_back()
+        .unwrap_or(&chunk.location.path);
+
+    if chunk.content.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let prompt = format!(
+        r#"You are summarizing a source file for a searchable index.
+
+Language: {language}
+File: {filename}
+
+File content (truncated to 4000 chars):
+<code>
+{content}
+</code>
+
+Write a 2-3 sentence overview of what this file contains and its primary responsibility.
+Focus on purpose, not implementation details.
+
+Return ONLY the summary text, no JSON, no preamble."#,
+        content = &chunk.content[..chunk
+            .content
+            .floor_char_boundary(4000.min(chunk.content.len()))],
+    );
+
+    let req = CompletionRequest {
+        prompt,
+        model: Some("claude-haiku-4-5-20251001".to_string()),
+        max_tokens: Some(200),
+        chunk_id: Some(chunk.id.clone()),
+    };
+
+    let response = llm.complete(req).await?;
+    let text = response.text.trim().to_string();
+
+    if text.is_empty() || text == "[dry-run]" {
+        Ok(Some(format!("[auto] file `{filename}`")))
+    } else {
+        Ok(Some(text))
+    }
+}
+
 /// Generate a high-level repository overview from module-level doc strings.
 pub async fn summarize_corpus(
     doc_comments: &[String],

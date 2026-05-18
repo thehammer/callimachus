@@ -87,6 +87,10 @@ impl SourceAdapter for WikiAdapter {
         Ok(sources)
     }
 
+    fn summary_levels(&self) -> Vec<&'static str> {
+        vec!["section", "page"]
+    }
+
     /// Chunk: produce page + section chunks for a single discovered `.md` file.
     async fn chunk(&self, source: &DiscoveredSource) -> anyhow::Result<Vec<Chunk>> {
         let file_path = Path::new(&source.path);
@@ -128,53 +132,44 @@ impl SourceAdapter for WikiAdapter {
 
     /// LLM-driven semantic extraction.
     ///
-    /// For `kind = "section"` chunks: generate a 1-2 sentence summary.
-    /// For `kind = "page"` chunks: skip (page summaries are generated in the summarize pass).
+    /// Focuses on entity/edge extraction only. Section summaries are now produced
+    /// by the summarize pass via `summarize(depth="section")`.
     async fn extract_with_llm(
         &self,
-        chunk: &Chunk,
-        llm: &dyn LlmProvider,
+        _chunk: &Chunk,
+        _llm: &dyn LlmProvider,
     ) -> anyhow::Result<Option<ExtractedSemantic>> {
-        if chunk.kind != "section" {
-            return Ok(None);
-        }
-
-        let (page_title, section_heading) = summarizer::chunk_metadata(chunk);
-        let summary =
-            summarizer::summarize_section(chunk, &page_title, &section_heading, llm).await?;
-
-        Ok(Some(ExtractedSemantic {
-            entities: vec![],
-            edges: vec![],
-            summary_text: Some(summary),
-        }))
+        // Semantic extraction (entities, edges) is handled by extract_structure for wikis.
+        // Summaries are handled by the summarize pass.
+        Ok(None)
     }
 
     /// Summarize a wiki chunk.
     ///
-    /// - `"section"`: already handled in `extract_with_llm`; returns `None` here.
-    /// - `"page"`: collect this page's section summaries, ask LLM for 2-3 sentence summary.
-    /// - `"corpus"`: collect all page titles + summaries, ask LLM for corpus overview.
+    /// - `"section"`: generate a 1-2 sentence summary of the section content.
+    /// - `"page"`: summarize from child section summaries (provided as chunk.content by the pass).
+    /// - `"corpus"`: generate a wiki overview.
     async fn summarize(
         &self,
         chunk: &Chunk,
         llm: &dyn LlmProvider,
         depth: &str,
     ) -> anyhow::Result<Option<String>> {
-        match (chunk.kind.as_str(), depth) {
-            ("section", _) => Ok(None), // handled in extract_with_llm
-            ("page", _) => {
-                let (page_title, _) = summarizer::chunk_metadata(chunk);
-                // Simple page summary from content (no sub-summaries available here).
-                let summary = summarizer::summarize_page(
-                    &page_title,
-                    &[], // No section summaries at this point — summarize from raw content.
-                    llm,
-                )
-                .await?;
+        match depth {
+            "section" => {
+                let (page_title, section_heading) = summarizer::chunk_metadata(chunk);
+                let summary =
+                    summarizer::summarize_section(chunk, &page_title, &section_heading, llm)
+                        .await?;
                 Ok(Some(summary))
             }
-            ("corpus", _) | (_, "corpus") => {
+            "page" => {
+                let (page_title, _) = summarizer::chunk_metadata(chunk);
+                // chunk.content may contain pre-formatted section summaries from the pass.
+                let summary = summarizer::summarize_page(&page_title, &[], llm).await?;
+                Ok(Some(summary))
+            }
+            "corpus" => {
                 let summary = summarizer::summarize_corpus(&[], llm).await?;
                 Ok(Some(summary))
             }

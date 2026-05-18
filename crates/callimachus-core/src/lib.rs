@@ -1,4 +1,8 @@
 pub mod adapter;
+
+/// The current pipeline version. Bump this with each new phase that adds
+/// indexing passes or schema changes requiring a re-run.
+pub const PIPELINE_VERSION: u32 = 3;
 pub mod corrections;
 pub mod error;
 pub mod indexing;

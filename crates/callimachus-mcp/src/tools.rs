@@ -331,6 +331,36 @@ pub static TOOL_LIST: Lazy<Vec<ToolDesc>> = Lazy::new(|| {
                 "required": ["corpus_id"]
             }),
         },
+        // ── Taxonomy tools ────────────────────────────────────────────────────
+        ToolDesc {
+            name: "entity_search_by_abstract_kind",
+            description: "List entities across one or more corpora filtered by abstract taxonomy kind (e.g. 'process', 'component', 'person', 'place'). Enables cross-corpus queries like 'all processes'.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "corpus_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "One or more corpus IDs to search across."
+                    },
+                    "abstract_kind": {
+                        "type": "string",
+                        "description": "Abstract taxonomy kind: process | component | person | place | organization | concept"
+                    },
+                    "limit": { "type": "integer", "description": "Max results (default 50).", "default": 50 }
+                },
+                "required": ["corpus_ids", "abstract_kind"]
+            }),
+        },
+        ToolDesc {
+            name: "list_abstract_kinds",
+            description: "Return the full kind_taxonomy table: each row maps a concrete adapter kind to its cross-corpus abstract kind.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
     ]
 });
 

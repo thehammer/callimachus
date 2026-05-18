@@ -3,8 +3,9 @@ use callimachus_core::query::{
     CollectionEntityResolveInput, CollectionListInput, CollectionOverviewInput,
     CollectionSearchInput, CollectionService, CorpusListInput, CorpusOverviewInput,
     CorpusThemesInput, EntitiesWithoutTestsInput, EntityContractsInput, EntityEdgesInput,
-    EntityInput, EntityMeetInput, ExplainComponentInput, FindInconsistenciesInput, FindSceneInput,
-    FindUnreachableInput, QueryService, ReadInput, RelatedInput, SearchInput, SummarizeInput,
+    EntityInput, EntityMeetInput, EntitySearchByAbstractKindInput, ExplainComponentInput,
+    FindInconsistenciesInput, FindSceneInput, FindUnreachableInput, ListAbstractKindsInput,
+    QueryService, ReadInput, RelatedInput, SearchInput, SummarizeInput,
 };
 use callimachus_core::storage::StorageBackend;
 use serde_json::Value;
@@ -175,6 +176,17 @@ pub async fn dispatch(
             Ok(input) => serde_json::to_value(qs.explain_component(input)).unwrap_or_else(err_json),
             Err(e) => invalid_input(e),
         },
+        "entity_search_by_abstract_kind" => {
+            match serde_json::from_value::<EntitySearchByAbstractKindInput>(args) {
+                Ok(input) => serde_json::to_value(qs.entity_search_by_abstract_kind(input))
+                    .unwrap_or_else(err_json),
+                Err(e) => invalid_input(e),
+            }
+        }
+        "list_abstract_kinds" => {
+            let input = serde_json::from_value::<ListAbstractKindsInput>(args).unwrap_or_default();
+            serde_json::to_value(qs.list_abstract_kinds(input)).unwrap_or_else(err_json)
+        }
         unknown => serde_json::json!({
             "ok": false,
             "kind": "invalid_input",

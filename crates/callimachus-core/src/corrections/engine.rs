@@ -290,6 +290,7 @@ pub(crate) mod test_helpers {
             corpus_id: corpus_id.to_string(),
             canonical_name: name.to_string(),
             kind: kind.to_string(),
+            abstract_kind: String::new(),
             aliases: aliases.into_iter().map(str::to_string).collect(),
             description: None,
             first_location: None,

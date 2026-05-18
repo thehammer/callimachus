@@ -87,6 +87,7 @@ fn parse_extraction_response(text: &str, chunk: &Chunk) -> anyhow::Result<Extrac
                 corpus_id: chunk.corpus_id.clone(),
                 canonical_name: e.name.clone(),
                 kind: e.kind.clone(),
+                abstract_kind: String::new(),
                 aliases: vec![],
                 description: e.description.clone(),
                 first_location: Some(chunk.location.clone()),

@@ -11,11 +11,23 @@ pub fn upsert(db: &Database, entity: &Entity) -> Result<()> {
 
     // On conflict: merge aliases, increment appearance_count, update location pointers,
     // take max confidence.
+    //
+    // abstract_kind: use the provided value if non-empty, otherwise resolve from
+    // kind_taxonomy joining on the corpus kind.
     db.conn().execute(
         "INSERT INTO entities
-             (id, corpus_id, canonical_name, kind, aliases, description,
+             (id, corpus_id, canonical_name, kind, abstract_kind, aliases, description,
               first_location_uri, last_location_uri, appearance_count, confidence)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         VALUES (
+             ?1, ?2, ?3, ?4,
+             CASE WHEN ?5 != '' THEN ?5
+                  ELSE COALESCE((
+                      SELECT kt.abstract_kind FROM kind_taxonomy kt
+                      JOIN corpora c ON c.id = ?2
+                      WHERE kt.concrete_kind = ?4 AND kt.corpus_kind = c.kind
+                  ), '')
+             END,
+             ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(id) DO UPDATE SET
              aliases        = json_patch(aliases, excluded.aliases),
              description    = COALESCE(excluded.description, description),
@@ -27,6 +39,7 @@ pub fn upsert(db: &Database, entity: &Entity) -> Result<()> {
             entity.corpus_id,
             entity.canonical_name,
             entity.kind,
+            entity.abstract_kind,
             aliases_json,
             entity.description,
             first_uri,
@@ -40,7 +53,7 @@ pub fn upsert(db: &Database, entity: &Entity) -> Result<()> {
 
 pub fn get_by_id(db: &Database, id: &str) -> Result<Option<Entity>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, canonical_name, kind, aliases, description,
+        "SELECT id, corpus_id, canonical_name, kind, abstract_kind, aliases, description,
                 first_location_uri, last_location_uri, appearance_count, confidence
          FROM entities WHERE id = ?1",
     )?;
@@ -54,7 +67,7 @@ pub fn get_by_id(db: &Database, id: &str) -> Result<Option<Entity>> {
 pub fn find_by_name(db: &Database, corpus_id: &str, name: &str) -> Result<Vec<Entity>> {
     let pattern = format!("%{}%", name.to_lowercase());
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, canonical_name, kind, aliases, description,
+        "SELECT id, corpus_id, canonical_name, kind, abstract_kind, aliases, description,
                 first_location_uri, last_location_uri, appearance_count, confidence
          FROM entities
          WHERE corpus_id = ?1
@@ -69,7 +82,7 @@ pub fn find_by_name(db: &Database, corpus_id: &str, name: &str) -> Result<Vec<En
 
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Entity>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, canonical_name, kind, aliases, description,
+        "SELECT id, corpus_id, canonical_name, kind, abstract_kind, aliases, description,
                 first_location_uri, last_location_uri, appearance_count, confidence
          FROM entities WHERE corpus_id = ?1
          ORDER BY appearance_count DESC",
@@ -90,7 +103,7 @@ pub fn count(db: &Database, corpus_id: &str) -> Result<u64> {
 
 pub fn list_all(db: &Database, corpus_id: &str) -> Result<Vec<Entity>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, canonical_name, kind, aliases, description,
+        "SELECT id, corpus_id, canonical_name, kind, abstract_kind, aliases, description,
                 first_location_uri, last_location_uri, appearance_count, confidence
          FROM entities WHERE corpus_id = ?1
          ORDER BY canonical_name ASC",
@@ -126,7 +139,7 @@ pub fn merge(db: &Database, keep_id: &str, absorb_id: &str) -> Result<()> {
 
 pub fn top(db: &Database, corpus_id: &str, limit: usize) -> Result<Vec<Entity>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, canonical_name, kind, aliases, description,
+        "SELECT id, corpus_id, canonical_name, kind, abstract_kind, aliases, description,
                 first_location_uri, last_location_uri, appearance_count, confidence
          FROM entities WHERE corpus_id = ?1
          ORDER BY appearance_count DESC LIMIT ?2",
@@ -139,7 +152,7 @@ pub fn top(db: &Database, corpus_id: &str, limit: usize) -> Result<Vec<Entity>> 
 /// Returns entities whose `first_location_uri` or `last_location_uri` equals `uri`.
 pub fn at_location(db: &Database, corpus_id: &str, uri: &str) -> Result<Vec<Entity>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, canonical_name, kind, aliases, description,
+        "SELECT id, corpus_id, canonical_name, kind, abstract_kind, aliases, description,
                 first_location_uri, last_location_uri, appearance_count, confidence
          FROM entities
          WHERE corpus_id = ?1 AND (first_location_uri = ?2 OR last_location_uri = ?2)",
@@ -149,21 +162,72 @@ pub fn at_location(db: &Database, corpus_id: &str, uri: &str) -> Result<Vec<Enti
         .map_err(CalError::from)
 }
 
+/// Returns entities with a given abstract_kind across multiple corpora.
+///
+/// `corpus_ids` must be non-empty. Uses dynamic IN-list placeholders.
+pub fn list_by_abstract_kind(
+    db: &Database,
+    corpus_ids: &[&str],
+    abstract_kind: &str,
+) -> Result<Vec<Entity>> {
+    if corpus_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let placeholders = corpus_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 2))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, corpus_id, canonical_name, kind, abstract_kind, aliases, description,
+                first_location_uri, last_location_uri, appearance_count, confidence
+         FROM entities
+         WHERE abstract_kind = ?1 AND corpus_id IN ({placeholders})
+         ORDER BY appearance_count DESC"
+    );
+    let mut stmt = db.conn().prepare(&sql)?;
+    // Build params: abstract_kind first, then corpus_ids.
+    let mut rows_iter = stmt.query(rusqlite::params_from_iter(
+        std::iter::once(&abstract_kind as &dyn rusqlite::ToSql)
+            .chain(corpus_ids.iter().map(|id| id as &dyn rusqlite::ToSql)),
+    ))?;
+    let mut results = Vec::new();
+    while let Some(row) = rows_iter.next()? {
+        results.push(row_to_entity(row)?);
+    }
+    Ok(results)
+}
+
+/// Returns all rows from kind_taxonomy.
+pub fn list_taxonomy(db: &Database) -> Result<Vec<(String, String, String)>> {
+    let mut stmt = db
+        .conn()
+        .prepare("SELECT concrete_kind, corpus_kind, abstract_kind FROM kind_taxonomy ORDER BY corpus_kind, concrete_kind")?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CalError::from)
+}
+
 pub(crate) fn row_to_entity(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entity> {
-    let aliases_json: String = row.get(4)?;
+    // Column order: id(0), corpus_id(1), canonical_name(2), kind(3), abstract_kind(4),
+    //               aliases(5), description(6), first_location_uri(7), last_location_uri(8),
+    //               appearance_count(9), confidence(10)
+    let aliases_json: String = row.get(5)?;
     let aliases: Vec<String> = serde_json::from_str(&aliases_json).unwrap_or_default();
-    let first_uri: Option<String> = row.get(6)?;
-    let last_uri: Option<String> = row.get(7)?;
+    let first_uri: Option<String> = row.get(7)?;
+    let last_uri: Option<String> = row.get(8)?;
     Ok(Entity {
         id: row.get(0)?,
         corpus_id: row.get(1)?,
         canonical_name: row.get(2)?,
         kind: row.get(3)?,
+        abstract_kind: row.get::<_, String>(4).unwrap_or_default(),
         aliases,
-        description: row.get(5)?,
+        description: row.get(6)?,
         first_location: first_uri.and_then(|u| Location::parse(&u).ok()),
         last_location: last_uri.and_then(|u| Location::parse(&u).ok()),
-        appearance_count: row.get::<_, i64>(8)? as u32,
-        confidence: row.get::<_, f64>(9)? as f32,
+        appearance_count: row.get::<_, i64>(9)? as u32,
+        confidence: row.get::<_, f64>(10)? as f32,
     })
 }

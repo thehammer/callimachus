@@ -21,134 +21,92 @@ pub async fn run(
     let mut stats = PassStats::default();
 
     let all_chunks = db.chunk_list(&corpus.id)?;
-
-    // ── 1. Scene-level summaries ──────────────────────────────────────────────
-    let scene_chunks: Vec<_> = all_chunks.iter().filter(|c| c.kind == "scene").collect();
-    let scene_total = scene_chunks.len() as u64;
-    let chapter_count_for_log = all_chunks.iter().filter(|c| c.kind == "chapter").count();
+    let levels = adapter.summary_levels();
 
     tracing::info!(
-        "[summarize] {} scene chunks, {} chapter chunks",
-        scene_total,
-        chapter_count_for_log
+        "[summarize] {} levels declared by adapter: {:?}",
+        levels.len(),
+        levels
     );
-    if scene_total == 0 && chapter_count_for_log == 0 {
-        tracing::info!(
-            "[summarize] nothing to summarize at scene/chapter level — will attempt corpus-level summary from semantic data"
-        );
-    }
 
-    for (i, chunk) in scene_chunks.iter().enumerate() {
-        // Idempotent: skip if already summarized (unless --full).
-        if !opts.full
-            && db
-                .summary_get(&corpus.id, &SummaryTargetKind::Chunk, &chunk.id)?
-                .is_some()
-        {
-            stats.skipped += 1;
-            let completed = i as u64 + 1;
-            if completed.is_multiple_of(25) {
-                tracing::info!("[summarize] scene {}/{} chunks", completed, scene_total);
-            }
-            continue;
-        }
+    // ── Level-by-level summaries ──────────────────────────────────────────────
+    for (level_idx, &level_kind) in levels.iter().enumerate() {
+        let level_chunks: Vec<_> = all_chunks.iter().filter(|c| c.kind == level_kind).collect();
+        let level_total = level_chunks.len() as u64;
 
-        match adapter.summarize(chunk, llm.as_ref(), "scene").await {
-            Ok(Some(text)) => {
-                if !opts.dry_run {
-                    let summary = make_summary(corpus, chunk.id.clone(), "scene", text, &llm);
-                    db.summary_upsert(&summary)?;
-                }
-                stats.processed += 1;
-            }
-            Ok(None) => {
+        tracing::info!("[summarize] level '{level_kind}': {level_total} chunks");
+
+        for (i, chunk) in level_chunks.iter().enumerate() {
+            // Idempotent: skip if already summarized (unless --full).
+            if !opts.full
+                && db
+                    .summary_get(&corpus.id, &SummaryTargetKind::Chunk, &chunk.id)?
+                    .is_some()
+            {
                 stats.skipped += 1;
+                log_progress(level_kind, i as u64 + 1, level_total);
+                continue;
             }
-            Err(e) => {
-                tracing::warn!("scene summary failed for {}: {e}", chunk.id);
-                stats.failed += 1;
-            }
-        }
 
-        let completed = i as u64 + 1;
-        if completed.is_multiple_of(25) {
-            tracing::info!("[summarize] scene {}/{} chunks", completed, scene_total);
-        }
-    }
+            // Build context from child level summaries (if this is not the first level).
+            let context_chunk = if level_idx > 0 {
+                let child_kind = levels[level_idx - 1];
+                let child_summaries: Vec<String> = all_chunks
+                    .iter()
+                    .filter(|c| {
+                        c.kind == child_kind
+                            && c.parent_path.as_deref() == Some(&chunk.location.path)
+                    })
+                    .filter_map(|child| {
+                        db.summary_get(&corpus.id, &SummaryTargetKind::Chunk, &child.id)
+                            .ok()
+                            .flatten()
+                            .map(|s| s.text)
+                    })
+                    .collect();
 
-    // ── 2. Chapter-level summaries ────────────────────────────────────────────
-    let chapter_chunks: Vec<_> = all_chunks.iter().filter(|c| c.kind == "chapter").collect();
-    let chapter_total = chapter_chunks.len() as u64;
-
-    for (i, chapter) in chapter_chunks.iter().enumerate() {
-        if !opts.full
-            && db
-                .summary_get(&corpus.id, &SummaryTargetKind::Chunk, &chapter.id)?
-                .is_some()
-        {
-            stats.skipped += 1;
-            let completed = i as u64 + 1;
-            if completed.is_multiple_of(25) {
-                tracing::info!("[summarize] chapter {}/{} chunks", completed, chapter_total);
-            }
-            continue;
-        }
-
-        // Collect scene summaries for this chapter.
-        let child_summaries: Vec<String> = all_chunks
-            .iter()
-            .filter(|c| {
-                c.kind == "scene" && c.parent_path.as_deref() == Some(&chapter.location.path)
-            })
-            .filter_map(|scene| {
-                db.summary_get(&corpus.id, &SummaryTargetKind::Chunk, &scene.id)
-                    .ok()
-                    .flatten()
-                    .map(|s| s.text)
-            })
-            .collect();
-
-        // Build a synthetic chunk whose content is the collected scene summaries.
-        let context_chunk = if child_summaries.is_empty() {
-            (*chapter).clone()
-        } else {
-            let mut c = (*chapter).clone();
-            c.content = child_summaries
-                .iter()
-                .enumerate()
-                .map(|(j, s)| format!("Scene {}: {s}", j + 1))
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            c
-        };
-
-        match adapter
-            .summarize(&context_chunk, llm.as_ref(), "chapter")
-            .await
-        {
-            Ok(Some(text)) => {
-                if !opts.dry_run {
-                    let summary = make_summary(corpus, chapter.id.clone(), "chapter", text, &llm);
-                    db.summary_upsert(&summary)?;
+                if child_summaries.is_empty() {
+                    (*chunk).clone()
+                } else {
+                    let mut c = (*chunk).clone();
+                    c.content = child_summaries
+                        .iter()
+                        .enumerate()
+                        .map(|(j, s)| format!("{} {}: {s}", child_kind, j + 1))
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    c
                 }
-                stats.processed += 1;
-            }
-            Ok(None) => {
-                stats.skipped += 1;
-            }
-            Err(e) => {
-                tracing::warn!("chapter summary failed for {}: {e}", chapter.id);
-                stats.failed += 1;
-            }
-        }
+            } else {
+                (*chunk).clone()
+            };
 
-        let completed = i as u64 + 1;
-        if completed.is_multiple_of(25) {
-            tracing::info!("[summarize] chapter {}/{} chunks", completed, chapter_total);
+            match adapter
+                .summarize(&context_chunk, llm.as_ref(), level_kind)
+                .await
+            {
+                Ok(Some(text)) => {
+                    if !opts.dry_run {
+                        let summary =
+                            make_summary(corpus, chunk.id.clone(), level_kind, text, &llm);
+                        db.summary_upsert(&summary)?;
+                    }
+                    stats.processed += 1;
+                }
+                Ok(None) => {
+                    stats.skipped += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("{level_kind} summary failed for {}: {e}", chunk.id);
+                    stats.failed += 1;
+                }
+            }
+
+            log_progress(level_kind, i as u64 + 1, level_total);
         }
     }
 
-    // ── 3. Corpus-level summary ───────────────────────────────────────────────
+    // ── Corpus-level summary ──────────────────────────────────────────────────
     if !opts.full
         && db
             .summary_get(&corpus.id, &SummaryTargetKind::Corpus, &corpus.id)?
@@ -158,64 +116,33 @@ pub async fn run(
         return Ok(stats);
     }
 
-    // Collect chapter summaries.
-    let all_chapter_summaries: Vec<String> = chapter_chunks
-        .iter()
-        .filter_map(|ch| {
-            db.summary_get(&corpus.id, &SummaryTargetKind::Chunk, &ch.id)
-                .ok()
-                .flatten()
-                .map(|s| s.text)
-        })
-        .collect();
-
-    if !all_chapter_summaries.is_empty() {
-        // Synthesize a corpus chunk.
-        let corpus_chunk = {
-            let representative = &all_chunks[0];
-            let mut c = representative.clone();
-            c.id = corpus.id.clone();
-            c.kind = "corpus".to_string();
-            c.content = all_chapter_summaries
-                .iter()
-                .enumerate()
-                .map(|(i, s)| format!("Chapter {}: {s}", i + 1))
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            c
-        };
-
-        match adapter
-            .summarize(&corpus_chunk, llm.as_ref(), "corpus")
-            .await
-        {
-            Ok(Some(text)) => {
-                if !opts.dry_run {
-                    let summary = Summary {
-                        id: Uuid::new_v4().to_string(),
-                        corpus_id: corpus.id.clone(),
-                        target_kind: SummaryTargetKind::Corpus,
-                        target_id: corpus.id.clone(),
-                        depth: "corpus".to_string(),
-                        text,
-                        model: Some(llm.name().to_string()),
-                        generated_at: chrono::Utc::now().to_rfc3339(),
-                    };
-                    db.summary_upsert(&summary)?;
-                }
-                stats.processed += 1;
-            }
-            Ok(None) => {
-                stats.skipped += 1;
-            }
-            Err(e) => {
-                tracing::warn!("corpus summary failed: {e}");
-                stats.failed += 1;
-            }
-        }
+    // Collect summaries from the deepest declared level (or fall back to entity descriptions).
+    let top_level_summaries: Vec<String> = if let Some(&top_kind) = levels.last() {
+        all_chunks
+            .iter()
+            .filter(|c| c.kind == top_kind)
+            .filter_map(|ch| {
+                db.summary_get(&corpus.id, &SummaryTargetKind::Chunk, &ch.id)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.text)
+            })
+            .collect()
     } else {
-        // Code corpora have no chapter chunks; fall back to entity descriptions
-        // populated by the semantic pass.
+        // No levels declared — build corpus chunk from all-chunk content.
+        vec![]
+    };
+
+    let corpus_chunk_content = if !top_level_summaries.is_empty() {
+        let top_kind = levels.last().copied().unwrap_or("chunk");
+        top_level_summaries
+            .iter()
+            .enumerate()
+            .map(|(i, s)| format!("{} {}: {s}", top_kind, i + 1))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    } else {
+        // Fall back to entity descriptions (covers code corpora with no declared levels).
         let entities = db.entity_list(&corpus.id)?;
         let description_lines: Vec<String> = entities
             .iter()
@@ -228,54 +155,68 @@ pub async fn run(
             .collect();
 
         if description_lines.is_empty() {
-            tracing::info!("[summarize] no entity descriptions available; skipping corpus summary");
-        } else {
             tracing::info!(
-                "[summarize] synthesizing corpus summary from {} entity descriptions",
-                description_lines.len()
+                "[summarize] no summaries or entity descriptions available; skipping corpus summary"
             );
+            return Ok(stats);
+        }
 
-            let corpus_chunk = {
-                let representative = &all_chunks[0];
-                let mut c = representative.clone();
-                c.id = corpus.id.clone();
-                c.kind = "corpus".to_string();
-                c.content = description_lines.join("\n");
-                c
-            };
+        tracing::info!(
+            "[summarize] synthesizing corpus summary from {} entity descriptions",
+            description_lines.len()
+        );
+        description_lines.join("\n")
+    };
 
-            match adapter
-                .summarize(&corpus_chunk, llm.as_ref(), "corpus")
-                .await
-            {
-                Ok(Some(text)) => {
-                    if !opts.dry_run {
-                        let summary = Summary {
-                            id: Uuid::new_v4().to_string(),
-                            corpus_id: corpus.id.clone(),
-                            target_kind: SummaryTargetKind::Corpus,
-                            target_id: corpus.id.clone(),
-                            depth: "corpus".to_string(),
-                            text,
-                            model: Some(llm.name().to_string()),
-                            generated_at: chrono::Utc::now().to_rfc3339(),
-                        };
-                        db.summary_upsert(&summary)?;
-                    }
-                    stats.processed += 1;
-                }
-                Ok(None) => {
-                    stats.skipped += 1;
-                }
-                Err(e) => {
-                    tracing::warn!("corpus summary failed: {e}");
-                    stats.failed += 1;
-                }
+    let corpus_chunk = {
+        if let Some(representative) = all_chunks.first() {
+            let mut c = representative.clone();
+            c.id = corpus.id.clone();
+            c.kind = "corpus".to_string();
+            c.content = corpus_chunk_content;
+            c
+        } else {
+            tracing::info!("[summarize] no chunks available; skipping corpus summary");
+            return Ok(stats);
+        }
+    };
+
+    match adapter
+        .summarize(&corpus_chunk, llm.as_ref(), "corpus")
+        .await
+    {
+        Ok(Some(text)) => {
+            if !opts.dry_run {
+                let summary = Summary {
+                    id: Uuid::new_v4().to_string(),
+                    corpus_id: corpus.id.clone(),
+                    target_kind: SummaryTargetKind::Corpus,
+                    target_id: corpus.id.clone(),
+                    depth: "corpus".to_string(),
+                    text,
+                    model: Some(llm.name().to_string()),
+                    generated_at: chrono::Utc::now().to_rfc3339(),
+                };
+                db.summary_upsert(&summary)?;
             }
+            stats.processed += 1;
+        }
+        Ok(None) => {
+            stats.skipped += 1;
+        }
+        Err(e) => {
+            tracing::warn!("corpus summary failed: {e}");
+            stats.failed += 1;
         }
     }
 
     Ok(stats)
+}
+
+fn log_progress(kind: &str, completed: u64, total: u64) {
+    if total > 0 && completed.is_multiple_of(25) {
+        tracing::info!("[summarize] {kind} {}/{} chunks", completed, total);
+    }
 }
 
 fn make_summary(
