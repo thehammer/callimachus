@@ -11,9 +11,12 @@ use callimachus_core::{
 };
 use callimachus_llm::{CompletionRequest, LlmProvider};
 
+use callimachus_core::adapter::default_current_version;
+use callimachus_core::indexing::change_manifest::ChangedSource;
+
 use crate::{
     chunker::{ChunkOptions, chunk_directory},
-    contracts, extractor, languages, summarizer,
+    contracts, extractor, git, languages, summarizer,
 };
 
 // ── CodeAdapter ───────────────────────────────────────────────────────────────
@@ -596,6 +599,58 @@ Return JSON:
             in_degree: 0,        // caller fills in from storage
             out_degree: 0,       // caller fills in from storage
         }
+    }
+
+    // ── Stage 0 overrides ────────────────────────────────────────────────────
+
+    /// Returns `"git:<full-oid>"` when the source path is a git repo with a HEAD
+    /// commit, otherwise falls back to the default SHA-256 hash-of-hashes.
+    fn current_version(&self, source_path: &str) -> anyhow::Result<String> {
+        let p = std::path::Path::new(source_path);
+        match git::current_git_version(p)? {
+            Some(v) => Ok(v),
+            None => default_current_version(source_path),
+        }
+    }
+
+    /// Returns the list of files that changed between two corpus versions.
+    ///
+    /// When both versions are `"git:<oid>"` strings and the path is a git repo,
+    /// uses `git2` diff for precise results.  Falls back to the default
+    /// (all-paths-as-Added) behaviour otherwise.
+    fn changed_sources(
+        &self,
+        source_path: &str,
+        from_version: Option<&str>,
+        to_version: &str,
+    ) -> anyhow::Result<Vec<ChangedSource>> {
+        // If no prior version, everything is new.
+        let from = match from_version {
+            Some(f) => f,
+            None => {
+                return callimachus_core::adapter::default_changed_sources(
+                    source_path,
+                    None,
+                    to_version,
+                );
+            }
+        };
+
+        // If versions match, nothing changed.
+        if from == to_version {
+            return Ok(vec![]);
+        }
+
+        // Try git diff if both versions look like git refs.
+        if from.starts_with("git:") && to_version.starts_with("git:") {
+            let p = std::path::Path::new(source_path);
+            if let Some(changed) = git::diff_between(p, from, to_version)? {
+                return Ok(changed);
+            }
+        }
+
+        // Fallback: return all files.
+        callimachus_core::adapter::default_changed_sources(source_path, Some(from), to_version)
     }
 }
 

@@ -206,3 +206,34 @@ LLM providers are resolved in this priority order:
 4. Auto-detect: Claude Code (via `~/.claude/` presence) → Anthropic API (`ANTHROPIC_API_KEY`) → dry-run
 
 Supported providers: `claude-code`, `anthropic`, `dry-run`.
+
+## 9. Stage 0 — History-Aware Change Detection
+
+Before any indexing pass runs, `Pass::History` (Stage 0) compares the corpus's current source state against the `last_indexed_version` anchor stored in the `corpora` table.  It produces a `ChangeManifest` that all downstream passes consult to decide which sources (and therefore which chunks and entities) need processing.
+
+### Version Anchoring
+
+Each corpus tracks a `last_indexed_version` string.  For git-backed corpora (code adapter) this is a full commit OID prefixed `git:<sha>`.  For non-git corpora (book, wiki) it is a SHA-256 hash of the concatenated chunk hashes — a "hash-of-hashes".
+
+The version is written back to the DB **only after** all passes in the pipeline complete successfully.  A partial failure leaves the anchor unchanged, so the next run replays from the last known-good baseline.
+
+### ChangeManifest
+
+`ChangeManifest` carries:
+- `current_version` — the just-computed version string
+- `all_dirty` — true on first run, `--full`, or when History pass is skipped
+- `dirty_paths` — set of relative source paths that changed since the anchor
+- `commit_metadata` — optional per-path `CommitMeta` (message, author) for git corpora
+
+`ChangeManifest::is_dirty(path)` is the single predicate all passes use.  For chunk-level filtering, `is_dirty_for_chunk(chunk)` extracts the path from the `calli://` URI.
+
+### Pass Behavior Under a Manifest
+
+| Pass | Behavior |
+|------|----------|
+| Chunk | Sources not in `dirty_paths` are skipped entirely |
+| Structure / Semantic / Summarize / Embed | Chunks whose URI path is not dirty are skipped |
+| Purpose / Contract | Entities whose location URI path is not dirty are skipped |
+| Aliases / Theme | Skipped entirely when manifest is non-dirty and no dirty sources exist |
+
+The net effect: a second consecutive `calli index` run with no source changes produces **zero processed** items in every downstream pass.

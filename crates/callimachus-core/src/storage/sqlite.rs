@@ -83,6 +83,14 @@ impl StorageBackend for SqliteBackend {
         corpus_store::set_pipeline_version(&db!(self), id, version)
     }
 
+    fn corpus_set_last_indexed_version(&self, id: &str, version: &str) -> Result<()> {
+        corpus_store::set_last_indexed_version(&db!(self), id, version)
+    }
+
+    fn corpus_get_last_indexed_version(&self, id: &str) -> Result<Option<String>> {
+        corpus_store::get_last_indexed_version(&db!(self), id)
+    }
+
     fn corpus_delete(&self, id: &str) -> Result<bool> {
         corpus_store::delete(&db!(self), id)
     }
@@ -135,6 +143,24 @@ impl StorageBackend for SqliteBackend {
 
     fn chunk_delete_by_id(&self, chunk_id: &str) -> Result<bool> {
         chunk_store::delete_by_id(&db!(self), chunk_id)
+    }
+
+    fn chunk_set_source_hash(&self, chunk_id: &str, hash: &str) -> Result<()> {
+        chunk_store::set_source_hash(&db!(self), chunk_id, hash)
+    }
+
+    fn chunk_set_history(
+        &self,
+        chunk_id: &str,
+        version: &str,
+        commit_message: Option<&str>,
+        author: Option<&str>,
+    ) -> Result<()> {
+        chunk_store::set_history(&db!(self), chunk_id, version, commit_message, author)
+    }
+
+    fn chunk_list_source_paths(&self, corpus_id: &str) -> Result<Vec<(String, String, String)>> {
+        chunk_store::list_source_paths(&db!(self), corpus_id)
     }
 
     fn chunk_children_by_uri(&self, corpus_id: &str, parent_uri: &str) -> Result<Vec<Location>> {

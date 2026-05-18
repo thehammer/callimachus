@@ -17,8 +17,8 @@ pub use adapter::{
 pub use corrections::CorrectionsEngine;
 pub use error::{CalError, Result};
 pub use indexing::{
-    ChangeSet, ChangeStrategy, CorpusWatcher, IndexOptions, IndexPipeline, IndexResult,
-    ReindexStats, WatcherConfig,
+    ChangeKind, ChangeManifest, ChangeSet, ChangeStrategy, ChangedSource, CorpusWatcher,
+    IndexOptions, IndexPipeline, IndexResult, ReindexStats, WatcherConfig,
 };
 pub use query::QueryService;
 pub use storage::{Database, PostgresBackend, SqliteBackend, StorageBackend};

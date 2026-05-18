@@ -10,7 +10,7 @@ use crate::{
     types::{Corpus, Edge, Entity, EntityContract},
 };
 
-use super::pipeline::IndexOptions;
+use super::{change_manifest::file_path_from_uri, pipeline::IndexOptions};
 
 const MAX_RETRIES: u32 = 8;
 
@@ -38,6 +38,18 @@ pub async fn run(
     let candidates: Vec<&Entity> = all_entities
         .iter()
         .filter(|e| CONTRACT_KINDS.contains(&e.kind.as_str()))
+        .filter(|e| {
+            // Skip entities whose source file is unchanged per the manifest.
+            opts.change_manifest
+                .as_ref()
+                .map(|m| {
+                    e.first_location
+                        .as_ref()
+                        .map(|loc| m.is_dirty(file_path_from_uri(&loc.uri)))
+                        .unwrap_or(true)
+                })
+                .unwrap_or(true)
+        })
         .collect();
     let total = candidates.len() as u64;
 

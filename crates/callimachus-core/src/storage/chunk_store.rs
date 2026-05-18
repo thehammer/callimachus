@@ -5,10 +5,14 @@ use crate::types::location::Location;
 use rusqlite::params;
 
 pub fn upsert(db: &Database, chunk: &Chunk) -> Result<()> {
+    // Use INSERT OR IGNORE so that re-processing an unchanged chunk (same content
+    // hash ⇒ same ID) is a no-op.  introduced_at_version is only written on
+    // first insert; subsequent runs update it via set_history().
     db.conn().execute(
         "INSERT OR IGNORE INTO chunks
-         (id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+         (id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at,
+          source_hash, introduced_at_version, last_modified_at_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             chunk.id,
             chunk.corpus_id,
@@ -18,6 +22,9 @@ pub fn upsert(db: &Database, chunk: &Chunk) -> Result<()> {
             chunk.content,
             chunk.byte_length as i64,
             chunk.created_at,
+            chunk.source_hash,
+            chunk.introduced_at_version,
+            chunk.last_modified_at_version,
         ],
     )?;
     Ok(())
@@ -34,7 +41,7 @@ pub fn has(db: &Database, id: &str) -> Result<bool> {
 
 pub fn get(db: &Database, uri: &str) -> Result<Option<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version
          FROM chunks WHERE location_uri = ?1",
     )?;
     let mut rows = stmt.query_map(params![uri], row_to_chunk)?;
@@ -46,7 +53,7 @@ pub fn get(db: &Database, uri: &str) -> Result<Option<Chunk>> {
 
 pub fn get_by_id(db: &Database, id: &str) -> Result<Option<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version
          FROM chunks WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], row_to_chunk)?;
@@ -58,7 +65,7 @@ pub fn get_by_id(db: &Database, id: &str) -> Result<Option<Chunk>> {
 
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version
          FROM chunks WHERE corpus_id = ?1 ORDER BY location_uri ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_chunk)?;
@@ -78,7 +85,7 @@ pub fn count(db: &Database, corpus_id: &str) -> Result<u64> {
 /// Return chunks that have not yet been semantically processed.
 pub fn list_unprocessed(db: &Database, corpus_id: &str) -> Result<Vec<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version
          FROM chunks WHERE corpus_id = ?1 AND semantic_processed = 0
          ORDER BY location_uri ASC",
     )?;
@@ -130,6 +137,56 @@ pub fn reset_semantic_processed(db: &Database, chunk_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Set the source_hash for a chunk (SHA-256 of the source file content).
+pub fn set_source_hash(db: &Database, chunk_id: &str, hash: &str) -> Result<()> {
+    db.conn().execute(
+        "UPDATE chunks SET source_hash = ?1 WHERE id = ?2",
+        params![hash, chunk_id],
+    )?;
+    Ok(())
+}
+
+/// Write history metadata for a chunk.
+///
+/// Always updates `last_modified_at_version`.  Sets `introduced_at_version`
+/// only if the column is currently NULL (i.e. first time we see this chunk).
+/// Also sets `last_modified_commit_message` and `last_modified_author` when provided.
+pub fn set_history(
+    db: &Database,
+    chunk_id: &str,
+    version: &str,
+    commit_message: Option<&str>,
+    author: Option<&str>,
+) -> Result<()> {
+    db.conn().execute(
+        "UPDATE chunks
+         SET last_modified_at_version = ?1,
+             last_modified_commit_message = COALESCE(?2, last_modified_commit_message),
+             last_modified_author = COALESCE(?3, last_modified_author),
+             introduced_at_version = COALESCE(introduced_at_version, ?1)
+         WHERE id = ?4",
+        params![version, commit_message, author, chunk_id],
+    )?;
+    Ok(())
+}
+
+/// Return `(chunk_id, location_uri, source_hash)` for all chunks in a corpus.
+/// Rows where source_hash is NULL are returned with an empty string.
+pub fn list_source_paths(db: &Database, corpus_id: &str) -> Result<Vec<(String, String, String)>> {
+    let mut stmt = db.conn().prepare(
+        "SELECT id, location_uri, COALESCE(source_hash, '') FROM chunks WHERE corpus_id = ?1",
+    )?;
+    let rows = stmt.query_map(params![corpus_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CalError::from)
+}
+
 /// Returns Location of chunks whose `parent_path` equals `parent_uri`, ordered by location.
 pub fn children_by_uri(db: &Database, corpus_id: &str, parent_uri: &str) -> Result<Vec<Location>> {
     let mut stmt = db.conn().prepare(
@@ -168,5 +225,8 @@ fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
         content: row.get(5)?,
         byte_length: row.get::<_, i64>(6)? as usize,
         created_at: row.get(7)?,
+        source_hash: row.get(8)?,
+        introduced_at_version: row.get(9)?,
+        last_modified_at_version: row.get(10)?,
     })
 }

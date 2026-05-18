@@ -27,6 +27,7 @@ impl Default for WikiAdapter {
     }
 }
 
+// uses default current_version / changed_sources
 #[async_trait::async_trait]
 impl SourceAdapter for WikiAdapter {
     fn kind(&self) -> &str {

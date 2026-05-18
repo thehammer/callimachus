@@ -30,6 +30,17 @@ pub async fn run(
         return Ok(stats);
     }
 
+    // Skip when the manifest says nothing changed — theme detection is
+    // corpus-wide and there's nothing useful to do if no sources are dirty.
+    if opts
+        .change_manifest
+        .as_ref()
+        .is_some_and(|m| !m.all_dirty && m.dirty_count() == 0)
+    {
+        tracing::info!("[theme] no dirty sources — skipping theme detection");
+        return Ok(stats);
+    }
+
     // Pre-condition: need enough entities to infer themes.
     let entity_count = db.entity_count(&corpus.id)?;
     if entity_count < MIN_ENTITIES_FOR_THEMES {

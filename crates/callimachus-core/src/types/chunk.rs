@@ -15,6 +15,18 @@ pub struct Chunk {
     pub content: String,
     pub byte_length: usize,
     pub created_at: String,
+    /// SHA-256 of the source file that produced this chunk.  Written by
+    /// chunk_pass after Stage 0 runs; `None` for chunks written before this
+    /// feature was introduced.
+    #[serde(default)]
+    pub source_hash: Option<String>,
+    /// Corpus version reference at which this chunk was first produced.
+    #[serde(default)]
+    pub introduced_at_version: Option<String>,
+    /// Corpus version reference at which this chunk's source file was last
+    /// seen dirty (i.e. was processed in a change-detection run).
+    #[serde(default)]
+    pub last_modified_at_version: Option<String>,
 }
 
 impl Chunk {
@@ -36,6 +48,9 @@ impl Chunk {
             byte_length,
             content,
             created_at: chrono::Utc::now().to_rfc3339(),
+            source_hash: None,
+            introduced_at_version: None,
+            last_modified_at_version: None,
         }
     }
 }

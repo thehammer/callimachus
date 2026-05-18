@@ -78,6 +78,12 @@ impl StorageBackend for PostgresBackend {
     fn corpus_set_pipeline_version(&self, _id: &str, _version: u32) -> Result<()> {
         Err(unimplemented())
     }
+    fn corpus_set_last_indexed_version(&self, _id: &str, _version: &str) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn corpus_get_last_indexed_version(&self, _id: &str) -> Result<Option<String>> {
+        Err(unimplemented())
+    }
     fn corpus_delete(&self, _id: &str) -> Result<bool> {
         Err(unimplemented())
     }
@@ -116,6 +122,21 @@ impl StorageBackend for PostgresBackend {
         Err(unimplemented())
     }
     fn chunk_delete_by_id(&self, _chunk_id: &str) -> Result<bool> {
+        Err(unimplemented())
+    }
+    fn chunk_set_source_hash(&self, _chunk_id: &str, _hash: &str) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn chunk_set_history(
+        &self,
+        _chunk_id: &str,
+        _version: &str,
+        _commit_message: Option<&str>,
+        _author: Option<&str>,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn chunk_list_source_paths(&self, _corpus_id: &str) -> Result<Vec<(String, String, String)>> {
         Err(unimplemented())
     }
     fn chunk_children_by_uri(&self, _corpus_id: &str, _parent_uri: &str) -> Result<Vec<Location>> {

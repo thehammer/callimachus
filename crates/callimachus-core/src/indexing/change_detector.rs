@@ -354,6 +354,9 @@ mod tests {
             content: format!("content of {}", id),
             byte_length: 10,
             created_at: chrono::Utc::now().to_rfc3339(),
+            source_hash: None,
+            introduced_at_version: None,
+            last_modified_at_version: None,
         };
         db.chunk_upsert(&chunk).unwrap();
     }
