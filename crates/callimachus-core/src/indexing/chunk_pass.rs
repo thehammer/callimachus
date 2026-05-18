@@ -18,13 +18,20 @@ pub async fn run(
 
     let mut sources = adapter.discover(&corpus.source).await?;
 
-    // Inject corpus_id into each source's meta so the adapter can scope chunk IDs.
+    // Inject corpus_id and pipeline flags into each source's meta so the adapter can use them.
     for source in &mut sources {
         if let Some(obj) = source.meta.as_object_mut() {
             obj.entry("corpus_id")
                 .or_insert_with(|| serde_json::Value::String(corpus.id.clone()));
+            obj.insert(
+                "no_git_filter".to_string(),
+                serde_json::Value::Bool(opts.no_git_filter),
+            );
         } else {
-            source.meta = serde_json::json!({ "corpus_id": corpus.id });
+            source.meta = serde_json::json!({
+                "corpus_id": corpus.id,
+                "no_git_filter": opts.no_git_filter,
+            });
         }
     }
 

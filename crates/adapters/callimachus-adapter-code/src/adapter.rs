@@ -549,6 +549,9 @@ fn build_chunk_options(meta: &serde_json::Value) -> ChunkOptions {
             opts.exclude_globs = user_globs;
         }
     }
+    if let Some(b) = meta.get("no_git_filter").and_then(|v| v.as_bool()) {
+        opts.no_git_filter = b;
+    }
 
     opts
 }

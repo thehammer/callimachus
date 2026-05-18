@@ -21,6 +21,7 @@ pub async fn run(
     from_chunk: Option<String>,
     dry_run: bool,
     full: bool,
+    no_git_filter: bool,
     provider_override: Option<String>,
     db: Arc<dyn StorageBackend>,
     config: &GlobalConfig,
@@ -50,6 +51,7 @@ pub async fn run(
         from_chunk,
         dry_run,
         full,
+        no_git_filter,
         concurrency: None,
     };
 
@@ -193,6 +195,7 @@ mod tests {
             None,
             dry_run,
             false,
+            false,
             Some("dry-run".to_string()),
             db,
             &GlobalConfig::default(),
@@ -207,6 +210,7 @@ mod tests {
             None,
             false,
             true, // full
+            false,
             Some("dry-run".to_string()),
             db,
             &GlobalConfig::default(),

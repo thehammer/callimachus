@@ -21,6 +21,9 @@ pub struct ChunkOptions {
     pub exclude_globs: Vec<String>,
     /// If Some, restrict to files changed since this git ref (reserved for future use).
     pub since_ref: Option<String>,
+    /// If true, do not use git index to enumerate files even when the
+    /// source path is a git repository. Defaults to false (git-aware).
+    pub no_git_filter: bool,
 }
 
 impl Default for ChunkOptions {
@@ -37,6 +40,7 @@ impl Default for ChunkOptions {
                 "build/**".into(),
             ],
             since_ref: None,
+            no_git_filter: false,
         }
     }
 }
@@ -48,6 +52,58 @@ struct ItemInfo {
     byte_range: std::ops::Range<usize>,
     node_kind: String,
     start_row: usize,
+}
+
+// ── File enumeration ─────────────────────────────────────────────────────────
+
+/// Return candidate absolute file paths under `source_path`.
+///
+/// When the directory is a git repository and `opts.no_git_filter` is false,
+/// the git index is used so that untracked files (build artefacts, etc.) are
+/// excluded automatically.  For non-git directories, or when `no_git_filter`
+/// is true, a plain `walkdir` traversal is used instead.
+fn enumerate_files(source_path: &Path, opts: &ChunkOptions) -> Vec<PathBuf> {
+    if !opts.no_git_filter {
+        match git2::Repository::open(source_path) {
+            Ok(repo) => match repo.index() {
+                Ok(index) => {
+                    // Build absolute paths anchored at source_path rather than
+                    // repo.workdir() so that strip_prefix(source_path) is always
+                    // consistent (avoids symlink-resolution mismatches on macOS).
+                    let files: Vec<PathBuf> = index
+                        .iter()
+                        .filter_map(|entry| {
+                            std::str::from_utf8(&entry.path)
+                                .ok()
+                                .map(|s| source_path.join(s))
+                        })
+                        .filter(|p| p.is_file())
+                        .collect();
+                    tracing::info!(
+                        "[chunk] git repo detected — indexing {} tracked files",
+                        files.len()
+                    );
+                    return files;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[chunk] git repo found but index unreadable ({e}); falling back to filesystem walk"
+                    );
+                }
+            },
+            Err(_) => {
+                tracing::info!("[chunk] not a git repo, using filesystem walk");
+            }
+        }
+    }
+
+    WalkDir::new(source_path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.path().to_path_buf())
+        .collect()
 }
 
 // ── Public entry-point ───────────────────────────────────────────────────────
@@ -63,13 +119,8 @@ pub async fn chunk_directory(
 ) -> Result<Vec<Chunk>> {
     let mut chunks = Vec::new();
 
-    for entry in WalkDir::new(source_path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-    {
-        let abs_path = entry.path();
+    let files = enumerate_files(source_path, opts);
+    for abs_path in files {
         let rel = match abs_path.strip_prefix(source_path) {
             Ok(r) => r,
             Err(_) => continue,
@@ -89,7 +140,7 @@ pub async fn chunk_directory(
         // Detect language by extension.
         let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
         // Read file contents.
-        let content = match std::fs::read_to_string(abs_path) {
+        let content = match std::fs::read_to_string(&abs_path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("could not read {}: {e}", abs_path.display());
@@ -110,7 +161,7 @@ pub async fn chunk_directory(
             None => {
                 // Text files without a tree-sitter grammar get a single file-level chunk.
                 if is_text_extension(ext)
-                    && let Some(chunk) = emit_text_file_chunk(abs_path, corpus_id, &rel_str)
+                    && let Some(chunk) = emit_text_file_chunk(&abs_path, corpus_id, &rel_str)
                 {
                     chunks.push(chunk);
                 }
@@ -921,5 +972,72 @@ h1 { color: red; }
                 c.location.uri
             );
         }
+    }
+
+    // ── Git-filter tests ──────────────────────────────────────────────────────
+
+    fn init_repo_with(dir: &std::path::Path, tracked: &[(&str, &str)], untracked: &[(&str, &str)]) {
+        let repo = git2::Repository::init(dir).unwrap();
+        for (name, content) in tracked {
+            std::fs::write(dir.join(name), content).unwrap();
+        }
+        for (name, content) in untracked {
+            std::fs::write(dir.join(name), content).unwrap();
+        }
+        let mut index = repo.index().unwrap();
+        for (name, _) in tracked {
+            index.add_path(std::path::Path::new(name)).unwrap();
+        }
+        index.write().unwrap();
+    }
+
+    #[tokio::test]
+    async fn git_filter_excludes_untracked_files() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with(
+            dir.path(),
+            &[("tracked.rs", "fn tracked() { let _ = 1; }")],
+            &[("untracked.rs", "fn untracked() { let _ = 2; }")],
+        );
+        let opts = ChunkOptions::default();
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+        assert!(chunks.iter().any(|c| c.location.uri.contains("tracked.rs")));
+        assert!(
+            !chunks
+                .iter()
+                .any(|c| c.location.uri.contains("untracked.rs"))
+        );
+    }
+
+    #[tokio::test]
+    async fn no_git_filter_includes_all_files() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with(
+            dir.path(),
+            &[("tracked.rs", "fn tracked() { let _ = 1; }")],
+            &[("untracked.rs", "fn untracked() { let _ = 2; }")],
+        );
+        let opts = ChunkOptions {
+            no_git_filter: true,
+            ..ChunkOptions::default()
+        };
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+        assert!(chunks.iter().any(|c| c.location.uri.contains("tracked.rs")));
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.location.uri.contains("untracked.rs"))
+        );
+    }
+
+    #[tokio::test]
+    async fn non_git_dir_falls_back_to_walkdir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn a() { let _ = 1; }").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn b() { let _ = 2; }").unwrap();
+        let opts = ChunkOptions::default();
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+        assert!(chunks.iter().any(|c| c.location.uri.contains("a.rs")));
+        assert!(chunks.iter().any(|c| c.location.uri.contains("b.rs")));
     }
 }
