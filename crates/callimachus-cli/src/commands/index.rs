@@ -14,6 +14,7 @@ use callimachus_llm::{ProviderConfig, build_provider};
 
 use crate::config::GlobalConfig;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     corpus_id: &str,
     pass: Option<String>,
@@ -199,10 +200,7 @@ mod tests {
         .await
     }
 
-    async fn run_index_full(
-        corpus_id: &str,
-        db: Arc<dyn StorageBackend>,
-    ) -> anyhow::Result<()> {
+    async fn run_index_full(corpus_id: &str, db: Arc<dyn StorageBackend>) -> anyhow::Result<()> {
         super::run(
             corpus_id,
             Some("chunk".to_string()),

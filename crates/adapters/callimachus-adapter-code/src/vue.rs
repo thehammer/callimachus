@@ -15,13 +15,9 @@ pub fn extract_script_block(content: &str) -> Option<(String, bool)> {
 
     let mut remaining = content;
 
-    loop {
-        // Find the next <script opening tag (case-insensitive would be ideal but
+    while let Some(tag_start) = remaining.find("<script") {
+        // Found the next <script opening tag (case-insensitive would be ideal but
         // Vue templates are always lowercase in practice).
-        let tag_start = match remaining.find("<script") {
-            Some(i) => i,
-            None => break,
-        };
 
         let after_open = &remaining[tag_start + 7..]; // skip "<script"
 

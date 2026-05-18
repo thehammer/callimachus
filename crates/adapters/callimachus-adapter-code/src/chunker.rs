@@ -156,12 +156,12 @@ fn chunk_vue_file(
     chunks.push(file_chunk);
 
     // Extract the script block and parse it as TypeScript.
-    let (script_body, is_tsx) = match crate::vue::extract_script_block(content) {
+    let (script_body, _is_tsx) = match crate::vue::extract_script_block(content) {
         Some(pair) => pair,
         None => return chunks, // template-only .vue: just the file chunk
     };
 
-    let ts_lang_name = if is_tsx { "typescript" } else { "typescript" };
+    let ts_lang_name = "typescript";
     let lang = match languages::for_name(ts_lang_name) {
         Some(l) => l,
         None => return chunks,
@@ -445,7 +445,17 @@ fn extract_symbol_from_text(text: &str, node_kind: &str, lang: &LangConfig) -> O
         "mod_item" | "namespace_definition" => &["mod", "namespace"],
         "type_declaration" | "type_alias_declaration" => &["type"],
         "enum_declaration" => &["enum"],
-        _ => &["fn", "func", "function", "def", "class", "struct", "impl", "namespace", "enum"],
+        _ => &[
+            "fn",
+            "func",
+            "function",
+            "def",
+            "class",
+            "struct",
+            "impl",
+            "namespace",
+            "enum",
+        ],
     };
 
     // Find the first keyword and take the token after it.
@@ -801,7 +811,10 @@ class Bar {
             item_chunks.len() >= 2,
             "expected ≥2 item chunks from PHP file (function + class), got {}: {:?}",
             item_chunks.len(),
-            item_chunks.iter().map(|c| &c.location.uri).collect::<Vec<_>>()
+            item_chunks
+                .iter()
+                .map(|c| &c.location.uri)
+                .collect::<Vec<_>>()
         );
 
         let uris: Vec<_> = item_chunks.iter().map(|c| &c.location.uri).collect();
