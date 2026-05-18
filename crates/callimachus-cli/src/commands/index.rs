@@ -277,6 +277,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             Some("dry-run".to_string()),
             Arc::clone(&db),
             &GlobalConfig::default(),
