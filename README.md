@@ -262,6 +262,15 @@ The index is a single SQLite file. Key tables:
 
 ---
 
+## Language and concepts
+
+Callimachus uses precise terminology borrowed from philosophy and linguistics — *corpus*, *epistemology*, *ontology*, *semantic* — with specific meanings in this context.
+
+- **[Vocabulary Primer](docs/vocabulary-primer.md)** — A narrative introduction, stage by stage, from the problem being solved through full fluency. Start here if the terminology is new.
+- **[Glossary](docs/glossary.md)** — Alphabetical reference for all terms. Each entry links back to the relevant primer stage. The two documents cross-reference each other throughout.
+
+---
+
 ## Self-analysis
 
 `docs/codebase-analysis.md` answers four structural quality questions about this
