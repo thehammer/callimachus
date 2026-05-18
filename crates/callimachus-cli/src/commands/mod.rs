@@ -7,4 +7,6 @@ pub mod inspect;
 pub mod mcp;
 pub mod reindex;
 pub mod serve;
+pub mod status;
+pub mod upgrade;
 pub mod watch;

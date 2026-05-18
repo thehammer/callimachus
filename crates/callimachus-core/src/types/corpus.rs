@@ -44,6 +44,10 @@ pub struct Corpus {
     pub status: CorpusStatus,
     pub created_at: String,
     pub last_indexed_at: Option<String>,
+    /// Pipeline version at which this corpus was last fully indexed.
+    /// 0 means indexed before versioning was introduced.
+    #[serde(default)]
+    pub pipeline_version: u32,
 }
 
 impl Corpus {
@@ -57,6 +61,7 @@ impl Corpus {
             status: CorpusStatus::Registered,
             created_at: chrono::Utc::now().to_rfc3339(),
             last_indexed_at: None,
+            pipeline_version: 0,
         }
     }
 }

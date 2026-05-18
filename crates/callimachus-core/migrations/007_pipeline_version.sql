@@ -1,0 +1,1 @@
+ALTER TABLE corpora ADD COLUMN pipeline_version INTEGER NOT NULL DEFAULT 0;

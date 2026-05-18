@@ -119,6 +119,18 @@ enum Command {
         #[command(subcommand)]
         sub: ConfigCommand,
     },
+
+    /// Show pipeline version status for all corpora.
+    Status,
+
+    /// Upgrade corpora to the current pipeline version.
+    Upgrade {
+        /// Corpus to upgrade (omit to upgrade all corpora).
+        corpus_id: Option<String>,
+        /// Print what would be done without making changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -385,6 +397,16 @@ async fn main() -> Result<()> {
             commands::serve::run(&host, port, &db_path, &global_config).await
         }
         Command::Config { sub } => run_config(&sub, &global_config),
+
+        Command::Status => {
+            let db = open_db(&db_path)?;
+            commands::status::run(db.as_ref())
+        }
+
+        Command::Upgrade { corpus_id, dry_run } => {
+            let db = open_db(&db_path)?;
+            commands::upgrade::run(corpus_id.as_deref(), dry_run, db.as_ref())
+        }
     }
 }
 

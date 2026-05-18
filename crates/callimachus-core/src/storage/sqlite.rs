@@ -79,6 +79,10 @@ impl StorageBackend for SqliteBackend {
         corpus_store::set_last_indexed(&db!(self), id, at)
     }
 
+    fn corpus_set_pipeline_version(&self, id: &str, version: u32) -> Result<()> {
+        corpus_store::set_pipeline_version(&db!(self), id, version)
+    }
+
     fn corpus_delete(&self, id: &str) -> Result<bool> {
         corpus_store::delete(&db!(self), id)
     }

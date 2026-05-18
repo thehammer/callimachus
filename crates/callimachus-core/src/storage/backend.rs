@@ -33,6 +33,7 @@ pub trait StorageBackend: Send + Sync {
     fn corpus_require(&self, id: &str) -> Result<Corpus>;
     fn corpus_update_status(&self, id: &str, status: CorpusStatus) -> Result<()>;
     fn corpus_set_last_indexed(&self, id: &str, at: &str) -> Result<()>;
+    fn corpus_set_pipeline_version(&self, id: &str, version: u32) -> Result<()>;
     fn corpus_delete(&self, id: &str) -> Result<bool>;
     fn corpus_exists(&self, id: &str) -> Result<bool>;
 

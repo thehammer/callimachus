@@ -75,6 +75,9 @@ impl StorageBackend for PostgresBackend {
     fn corpus_set_last_indexed(&self, _id: &str, _at: &str) -> Result<()> {
         Err(unimplemented())
     }
+    fn corpus_set_pipeline_version(&self, _id: &str, _version: u32) -> Result<()> {
+        Err(unimplemented())
+    }
     fn corpus_delete(&self, _id: &str) -> Result<bool> {
         Err(unimplemented())
     }
