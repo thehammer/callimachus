@@ -211,7 +211,22 @@ impl SourceAdapter for CodeAdapter {
         llm: &dyn LlmProvider,
     ) -> Result<Option<ExtractedPurpose>> {
         // Run static analysis to determine complexity.
-        let signals = contracts::analyze_rust(content, &entity.canonical_name);
+        // Infer language from the entity's location URI so we don't run the
+        // Rust tree-sitter grammar on PHP/JS/TS/Vue content (the external scanner
+        // can loop indefinitely on non-Rust input).
+        let lang = entity
+            .first_location
+            .as_ref()
+            .map(|loc| loc.uri.as_str())
+            .unwrap_or("")
+            .rsplit('.')
+            .next()
+            .map(|ext| match ext {
+                "rs" => "rust",
+                _ => "other",
+            })
+            .unwrap_or("other");
+        let signals = contracts::analyze(lang, content, &entity.canonical_name);
         let wants_blocks = signals.branch_count >= 3 || signals.body_lines >= 20;
 
         let summary_section = summary
@@ -237,7 +252,7 @@ Return JSON:
         };
 
         let prompt = format!(
-            r#"You are analyzing a Rust code entity to extract its *purpose* — why it exists in the system, not what it mechanically does.
+            r#"You are analyzing a code entity to extract its *purpose* — why it exists in the system, not what it mechanically does.
 
 Entity: {name}
 Kind: {kind}
