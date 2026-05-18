@@ -34,11 +34,16 @@ pub async fn run(
         .iter()
         .filter(|e| PURPOSE_KINDS.contains(&e.kind.as_str()))
         .collect();
+    let total = candidates.len() as u64;
 
-    for entity in candidates {
+    for (i, entity) in candidates.iter().enumerate() {
         // Idempotent: skip if already computed.
         if db.purpose_get(&corpus.id, &entity.id)?.is_some() {
             stats.skipped += 1;
+            let completed = i as u64 + 1;
+            if completed.is_multiple_of(25) {
+                tracing::info!("[purpose] {}/{} entities", completed, total);
+            }
             continue;
         }
 
@@ -48,11 +53,19 @@ pub async fn run(
                 Some(chunk) => chunk.content,
                 None => {
                     stats.skipped += 1;
+                    let completed = i as u64 + 1;
+                    if completed.is_multiple_of(25) {
+                        tracing::info!("[purpose] {}/{} entities", completed, total);
+                    }
                     continue;
                 }
             },
             None => {
                 stats.skipped += 1;
+                let completed = i as u64 + 1;
+                if completed.is_multiple_of(25) {
+                    tracing::info!("[purpose] {}/{} entities", completed, total);
+                }
                 continue;
             }
         };
@@ -134,6 +147,11 @@ pub async fn run(
                 tracing::warn!("purpose pass failed for entity {}: {e}", entity.id);
                 stats.failed += 1;
             }
+        }
+
+        let completed = i as u64 + 1;
+        if completed.is_multiple_of(25) {
+            tracing::info!("[purpose] {}/{} entities", completed, total);
         }
     }
 

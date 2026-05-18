@@ -24,14 +24,19 @@ pub async fn run(
 
     // ── 1. Scene-level summaries ──────────────────────────────────────────────
     let scene_chunks: Vec<_> = all_chunks.iter().filter(|c| c.kind == "scene").collect();
+    let scene_total = scene_chunks.len() as u64;
 
-    for chunk in &scene_chunks {
+    for (i, chunk) in scene_chunks.iter().enumerate() {
         // Idempotent: skip if already summarized.
         if db
             .summary_get(&corpus.id, &SummaryTargetKind::Chunk, &chunk.id)?
             .is_some()
         {
             stats.skipped += 1;
+            let completed = i as u64 + 1;
+            if completed.is_multiple_of(25) {
+                tracing::info!("[summarize] scene {}/{} chunks", completed, scene_total);
+            }
             continue;
         }
 
@@ -51,17 +56,27 @@ pub async fn run(
                 stats.failed += 1;
             }
         }
+
+        let completed = i as u64 + 1;
+        if completed.is_multiple_of(25) {
+            tracing::info!("[summarize] scene {}/{} chunks", completed, scene_total);
+        }
     }
 
     // ── 2. Chapter-level summaries ────────────────────────────────────────────
     let chapter_chunks: Vec<_> = all_chunks.iter().filter(|c| c.kind == "chapter").collect();
+    let chapter_total = chapter_chunks.len() as u64;
 
-    for chapter in &chapter_chunks {
+    for (i, chapter) in chapter_chunks.iter().enumerate() {
         if db
             .summary_get(&corpus.id, &SummaryTargetKind::Chunk, &chapter.id)?
             .is_some()
         {
             stats.skipped += 1;
+            let completed = i as u64 + 1;
+            if completed.is_multiple_of(25) {
+                tracing::info!("[summarize] chapter {}/{} chunks", completed, chapter_total);
+            }
             continue;
         }
 
@@ -87,7 +102,7 @@ pub async fn run(
             c.content = child_summaries
                 .iter()
                 .enumerate()
-                .map(|(i, s)| format!("Scene {}: {s}", i + 1))
+                .map(|(j, s)| format!("Scene {}: {s}", j + 1))
                 .collect::<Vec<_>>()
                 .join("\n\n");
             c
@@ -111,6 +126,11 @@ pub async fn run(
                 tracing::warn!("chapter summary failed for {}: {e}", chapter.id);
                 stats.failed += 1;
             }
+        }
+
+        let completed = i as u64 + 1;
+        if completed.is_multiple_of(25) {
+            tracing::info!("[summarize] chapter {}/{} chunks", completed, chapter_total);
         }
     }
 
