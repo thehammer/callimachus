@@ -29,12 +29,20 @@ pub async fn run(
     let mut stats = PassStats::default();
 
     let all_entities = db.entity_list(&corpus.id)?;
-    if all_entities.is_empty() || opts.dry_run {
+    tracing::info!("[aliases] {} entities found", all_entities.len());
+
+    if all_entities.is_empty() {
+        tracing::info!("[aliases] no entities to resolve; skipping");
+        return Ok(stats);
+    }
+    if opts.dry_run {
+        tracing::info!("[aliases] dry-run mode; skipping resolution");
         return Ok(stats);
     }
 
     match resolve_with_retry(adapter.as_ref(), &all_entities, llm.as_ref()).await {
         Ok(merges) => {
+            let merge_count = merges.len();
             for merge in merges {
                 match db.entity_merge(&merge.keep_id, &merge.absorb_id) {
                     Ok(()) => stats.processed += 1,
@@ -47,6 +55,11 @@ pub async fn run(
                         stats.failed += 1;
                     }
                 }
+            }
+            if merge_count == 0 {
+                tracing::info!("[aliases] no merges needed");
+            } else {
+                tracing::info!("[aliases] {} merges applied", stats.processed);
             }
         }
         Err(e) => {

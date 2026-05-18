@@ -25,6 +25,18 @@ pub async fn run(
     // ── 1. Scene-level summaries ──────────────────────────────────────────────
     let scene_chunks: Vec<_> = all_chunks.iter().filter(|c| c.kind == "scene").collect();
     let scene_total = scene_chunks.len() as u64;
+    let chapter_count_for_log = all_chunks.iter().filter(|c| c.kind == "chapter").count();
+
+    tracing::info!(
+        "[summarize] {} scene chunks, {} chapter chunks",
+        scene_total,
+        chapter_count_for_log
+    );
+    if scene_total == 0 && chapter_count_for_log == 0 {
+        tracing::info!(
+            "[summarize] nothing to summarize at scene/chapter level — will attempt corpus-level summary from semantic data"
+        );
+    }
 
     for (i, chunk) in scene_chunks.iter().enumerate() {
         // Idempotent: skip if already summarized.
@@ -196,6 +208,66 @@ pub async fn run(
             Err(e) => {
                 tracing::warn!("corpus summary failed: {e}");
                 stats.failed += 1;
+            }
+        }
+    } else {
+        // Code corpora have no chapter chunks; fall back to entity descriptions
+        // populated by the semantic pass.
+        let entities = db.entity_list(&corpus.id)?;
+        let description_lines: Vec<String> = entities
+            .iter()
+            .filter_map(|e| {
+                e.description
+                    .as_deref()
+                    .filter(|d| !d.is_empty())
+                    .map(|d| format!("{} ({}): {}", e.canonical_name, e.kind, d))
+            })
+            .collect();
+
+        if description_lines.is_empty() {
+            tracing::info!("[summarize] no entity descriptions available; skipping corpus summary");
+        } else {
+            tracing::info!(
+                "[summarize] synthesizing corpus summary from {} entity descriptions",
+                description_lines.len()
+            );
+
+            let corpus_chunk = {
+                let representative = &all_chunks[0];
+                let mut c = representative.clone();
+                c.id = corpus.id.clone();
+                c.kind = "corpus".to_string();
+                c.content = description_lines.join("\n");
+                c
+            };
+
+            match adapter
+                .summarize(&corpus_chunk, llm.as_ref(), "corpus")
+                .await
+            {
+                Ok(Some(text)) => {
+                    if !opts.dry_run {
+                        let summary = Summary {
+                            id: Uuid::new_v4().to_string(),
+                            corpus_id: corpus.id.clone(),
+                            target_kind: SummaryTargetKind::Corpus,
+                            target_id: corpus.id.clone(),
+                            depth: "corpus".to_string(),
+                            text,
+                            model: Some(llm.name().to_string()),
+                            generated_at: chrono::Utc::now().to_rfc3339(),
+                        };
+                        db.summary_upsert(&summary)?;
+                    }
+                    stats.processed += 1;
+                }
+                Ok(None) => {
+                    stats.skipped += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("corpus summary failed: {e}");
+                    stats.failed += 1;
+                }
             }
         }
     }
