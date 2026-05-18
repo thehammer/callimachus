@@ -22,12 +22,11 @@ pub fn run(db: &dyn StorageBackend) -> Result<()> {
         .max(4);
 
     println!(
-        "{:<id_w$}  {:<name_w$}  {:>16}  {:>7}  {}",
+        "{:<id_w$}  {:<name_w$}  {:>16}  {:>7}  STATUS",
         "ID",
         "NAME",
         "PIPELINE VERSION",
         "CURRENT",
-        "STATUS",
         id_w = id_w,
         name_w = name_w,
     );
