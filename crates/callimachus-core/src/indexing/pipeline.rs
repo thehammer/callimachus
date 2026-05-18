@@ -84,6 +84,8 @@ impl IndexPipeline {
                 .db
                 .run_start(&corpus.id, &pass.to_string(), Some(self.llm.name()))?;
 
+            tracing::info!("[{}] starting…", pass);
+
             let stats = match pass {
                 Pass::Chunk => {
                     chunk_pass::run(
@@ -169,6 +171,14 @@ impl IndexPipeline {
             };
 
             self.db.run_finish(&run_id, RunStatus::Completed, &stats)?;
+
+            tracing::info!(
+                "[{}] done — processed={} skipped={} failed={}",
+                pass,
+                stats.processed,
+                stats.skipped,
+                stats.failed
+            );
 
             // Accumulate cost.
             result.cost_usd += stats.cost_usd.unwrap_or(0.0);

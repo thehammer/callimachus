@@ -34,11 +34,16 @@ pub async fn run(
         .iter()
         .filter(|e| CONTRACT_KINDS.contains(&e.kind.as_str()))
         .collect();
+    let total = candidates.len() as u64;
 
-    for entity in candidates {
+    for (i, entity) in candidates.iter().enumerate() {
         // Idempotent.
         if db.contract_get(&corpus.id, &entity.id)?.is_some() {
             stats.skipped += 1;
+            let completed = i as u64 + 1;
+            if completed.is_multiple_of(25) {
+                tracing::info!("[contract] {}/{} entities", completed, total);
+            }
             continue;
         }
 
@@ -49,12 +54,20 @@ pub async fn run(
                 None => {
                     store_default_contract(&db, corpus, entity)?;
                     stats.processed += 1;
+                    let completed = i as u64 + 1;
+                    if completed.is_multiple_of(25) {
+                        tracing::info!("[contract] {}/{} entities", completed, total);
+                    }
                     continue;
                 }
             },
             None => {
                 store_default_contract(&db, corpus, entity)?;
                 stats.processed += 1;
+                let completed = i as u64 + 1;
+                if completed.is_multiple_of(25) {
+                    tracing::info!("[contract] {}/{} entities", completed, total);
+                }
                 continue;
             }
         };
@@ -66,6 +79,10 @@ pub async fn run(
         if language != "rust" {
             store_default_contract(&db, corpus, entity)?;
             stats.processed += 1;
+            let completed = i as u64 + 1;
+            if completed.is_multiple_of(25) {
+                tracing::info!("[contract] {}/{} entities", completed, total);
+            }
             continue;
         }
 
@@ -174,6 +191,11 @@ pub async fn run(
                 store_default_contract(&db, corpus, entity)?;
                 stats.failed += 1;
             }
+        }
+
+        let completed = i as u64 + 1;
+        if completed.is_multiple_of(25) {
+            tracing::info!("[contract] {}/{} entities", completed, total);
         }
     }
 

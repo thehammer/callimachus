@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use callimachus_llm::{LlmError, LlmProvider};
 use tokio::task::JoinSet;
@@ -29,12 +32,17 @@ pub async fn run(
         let concurrency = opts.concurrency.unwrap_or(5);
         let mut join_set: JoinSet<(String, Result<Option<ExtractedSemantic>, String>)> =
             JoinSet::new();
+        let completed = Arc::new(AtomicUsize::new(0));
 
         for chunk in chunks {
             // Throttle to `concurrency` in-flight tasks.
             while join_set.len() >= concurrency {
                 if let Some(res) = join_set.join_next().await {
                     apply_join_result(res, &db, &mut stats, opts.dry_run)?;
+                    let n = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if (n as u64).is_multiple_of(25) {
+                        tracing::info!("[semantic] {}/{} chunks", n, total);
+                    }
                 }
             }
 
@@ -55,6 +63,10 @@ pub async fn run(
         // Drain remaining tasks.
         while let Some(res) = join_set.join_next().await {
             apply_join_result(res, &db, &mut stats, opts.dry_run)?;
+            let n = completed.fetch_add(1, Ordering::Relaxed) + 1;
+            if (n as u64).is_multiple_of(25) {
+                tracing::info!("[semantic] {}/{} chunks", n, total);
+            }
         }
     } else {
         // Sequential path (e.g. ClaudeCodeProvider).
