@@ -131,6 +131,12 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Cross-corpus entity link utilities.
+    Link {
+        #[command(subcommand)]
+        sub: LinkSubcommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -242,6 +248,12 @@ enum CollectionCommand {
     },
     /// Delete a collection.
     Remove { collection_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum LinkSubcommand {
+    /// Find candidate entity links between two corpora.
+    Candidates { corpus_a: String, corpus_b: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -406,6 +418,16 @@ async fn main() -> Result<()> {
         Command::Upgrade { corpus_id, dry_run } => {
             let db = open_db(&db_path)?;
             commands::upgrade::run(corpus_id.as_deref(), dry_run, db.as_ref())
+        }
+
+        Command::Link { sub } => {
+            let db = open_db(&db_path)?;
+            let link_sub = match sub {
+                LinkSubcommand::Candidates { corpus_a, corpus_b } => {
+                    commands::link::LinkSubcommand::Candidates { corpus_a, corpus_b }
+                }
+            };
+            commands::link::run(link_sub, db.as_ref())
         }
     }
 }

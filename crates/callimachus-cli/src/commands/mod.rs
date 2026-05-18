@@ -4,6 +4,7 @@ pub mod correct;
 pub mod export;
 pub mod index;
 pub mod inspect;
+pub mod link;
 pub mod mcp;
 pub mod reindex;
 pub mod serve;
