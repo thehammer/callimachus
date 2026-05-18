@@ -5,7 +5,10 @@ use callimachus_core::types::{Chunk, Location};
 use tree_sitter::{Parser, Query, QueryCursor};
 use walkdir::WalkDir;
 
-use crate::languages::{self, LangConfig};
+use crate::languages::{self, LangConfig, TEXT_EXTENSIONS};
+
+/// Files larger than this are truncated before being stored as a text chunk.
+const MAX_TEXT_FILE_BYTES: usize = 256 * 1024;
 
 // ── Options ──────────────────────────────────────────────────────────────────
 
@@ -87,7 +90,15 @@ pub async fn chunk_directory(
         let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = match languages::for_extension(ext) {
             Some(l) => l,
-            None => continue, // silently skip unknown extensions
+            None => {
+                if is_text_extension(ext) {
+                    if let Some(chunk) = emit_text_file_chunk(abs_path, corpus_id, &rel_str) {
+                        chunks.push(chunk);
+                    }
+                    continue;
+                }
+                continue;
+            }
         };
 
         // Read file contents.
@@ -438,6 +449,67 @@ fn wildcard_match(pattern: &str, segment: &str) -> bool {
     true
 }
 
+// ── Text passthrough helpers ─────────────────────────────────────────────────
+
+/// Returns true when `ext` is in the text-passthrough extension list.
+fn is_text_extension(ext: &str) -> bool {
+    TEXT_EXTENSIONS.contains(&ext)
+}
+
+/// Read `abs_path` and return a single file-level chunk.
+///
+/// Files exceeding [`MAX_TEXT_FILE_BYTES`] are truncated and a marker is
+/// appended.  `byte_length` on the returned chunk reflects the actual
+/// (pre-truncation) file size.
+fn emit_text_file_chunk(abs_path: &Path, corpus_id: &str, rel_str: &str) -> Option<Chunk> {
+    let raw = match std::fs::read(abs_path) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("could not read {}: {e}", abs_path.display());
+            return None;
+        }
+    };
+
+    let actual_byte_length = raw.len();
+
+    let content = if actual_byte_length > MAX_TEXT_FILE_BYTES {
+        let truncated = match std::str::from_utf8(&raw[..MAX_TEXT_FILE_BYTES]) {
+            Ok(s) => s.to_string(),
+            Err(e) => {
+                // Back off to the last valid UTF-8 boundary.
+                let valid_up_to = e.valid_up_to();
+                std::str::from_utf8(&raw[..valid_up_to])
+                    .unwrap_or("")
+                    .to_string()
+            }
+        };
+        format!("{truncated}\n\n[truncated: file exceeds 256kb]")
+    } else {
+        match String::from_utf8(raw) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("could not decode {} as UTF-8: {e}", abs_path.display());
+                return None;
+            }
+        }
+    };
+
+    let file_uri_path = format!("src/{rel_str}");
+    let location = Location::new(corpus_id, &file_uri_path);
+
+    let mut chunk = Chunk::new(
+        corpus_id.to_string(),
+        None,
+        "file".to_string(),
+        location,
+        content,
+    );
+    // Override byte_length to reflect the actual pre-truncation file size.
+    chunk.byte_length = actual_byte_length;
+
+    Some(chunk)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -471,23 +543,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_extension_skipped() {
+    async fn truly_unknown_extension_skipped() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.yaml"), "foo: bar").unwrap();
+        std::fs::write(dir.path().join("weird.xyz"), "some content").unwrap();
         std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
 
         let opts = ChunkOptions::default();
         let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
 
-        // YAML file must not produce any chunks; .rs file should.
+        // .xyz file must not produce any chunks; .rs file should.
         assert!(!chunks.is_empty(), "should have chunks from main.rs");
         for c in &chunks {
             assert!(
-                !c.location.uri.contains(".yaml"),
-                "YAML file should not produce chunks: {}",
+                !c.location.uri.contains(".xyz"),
+                ".xyz file should not produce chunks: {}",
                 c.location.uri
             );
         }
+    }
+
+    #[tokio::test]
+    async fn text_json_file_produces_file_chunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let json_content = r#"{"a":1}"#;
+        std::fs::write(dir.path().join("data.json"), json_content).unwrap();
+
+        let opts = ChunkOptions::default();
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+
+        assert_eq!(chunks.len(), 1, "expected exactly one chunk for JSON file");
+        let chunk = &chunks[0];
+        assert_eq!(chunk.kind, "file");
+        assert_eq!(chunk.content, json_content);
+        assert!(chunk.location.uri.contains("data.json"));
+    }
+
+    #[tokio::test]
+    async fn text_large_file_is_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create content just over 256kb.
+        let large_content = "x".repeat(MAX_TEXT_FILE_BYTES + 1024);
+        std::fs::write(dir.path().join("big.md"), &large_content).unwrap();
+
+        let opts = ChunkOptions::default();
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+
+        assert_eq!(chunks.len(), 1, "expected exactly one chunk for large file");
+        let chunk = &chunks[0];
+        assert!(
+            chunk.content.ends_with("[truncated: file exceeds 256kb]"),
+            "expected truncation marker, got ending: {:?}",
+            &chunk.content[chunk.content.len().saturating_sub(50)..]
+        );
+        assert_eq!(chunk.byte_length, large_content.len());
+    }
+
+    #[tokio::test]
+    async fn text_passthrough_no_sub_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        // A shell file with function-like syntax — must not produce sub-chunks.
+        let sh_content = "#!/bin/bash\nmy_func() {\n  echo hello\n}\nmy_func\n";
+        std::fs::write(dir.path().join("script.sh"), sh_content).unwrap();
+
+        let opts = ChunkOptions::default();
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+
+        assert_eq!(
+            chunks.len(),
+            1,
+            "shell file should produce exactly one chunk"
+        );
+        assert_eq!(chunks[0].kind, "file");
     }
 
     #[tokio::test]
