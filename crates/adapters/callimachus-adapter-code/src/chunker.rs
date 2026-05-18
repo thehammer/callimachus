@@ -488,10 +488,7 @@ fn emit_text_file_chunk(abs_path: &Path, corpus_id: &str, rel_str: &str) -> Opti
         match String::from_utf8(raw) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(
-                    "could not decode {} as UTF-8: {e}",
-                    abs_path.display()
-                );
+                tracing::warn!("could not decode {} as UTF-8: {e}", abs_path.display());
                 return None;
             }
         }
@@ -611,7 +608,11 @@ mod tests {
         let opts = ChunkOptions::default();
         let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
 
-        assert_eq!(chunks.len(), 1, "shell file should produce exactly one chunk");
+        assert_eq!(
+            chunks.len(),
+            1,
+            "shell file should produce exactly one chunk"
+        );
         assert_eq!(chunks[0].kind, "file");
     }
 

@@ -121,18 +121,12 @@ static SUPPORTED_LANGUAGES: &[LangConfig] = &[
 /// `all_extensions()` — they are not grammar-backed languages.
 pub const TEXT_EXTENSIONS: &[&str] = &[
     // Config / data
-    "json", "yaml", "yml",
-    // Infrastructure
-    "tf", "tfvars", "hcl",
-    // Database
-    "sql",
-    // Templates
-    "ftl", "html",
-    // Scripts
-    "sh",
-    // Styles
-    "css", "scss",
-    // Docs
+    "json", "yaml", "yml", // Infrastructure
+    "tf", "tfvars", "hcl", // Database
+    "sql", // Templates
+    "ftl", "html", // Scripts
+    "sh", // Styles
+    "css", "scss", // Docs
     "md",
 ];
 
