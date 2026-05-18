@@ -26,6 +26,8 @@ pub struct IndexOptions {
     /// Force a full reindex: bypass all "skip if already processed" guards in
     /// every pass so previously-indexed chunks and entities are re-upserted.
     pub full: bool,
+    /// If true, disable git-aware file walking in the code adapter.
+    pub no_git_filter: bool,
 }
 
 impl Default for IndexOptions {
@@ -45,6 +47,7 @@ impl Default for IndexOptions {
             dry_run: false,
             concurrency: None,
             full: false,
+            no_git_filter: false,
         }
     }
 }

@@ -56,6 +56,9 @@ enum Command {
         /// Force a full reindex: bypass all "skip if already processed" guards.
         #[arg(long)]
         full: bool,
+        /// Disable git-aware file walking; index every file under the source path.
+        #[arg(long)]
+        no_git_filter: bool,
     },
 
     /// Incremental reindex since a commit or date.
@@ -269,6 +272,7 @@ async fn main() -> Result<()> {
             from_chunk,
             dry_run,
             full,
+            no_git_filter,
         } => {
             let db = open_db(&db_path)?;
             commands::index::run(
@@ -277,6 +281,7 @@ async fn main() -> Result<()> {
                 from_chunk,
                 dry_run,
                 full,
+                no_git_filter,
                 None,
                 db,
                 &global_config,
