@@ -217,16 +217,15 @@ pub async fn run(
         let description_lines: Vec<String> = entities
             .iter()
             .filter_map(|e| {
-                e.description.as_deref().filter(|d| !d.is_empty()).map(|d| {
-                    format!("{} ({}): {}", e.canonical_name, e.kind, d)
-                })
+                e.description
+                    .as_deref()
+                    .filter(|d| !d.is_empty())
+                    .map(|d| format!("{} ({}): {}", e.canonical_name, e.kind, d))
             })
             .collect();
 
         if description_lines.is_empty() {
-            tracing::info!(
-                "[summarize] no entity descriptions available; skipping corpus summary"
-            );
+            tracing::info!("[summarize] no entity descriptions available; skipping corpus summary");
         } else {
             tracing::info!(
                 "[summarize] synthesizing corpus summary from {} entity descriptions",
