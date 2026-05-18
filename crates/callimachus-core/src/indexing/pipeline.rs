@@ -180,6 +180,12 @@ impl IndexPipeline {
         result.total_edges = self.db.edge_count(&corpus.id)?;
         result.runs = self.db.run_latest(&corpus.id, 20)?;
 
+        // Mark the corpus as ready with a last-indexed timestamp.
+        if !opts.dry_run {
+            let now = chrono::Utc::now().to_rfc3339();
+            self.db.corpus_set_last_indexed(&corpus.id, &now)?;
+        }
+
         Ok(result)
     }
 }
@@ -325,6 +331,14 @@ mod tests {
         for run in &result.runs {
             assert_eq!(run.status, "completed");
         }
+
+        // Corpus status should now be 'ready' with a last_indexed_at timestamp.
+        let updated = db.corpus_get(&corpus.id).unwrap().unwrap();
+        assert_eq!(updated.status.to_string(), "ready");
+        assert!(
+            updated.last_indexed_at.is_some(),
+            "last_indexed_at should be set after pipeline run"
+        );
     }
 
     #[tokio::test]
