@@ -116,6 +116,26 @@ static SUPPORTED_LANGUAGES: &[LangConfig] = &[
     },
 ];
 
+/// Extensions that are not tree-sitter parsed but should be captured as single
+/// file-level chunks (text passthrough mode).  Do NOT add these to
+/// `all_extensions()` — they are not grammar-backed languages.
+pub const TEXT_EXTENSIONS: &[&str] = &[
+    // Config / data
+    "json", "yaml", "yml",
+    // Infrastructure
+    "tf", "tfvars", "hcl",
+    // Database
+    "sql",
+    // Templates
+    "ftl", "html",
+    // Scripts
+    "sh",
+    // Styles
+    "css", "scss",
+    // Docs
+    "md",
+];
+
 /// Look up language config by file extension (e.g., "rs", "ts").
 pub fn for_extension(ext: &str) -> Option<&'static LangConfig> {
     SUPPORTED_LANGUAGES

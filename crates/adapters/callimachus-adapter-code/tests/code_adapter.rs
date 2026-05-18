@@ -91,15 +91,46 @@ async fn chunk_function_has_file_parent() {
 }
 
 #[tokio::test]
-async fn yaml_file_silently_skipped() {
+async fn yaml_file_produces_file_chunk() {
     let adapter = CodeAdapter::new();
     let source = fixture_source("sample");
     let chunks = adapter.chunk(&source).await.unwrap();
 
+    // YAML is now a text-passthrough extension — it should produce a file chunk.
+    let yaml_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.location.uri.contains(".yaml"))
+        .collect();
+    assert!(
+        !yaml_chunks.is_empty(),
+        "config.yaml should produce a file chunk via text passthrough"
+    );
+    assert!(
+        yaml_chunks.iter().all(|c| c.kind == "file"),
+        "YAML chunks should all be kind='file'"
+    );
+}
+
+#[tokio::test]
+async fn truly_unknown_extension_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("weird.xyz"), "some content").unwrap();
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    use callimachus_core::adapter::{DiscoveredSource, SourceAdapter};
+    let adapter = CodeAdapter::new();
+    let source = DiscoveredSource {
+        path: dir.path().to_string_lossy().to_string(),
+        kind: "directory".to_string(),
+        meta: serde_json::json!({ "corpus_id": "test" }),
+    };
+    let chunks = adapter.chunk(&source).await.unwrap();
+
+    assert!(!chunks.is_empty(), "should have chunks from main.rs");
     for chunk in &chunks {
         assert!(
-            !chunk.location.uri.contains(".yaml"),
-            "YAML file should not produce chunks: {}",
+            !chunk.location.uri.contains(".xyz"),
+            ".xyz file should not produce chunks: {}",
             chunk.location.uri
         );
     }
