@@ -19,6 +19,7 @@ pub async fn run(
     pass: Option<String>,
     from_chunk: Option<String>,
     dry_run: bool,
+    full: bool,
     provider_override: Option<String>,
     db: Arc<dyn StorageBackend>,
     config: &GlobalConfig,
@@ -47,6 +48,7 @@ pub async fn run(
         passes,
         from_chunk,
         dry_run,
+        full,
         concurrency: None,
     };
 
@@ -189,6 +191,24 @@ mod tests {
             None,
             None,
             dry_run,
+            false,
+            Some("dry-run".to_string()),
+            db,
+            &GlobalConfig::default(),
+        )
+        .await
+    }
+
+    async fn run_index_full(
+        corpus_id: &str,
+        db: Arc<dyn StorageBackend>,
+    ) -> anyhow::Result<()> {
+        super::run(
+            corpus_id,
+            Some("chunk".to_string()),
+            None,
+            false,
+            true, // full
             Some("dry-run".to_string()),
             db,
             &GlobalConfig::default(),
@@ -235,6 +255,47 @@ mod tests {
 
         // Dry run should select CodeAdapter and complete without error.
         run_index("code-test", db, true).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn full_flag_forces_reupsert() {
+        let db: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let corpus = Corpus::new(
+            "full-test".to_string(),
+            "Full Test".to_string(),
+            "code".to_string(),
+            env!("CARGO_MANIFEST_DIR").to_string(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        // First run: index normally (chunk pass only, dry-run=false).
+        super::run(
+            "full-test",
+            Some("chunk".to_string()),
+            None,
+            false,
+            false,
+            Some("dry-run".to_string()),
+            Arc::clone(&db),
+            &GlobalConfig::default(),
+        )
+        .await
+        .unwrap();
+
+        let count_after_first = db.chunk_count("full-test").unwrap();
+        assert!(count_after_first > 0, "should have chunks after first run");
+
+        // Second run with --full: processed > 0, not all skipped.
+        // We can't assert processed count easily since the pipeline runs with dry-run=false
+        // via the index command, but we can at least verify it doesn't error.
+        run_index_full("full-test", Arc::clone(&db)).await.unwrap();
+
+        // Chunk count should be stable (re-upsert, not duplicates).
+        let count_after_full = db.chunk_count("full-test").unwrap();
+        assert_eq!(
+            count_after_first, count_after_full,
+            "--full should re-upsert same chunks, not create duplicates"
+        );
     }
 
     #[tokio::test]

@@ -37,8 +37,8 @@ pub async fn run(
     let total = candidates.len() as u64;
 
     for (i, entity) in candidates.iter().enumerate() {
-        // Idempotent: skip if already computed.
-        if db.purpose_get(&corpus.id, &entity.id)?.is_some() {
+        // Idempotent: skip if already computed (unless --full).
+        if !opts.full && db.purpose_get(&corpus.id, &entity.id)?.is_some() {
             stats.skipped += 1;
             let completed = i as u64 + 1;
             if completed.is_multiple_of(25) {

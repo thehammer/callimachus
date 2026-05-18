@@ -88,24 +88,32 @@ pub async fn chunk_directory(
 
         // Detect language by extension.
         let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let lang = match languages::for_extension(ext) {
-            Some(l) => l,
-            None => {
-                if is_text_extension(ext) {
-                    if let Some(chunk) = emit_text_file_chunk(abs_path, corpus_id, &rel_str) {
-                        chunks.push(chunk);
-                    }
-                    continue;
-                }
-                continue;
-            }
-        };
-
         // Read file contents.
         let content = match std::fs::read_to_string(abs_path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("could not read {}: {e}", abs_path.display());
+                continue;
+            }
+        };
+
+        // Vue SFCs get special handling: extract their script block and parse as
+        // TypeScript, but also always emit a file-level chunk for the raw .vue content.
+        if ext == "vue" {
+            let file_chunks = chunk_vue_file(corpus_id, &rel_str, &content, opts);
+            chunks.extend(file_chunks);
+            continue;
+        }
+
+        let lang = match languages::for_extension(ext) {
+            Some(l) => l,
+            None => {
+                // Text files without a tree-sitter grammar get a single file-level chunk.
+                if is_text_extension(ext) {
+                    if let Some(chunk) = emit_text_file_chunk(abs_path, corpus_id, &rel_str) {
+                        chunks.push(chunk);
+                    }
+                }
                 continue;
             }
         };
@@ -116,6 +124,124 @@ pub async fn chunk_directory(
     }
 
     Ok(chunks)
+}
+
+// ── Vue SFC chunking ─────────────────────────────────────────────────────────
+
+/// Chunk a `.vue` Single-File Component.
+///
+/// Always emits a file-level chunk for the raw `.vue` content.  If the file
+/// contains a `<script>` block, the script body is also parsed as TypeScript
+/// (or TSX) and item-level chunks are emitted with URIs like
+/// `src/path/Foo.vue#symbol`.
+fn chunk_vue_file(
+    corpus_id: &str,
+    rel_path: &str,
+    content: &str,
+    opts: &ChunkOptions,
+) -> Vec<Chunk> {
+    let mut chunks = Vec::new();
+
+    // Always emit a file chunk for the raw .vue content.
+    let file_uri_path = format!("src/{rel_path}");
+    let file_location = Location::new(corpus_id, &file_uri_path);
+    let file_chunk = Chunk::new(
+        corpus_id.to_string(),
+        None,
+        "file".to_string(),
+        file_location,
+        content.to_string(),
+    );
+    let file_chunk_uri = file_chunk.location.uri.clone();
+    chunks.push(file_chunk);
+
+    // Extract the script block and parse it as TypeScript.
+    let (script_body, is_tsx) = match crate::vue::extract_script_block(content) {
+        Some(pair) => pair,
+        None => return chunks, // template-only .vue: just the file chunk
+    };
+
+    let ts_lang_name = if is_tsx { "typescript" } else { "typescript" };
+    let lang = match languages::for_name(ts_lang_name) {
+        Some(l) => l,
+        None => return chunks,
+    };
+
+    // Parse the script body for item chunks.
+    let mut parser = tree_sitter::Parser::new();
+    let language = (lang.language_fn)();
+    if parser.set_language(&language).is_err() {
+        return chunks;
+    }
+    let tree = match parser.parse(&script_body, None) {
+        Some(t) => t,
+        None => return chunks,
+    };
+    let query = match tree_sitter::Query::new(&language, lang.top_level_query) {
+        Ok(q) => q,
+        Err(_) => return chunks,
+    };
+
+    let items: Vec<ItemInfo> = {
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let source_bytes = script_body.as_bytes();
+        let root_node = tree.root_node();
+        cursor
+            .matches(&query, root_node, source_bytes)
+            .flat_map(|m| {
+                m.captures
+                    .iter()
+                    .map(|c| ItemInfo {
+                        byte_range: c.node.byte_range(),
+                        node_kind: c.node.kind().to_string(),
+                        start_row: c.node.start_position().row,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+
+    for item in &items {
+        let item_text = match script_body.get(item.byte_range.clone()) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        let symbol = extract_symbol_from_text(item_text, &item.node_kind, lang);
+        let item_path = if let Some(sym) = &symbol {
+            format!("src/{rel_path}#{sym}")
+        } else {
+            format!("src/{rel_path}#item_{}", item.start_row + 1)
+        };
+
+        let item_kind = node_kind_to_chunk_kind(&item.node_kind);
+
+        let item_chunks = if item_text.len() > opts.max_chunk_bytes {
+            split_large_item(
+                corpus_id,
+                &item_path,
+                &file_chunk_uri,
+                item_text,
+                item_kind,
+                opts.max_chunk_bytes,
+            )
+        } else if item_text.len() < opts.min_chunk_bytes {
+            vec![]
+        } else {
+            let loc = Location::new(corpus_id, &item_path);
+            vec![Chunk::new(
+                corpus_id.to_string(),
+                Some(file_chunk_uri.clone()),
+                item_kind.to_string(),
+                loc,
+                item_text.to_string(),
+            )]
+        };
+
+        chunks.extend(item_chunks);
+    }
+
+    chunks
 }
 
 // ── File-level chunking ──────────────────────────────────────────────────────
@@ -287,10 +413,12 @@ fn node_kind_to_chunk_kind(ts_kind: &str) -> &'static str {
         | "method_declaration"
         | "arrow_function" => "function",
         "impl_item" | "struct_item" | "class_declaration" | "class_definition" => "class",
-        "trait_item" | "interface_declaration" => "interface",
-        "mod_item" | "module" | "namespace" => "module",
+        "trait_item" | "interface_declaration" | "trait_declaration" => "interface",
+        "mod_item" | "module" | "namespace" | "namespace_definition" => "module",
         "type_declaration" | "type_alias_declaration" => "interface",
         "export_statement" => "module",
+        // PHP enum → treat as interface (no separate enum chunk kind).
+        "enum_declaration" => "interface",
         _ => "function",
     }
 }
@@ -313,10 +441,11 @@ fn extract_symbol_from_text(text: &str, node_kind: &str, lang: &LangConfig) -> O
         "struct_item" | "class_declaration" | "class_definition" | "impl_item" => {
             &["struct", "class", "impl"]
         }
-        "trait_item" | "interface_declaration" => &["trait", "interface"],
-        "mod_item" => &["mod"],
+        "trait_item" | "interface_declaration" | "trait_declaration" => &["trait", "interface"],
+        "mod_item" | "namespace_definition" => &["mod", "namespace"],
         "type_declaration" | "type_alias_declaration" => &["type"],
-        _ => &["fn", "func", "function", "def", "class", "struct", "impl"],
+        "enum_declaration" => &["enum"],
+        _ => &["fn", "func", "function", "def", "class", "struct", "impl", "namespace", "enum"],
     };
 
     // Find the first keyword and take the token after it.
@@ -325,10 +454,21 @@ fn extract_symbol_from_text(text: &str, node_kind: &str, lang: &LangConfig) -> O
         if (keywords.contains(&clean) || keywords.contains(token))
             && let Some(next) = tokens.get(i + 1)
         {
-            let sym = next
-                .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
-                .trim_start_matches('<');
-            if !sym.is_empty() && sym.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            // Extract the leading identifier portion of the next token.
+            // This handles cases like `foo(args` where the opening paren is
+            // attached to the symbol name (e.g. PHP, some JS patterns).
+            let sym = next.trim_start_matches('<');
+            let sym = sym
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .next()
+                .unwrap_or("");
+            if !sym.is_empty()
+                && sym
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
+                && sym.chars().all(|c| c.is_alphanumeric() || c == '_')
+            {
                 return Some(sym.to_string());
             }
         }
@@ -634,6 +774,109 @@ mod tests {
             "tiny item chunk should be dropped, got {} item chunks",
             item_chunks.len()
         );
+    }
+
+    #[tokio::test]
+    async fn php_file_produces_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let php_content = r#"<?php
+function foo(int $x): int {
+    return $x * 2;
+}
+
+class Bar {
+    public function baz(): void {}
+}
+"#;
+        std::fs::write(dir.path().join("example.php"), php_content).unwrap();
+
+        let opts = ChunkOptions {
+            min_chunk_bytes: 10,
+            ..Default::default()
+        };
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+
+        let item_chunks: Vec<_> = chunks.iter().filter(|c| c.kind != "file").collect();
+        assert!(
+            item_chunks.len() >= 2,
+            "expected ≥2 item chunks from PHP file (function + class), got {}: {:?}",
+            item_chunks.len(),
+            item_chunks.iter().map(|c| &c.location.uri).collect::<Vec<_>>()
+        );
+
+        let uris: Vec<_> = item_chunks.iter().map(|c| &c.location.uri).collect();
+        assert!(
+            uris.iter().any(|u| u.contains("#foo")),
+            "expected #foo chunk, got: {:?}",
+            uris
+        );
+        assert!(
+            uris.iter().any(|u| u.contains("#Bar")),
+            "expected #Bar chunk, got: {:?}",
+            uris
+        );
+    }
+
+    #[tokio::test]
+    async fn vue_sfc_extracts_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let vue_content = r#"<template><div>hello</div></template>
+<script setup lang="ts">
+function greet(): string {
+    return "hello world from greet function";
+}
+</script>
+"#;
+        std::fs::write(dir.path().join("Foo.vue"), vue_content).unwrap();
+
+        let opts = ChunkOptions {
+            min_chunk_bytes: 10,
+            ..Default::default()
+        };
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+
+        let file_chunks: Vec<_> = chunks.iter().filter(|c| c.kind == "file").collect();
+        let item_chunks: Vec<_> = chunks.iter().filter(|c| c.kind != "file").collect();
+
+        assert_eq!(file_chunks.len(), 1, "expected exactly 1 file chunk");
+        assert!(
+            !item_chunks.is_empty(),
+            "expected item chunks from .vue script"
+        );
+
+        let uris: Vec<_> = item_chunks.iter().map(|c| &c.location.uri).collect();
+        assert!(
+            uris.iter().any(|u| u.contains("#greet")),
+            "expected #greet chunk, got: {:?}",
+            uris
+        );
+    }
+
+    #[tokio::test]
+    async fn vue_sfc_without_script_still_emits_file_chunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let vue_content = r#"<template>
+  <div class="hello">
+    <h1>{{ msg }}</h1>
+  </div>
+</template>
+<style scoped>
+h1 { color: red; }
+</style>
+"#;
+        std::fs::write(dir.path().join("NoScript.vue"), vue_content).unwrap();
+
+        let opts = ChunkOptions::default();
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+
+        assert_eq!(
+            chunks.len(),
+            1,
+            "template-only .vue should produce exactly 1 chunk, got {}: {:?}",
+            chunks.len(),
+            chunks.iter().map(|c| &c.location.uri).collect::<Vec<_>>()
+        );
+        assert_eq!(chunks[0].kind, "file");
     }
 
     #[tokio::test]

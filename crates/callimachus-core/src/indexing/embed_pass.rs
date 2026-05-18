@@ -25,7 +25,7 @@ pub async fn run(
     db: &dyn StorageBackend,
     corpus: &Corpus,
     embedder: Option<Arc<dyn LlmProvider>>,
-    _opts: &IndexOptions,
+    opts: &IndexOptions,
 ) -> anyhow::Result<PassStats> {
     let embedder = match embedder {
         Some(e) => e,
@@ -53,8 +53,8 @@ pub async fn run(
     let mut stats = PassStats::default();
 
     for chunk in &chunks {
-        // Skip if already embedded.
-        if db.embedding_get_for_chunk(&chunk.id)?.is_some() {
+        // Skip if already embedded (unless --full).
+        if !opts.full && db.embedding_get_for_chunk(&chunk.id)?.is_some() {
             stats.skipped += 1;
             continue;
         }

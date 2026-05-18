@@ -25,7 +25,11 @@ pub async fn run(
 ) -> anyhow::Result<PassStats> {
     let mut stats = PassStats::default();
 
-    let chunks = db.chunk_list_unprocessed(&corpus.id)?;
+    let chunks = if opts.full {
+        db.chunk_list(&corpus.id)?
+    } else {
+        db.chunk_list_unprocessed(&corpus.id)?
+    };
     let total = chunks.len() as u64;
 
     if llm.supports_parallel() {

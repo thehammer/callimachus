@@ -53,8 +53,8 @@ pub async fn run(
             continue;
         }
 
-        // Skip already-written chunks (idempotent).
-        if db.chunk_has(&chunk.id)? {
+        // Skip already-written chunks (idempotent), unless --full forces re-upsert.
+        if !opts.full && db.chunk_has(&chunk.id)? {
             stats.skipped += 1;
             continue;
         }
