@@ -26,6 +26,9 @@ fn python_language() -> tree_sitter::Language {
 fn go_language() -> tree_sitter::Language {
     tree_sitter_go::LANGUAGE.into()
 }
+fn php_language() -> tree_sitter::Language {
+    tree_sitter_php::LANGUAGE_PHP.into()
+}
 
 // ── Rust ────────────────────────────────────────────────────────────────────
 
@@ -75,6 +78,21 @@ const GO_CALL_QUERY: &str = r#"
   function: [(identifier) (selector_expression)] @callee)
 "#;
 
+// ── PHP ─────────────────────────────────────────────────────────────────────
+
+const PHP_TOP_LEVEL_QUERY: &str = r#"
+(program
+  [(function_definition) (class_declaration) (interface_declaration) (trait_declaration) (enum_declaration) (namespace_definition)] @item)
+"#;
+
+const PHP_CALL_QUERY: &str = r#"
+[
+  (function_call_expression function: (_) @callee)
+  (member_call_expression name: (_) @callee)
+  (scoped_call_expression name: (_) @callee)
+]
+"#;
+
 // ── Registry ────────────────────────────────────────────────────────────────
 
 static SUPPORTED_LANGUAGES: &[LangConfig] = &[
@@ -113,6 +131,13 @@ static SUPPORTED_LANGUAGES: &[LangConfig] = &[
         language_fn: go_language,
         top_level_query: GO_TOP_LEVEL_QUERY,
         call_query: GO_CALL_QUERY,
+    },
+    LangConfig {
+        name: "php",
+        extensions: &["php"],
+        language_fn: php_language,
+        top_level_query: PHP_TOP_LEVEL_QUERY,
+        call_query: PHP_CALL_QUERY,
     },
 ];
 

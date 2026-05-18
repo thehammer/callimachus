@@ -27,6 +27,29 @@ pub enum ChangeStrategy {
     Full,
 }
 
+/// Force a full changeset for `corpus`: returns all source paths without
+/// consulting `last_indexed_at` or git history.
+///
+/// Use this when `--full` is passed on the CLI to override auto-selection.
+pub fn detect_full(corpus: &Corpus, db: &dyn StorageBackend) -> anyhow::Result<ChangeSet> {
+    let source_path = std::path::Path::new(&corpus.source);
+    let changed_paths = if source_path.exists() {
+        collect_all_source_paths(source_path)
+    } else {
+        vec![]
+    };
+    let deleted_chunk_ids = if !source_path.exists() {
+        db.chunk_list_ids(&corpus.id)?
+    } else {
+        vec![]
+    };
+    Ok(ChangeSet {
+        changed_paths,
+        deleted_chunk_ids,
+        strategy: ChangeStrategy::Full,
+    })
+}
+
 /// Detect which source files changed since the last index run (or since `since`).
 ///
 /// Strategy selection order:

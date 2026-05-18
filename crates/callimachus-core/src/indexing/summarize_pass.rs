@@ -39,10 +39,11 @@ pub async fn run(
     }
 
     for (i, chunk) in scene_chunks.iter().enumerate() {
-        // Idempotent: skip if already summarized.
-        if db
-            .summary_get(&corpus.id, &SummaryTargetKind::Chunk, &chunk.id)?
-            .is_some()
+        // Idempotent: skip if already summarized (unless --full).
+        if !opts.full
+            && db
+                .summary_get(&corpus.id, &SummaryTargetKind::Chunk, &chunk.id)?
+                .is_some()
         {
             stats.skipped += 1;
             let completed = i as u64 + 1;
@@ -80,9 +81,10 @@ pub async fn run(
     let chapter_total = chapter_chunks.len() as u64;
 
     for (i, chapter) in chapter_chunks.iter().enumerate() {
-        if db
-            .summary_get(&corpus.id, &SummaryTargetKind::Chunk, &chapter.id)?
-            .is_some()
+        if !opts.full
+            && db
+                .summary_get(&corpus.id, &SummaryTargetKind::Chunk, &chapter.id)?
+                .is_some()
         {
             stats.skipped += 1;
             let completed = i as u64 + 1;
@@ -147,9 +149,10 @@ pub async fn run(
     }
 
     // ── 3. Corpus-level summary ───────────────────────────────────────────────
-    if db
-        .summary_get(&corpus.id, &SummaryTargetKind::Corpus, &corpus.id)?
-        .is_some()
+    if !opts.full
+        && db
+            .summary_get(&corpus.id, &SummaryTargetKind::Corpus, &corpus.id)?
+            .is_some()
     {
         stats.skipped += 1;
         return Ok(stats);

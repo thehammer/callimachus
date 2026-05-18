@@ -53,6 +53,9 @@ enum Command {
         from_chunk: Option<String>,
         #[arg(long)]
         dry_run: bool,
+        /// Force a full reindex: bypass all "skip if already processed" guards.
+        #[arg(long)]
+        full: bool,
     },
 
     /// Incremental reindex since a commit or date.
@@ -265,6 +268,7 @@ async fn main() -> Result<()> {
             pass,
             from_chunk,
             dry_run,
+            full,
         } => {
             let db = open_db(&db_path)?;
             commands::index::run(
@@ -272,6 +276,7 @@ async fn main() -> Result<()> {
                 pass,
                 from_chunk,
                 dry_run,
+                full,
                 None,
                 db,
                 &global_config,

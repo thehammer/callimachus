@@ -23,6 +23,9 @@ pub struct IndexOptions {
     pub dry_run: bool,
     /// Max parallel LLM calls for providers that support concurrency.
     pub concurrency: Option<usize>,
+    /// Force a full reindex: bypass all "skip if already processed" guards in
+    /// every pass so previously-indexed chunks and entities are re-upserted.
+    pub full: bool,
 }
 
 impl Default for IndexOptions {
@@ -41,6 +44,7 @@ impl Default for IndexOptions {
             from_chunk: None,
             dry_run: false,
             concurrency: None,
+            full: false,
         }
     }
 }
