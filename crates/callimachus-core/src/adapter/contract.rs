@@ -90,6 +90,17 @@ pub trait SourceAdapter: Send + Sync {
     /// Semver version string, e.g. `"0.1.0"`.
     fn version(&self) -> &str;
 
+    /// Ordered list of chunk kinds to summarize, leaf → root.
+    ///
+    /// The summarize pass processes each level in order. For each level at
+    /// index `i > 0`, child summaries from level `i-1` are collected and
+    /// fed as context. A corpus-level summary is always attempted last.
+    ///
+    /// Default: empty — only the corpus-level summary is attempted.
+    fn summary_levels(&self) -> Vec<&'static str> {
+        vec![]
+    }
+
     /// Expand a source path/URL into concrete inputs.
     async fn discover(&self, source: &str) -> anyhow::Result<Vec<DiscoveredSource>>;
 

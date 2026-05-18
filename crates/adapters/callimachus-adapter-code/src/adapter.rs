@@ -57,6 +57,10 @@ impl SourceAdapter for CodeAdapter {
         }])
     }
 
+    fn summary_levels(&self) -> Vec<&'static str> {
+        vec!["function", "file"]
+    }
+
     /// Chunk the source directory using tree-sitter.
     async fn chunk(&self, source: &DiscoveredSource) -> Result<Vec<Chunk>> {
         let corpus_id = source
@@ -98,7 +102,10 @@ impl SourceAdapter for CodeAdapter {
         })
     }
 
-    /// LLM-driven semantic extraction — summarize function/class/interface chunks.
+    /// LLM-driven semantic extraction — extract structure for function/class/interface chunks.
+    ///
+    /// Note: chunk summaries are now generated in the summarize pass via `summarize()`,
+    /// not here. This method focuses purely on entity/edge extraction.
     async fn extract_with_llm(
         &self,
         chunk: &Chunk,
@@ -109,51 +116,56 @@ impl SourceAdapter for CodeAdapter {
             _ => return Ok(None), // skip file, module, etc.
         }
 
-        // Detect language for structure extraction.
-        let ext = extract_extension_from_chunk(chunk);
-        let structure = if let Some(lang) = ext.and_then(languages::for_extension) {
-            extractor::extract_structure(chunk, lang).unwrap_or_default()
-        } else {
-            extractor::ExtractedCodeStructure::default()
-        };
-
-        let summary = summarizer::summarize_chunk(chunk, &structure, llm).await?;
+        // Structural extraction only — no summarization here.
+        let _ = llm; // LLM not used in this path currently; retained for API compatibility.
 
         Ok(Some(ExtractedSemantic {
             entities: vec![],
             edges: vec![],
-            summary_text: summary,
+            summary_text: None,
         }))
     }
 
-    /// Corpus-level summarization: generate a repository overview.
+    /// Summarize a code chunk.
     ///
-    /// The pipeline calls this once with a synthetic "corpus" chunk whose content
-    /// is the concatenated summaries from the semantic pass.
+    /// Called by the generic summarize pass for each declared level plus `"corpus"`.
+    /// - `"function"` / `"class"` / `"interface"` — per-symbol summary via `summarize_chunk`.
+    /// - `"file"` — file-level overview via `summarize_file`.
+    /// - `"corpus"` — repository overview via `summarize_corpus`.
     async fn summarize(
         &self,
         chunk: &Chunk,
         llm: &dyn LlmProvider,
         depth: &str,
     ) -> Result<Option<String>> {
-        if depth != "corpus" {
-            return Ok(None);
+        match depth {
+            "function" | "class" | "interface" => {
+                // Per-symbol summary.
+                let ext = extract_extension_from_chunk(chunk);
+                let structure = if let Some(lang) = ext.and_then(languages::for_extension) {
+                    extractor::extract_structure(chunk, lang).unwrap_or_default()
+                } else {
+                    extractor::ExtractedCodeStructure::default()
+                };
+                summarizer::summarize_chunk(chunk, &structure, llm).await
+            }
+            "file" => summarizer::summarize_file(chunk, llm).await,
+            "corpus" => {
+                let doc_comments: Vec<String> = chunk
+                    .content
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .map(|l| l.to_string())
+                    .collect();
+
+                if doc_comments.is_empty() {
+                    return Ok(None);
+                }
+
+                summarizer::summarize_corpus(&doc_comments, &chunk.corpus_id, llm).await
+            }
+            _ => Ok(None),
         }
-
-        // For code: the synthetic corpus chunk content holds all intermediate
-        // summaries produced by extract_with_llm. Use them as the doc_comments input.
-        let doc_comments: Vec<String> = chunk
-            .content
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| l.to_string())
-            .collect();
-
-        if doc_comments.is_empty() {
-            return Ok(None);
-        }
-
-        summarizer::summarize_corpus(&doc_comments, &chunk.corpus_id, llm).await
     }
 
     /// Code entity names are canonical — no alias merging needed.

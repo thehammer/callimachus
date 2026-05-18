@@ -52,6 +52,10 @@ impl SourceAdapter for BookAdapter {
         }])
     }
 
+    fn summary_levels(&self) -> Vec<&'static str> {
+        vec!["scene", "chapter"]
+    }
+
     async fn chunk(&self, source: &DiscoveredSource) -> anyhow::Result<Vec<Chunk>> {
         match source.kind.as_str() {
             "epub" => chunker::chunk_epub(source),
