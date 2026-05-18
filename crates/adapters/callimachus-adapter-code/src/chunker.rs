@@ -139,6 +139,7 @@ pub async fn chunk_directory(
 
         // Detect language by extension.
         let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
         // Read file contents.
         let content = match std::fs::read_to_string(&abs_path) {
             Ok(c) => c,
