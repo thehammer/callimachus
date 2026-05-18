@@ -195,6 +195,51 @@ async fn extract_with_retry(
     }
 }
 
+fn apply_join_result(
+    join_result: Result<(String, TaskOutcome), tokio::task::JoinError>,
+    db: &Arc<dyn StorageBackend>,
+    stats: &mut PassStats,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    match join_result {
+        Ok((chunk_id, TaskOutcome::Ok(Some(sem)))) => {
+            if !dry_run {
+                for entity in &sem.entities {
+                    db.entity_upsert(entity)?;
+                }
+                for edge in &sem.edges {
+                    db.edge_upsert(edge)?;
+                }
+                db.chunk_set_semantic_processed(&chunk_id)?;
+            }
+            stats.processed += 1;
+        }
+        Ok((chunk_id, TaskOutcome::Ok(None))) => {
+            if !dry_run {
+                db.chunk_set_semantic_processed(&chunk_id)?;
+            }
+            stats.skipped += 1;
+        }
+        Ok((_chunk_id, TaskOutcome::Err(msg))) => {
+            tracing::warn!("semantic pass error: {msg}");
+            stats.failed += 1;
+        }
+        Ok((chunk_id, TaskOutcome::TimedOut)) => {
+            tracing::warn!(
+                "[semantic] task timed out for chunk {}, will retry on next run",
+                chunk_id
+            );
+            stats.failed += 1;
+            // Intentionally do NOT call chunk_set_semantic_processed so next run retries it.
+        }
+        Err(e) => {
+            tracing::warn!("task join error: {e}");
+            stats.failed += 1;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -322,49 +367,4 @@ mod tests {
             "adapter should have been called exactly twice"
         );
     }
-}
-
-fn apply_join_result(
-    join_result: Result<(String, TaskOutcome), tokio::task::JoinError>,
-    db: &Arc<dyn StorageBackend>,
-    stats: &mut PassStats,
-    dry_run: bool,
-) -> anyhow::Result<()> {
-    match join_result {
-        Ok((chunk_id, TaskOutcome::Ok(Some(sem)))) => {
-            if !dry_run {
-                for entity in &sem.entities {
-                    db.entity_upsert(entity)?;
-                }
-                for edge in &sem.edges {
-                    db.edge_upsert(edge)?;
-                }
-                db.chunk_set_semantic_processed(&chunk_id)?;
-            }
-            stats.processed += 1;
-        }
-        Ok((chunk_id, TaskOutcome::Ok(None))) => {
-            if !dry_run {
-                db.chunk_set_semantic_processed(&chunk_id)?;
-            }
-            stats.skipped += 1;
-        }
-        Ok((_chunk_id, TaskOutcome::Err(msg))) => {
-            tracing::warn!("semantic pass error: {msg}");
-            stats.failed += 1;
-        }
-        Ok((chunk_id, TaskOutcome::TimedOut)) => {
-            tracing::warn!(
-                "[semantic] task timed out for chunk {}, will retry on next run",
-                chunk_id
-            );
-            stats.failed += 1;
-            // Intentionally do NOT call chunk_set_semantic_processed so next run retries it.
-        }
-        Err(e) => {
-            tracing::warn!("task join error: {e}");
-            stats.failed += 1;
-        }
-    }
-    Ok(())
 }

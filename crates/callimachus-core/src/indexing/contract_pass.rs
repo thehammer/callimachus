@@ -72,19 +72,8 @@ pub async fn run(
             }
         };
 
-        // Detect language from location path.
+        // Detect language from location path (used in signals_json).
         let language = detect_language(entity);
-
-        // Non-Rust: store default contract signals only (no LLM call).
-        if language != "rust" {
-            store_default_contract(&db, corpus, entity)?;
-            stats.processed += 1;
-            let completed = i as u64 + 1;
-            if completed.is_multiple_of(25) {
-                tracing::info!("[contract] {}/{} entities", completed, total);
-            }
-            continue;
-        }
 
         // Fetch related text.
         let summary_opt = db

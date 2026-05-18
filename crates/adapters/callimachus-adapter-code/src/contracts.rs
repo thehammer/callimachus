@@ -266,17 +266,228 @@ pub fn analyze_rust(source_code: &str, _entity_name: &str) -> ContractSignals {
     signals
 }
 
-/// Dispatch to the right language analyser. Non-Rust returns default.
+/// Analyse a PHP source fragment and return `ContractSignals`.
+/// Uses line-by-line string scanning — no tree-sitter, no regex crate.
+pub fn analyze_php(source_code: &str, _entity_name: &str) -> ContractSignals {
+    let mut signals = ContractSignals {
+        body_lines: source_code.lines().count() as u32,
+        ..ContractSignals::default()
+    };
+
+    for line in source_code.lines() {
+        let trimmed = line.trim();
+
+        // is_public
+        if trimmed.contains("public function") || trimmed.contains("public static function") {
+            signals.is_public = true;
+        }
+
+        // is_test
+        if trimmed.contains("extends TestCase")
+            || trimmed.contains("@test")
+            || trimmed.starts_with("function test")
+        {
+            signals.is_test = true;
+        }
+    }
+
+    signals.debt_markers = collect_debt_markers(source_code, true);
+
+    let lower = source_code.to_lowercase();
+
+    // is_deprecated
+    if source_code.contains("@deprecated") {
+        signals.is_deprecated = true;
+    }
+
+    // is_incomplete
+    if lower.contains("@todo")
+        || source_code.contains(r"throw new \BadMethodCallException")
+        || lower.contains("\"not implemented\"")
+        || lower.contains("'not implemented'")
+        || lower.contains("todo: implement")
+    {
+        signals.is_incomplete = true;
+    }
+
+    // is_fallible
+    if source_code.contains("throw new")
+        || source_code.contains("@throws")
+        || source_code.contains("): ?")
+    {
+        signals.is_fallible = true;
+    }
+
+    // is_nullable: function signature line with ): ?<Type>
+    signals.is_nullable = source_code.lines().any(|line| {
+        line.split("): ?").nth(1).is_some_and(|after| {
+            after
+                .trim()
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() || c == '\\')
+        })
+    });
+
+    // is_mutating: $this->prop = ... on same line, or mutating Eloquent calls
+    for line in source_code.lines() {
+        if line.contains("$this->") && line.contains('=') && !line.contains("==") {
+            signals.is_mutating = true;
+        }
+    }
+    if source_code.contains("->save()")
+        || source_code.contains("->update(")
+        || source_code.contains("->delete(")
+        || source_code.contains("->create(")
+        || source_code.contains("->insert(")
+    {
+        signals.is_mutating = true;
+    }
+
+    // has_panic_risk + panic_call_count
+    let count = count_occurrences(source_code, "findOrFail(")
+        + count_occurrences(source_code, "firstOrFail(")
+        + count_occurrences(source_code, "abort(");
+    signals.panic_call_count = count;
+    if count > 0 || source_code.contains("throw new") {
+        signals.has_panic_risk = true;
+    }
+
+    signals
+}
+
+/// Analyse a TypeScript/JavaScript/Vue source fragment and return `ContractSignals`.
+/// Uses line-by-line string scanning — no tree-sitter, no regex crate.
+pub fn analyze_typescript(source_code: &str, _entity_name: &str) -> ContractSignals {
+    let mut signals = ContractSignals {
+        body_lines: source_code.lines().count() as u32,
+        ..ContractSignals::default()
+    };
+
+    // is_public
+    if source_code.contains("export function")
+        || source_code.contains("export const")
+        || source_code.contains("export class")
+        || source_code.contains("export default")
+        || source_code.contains("export async function")
+        || source_code.contains("export interface")
+        || source_code.contains("export type")
+    {
+        signals.is_public = true;
+    }
+
+    // is_deprecated
+    if source_code.contains("@deprecated") {
+        signals.is_deprecated = true;
+    }
+
+    // is_fallible
+    if source_code.contains("async function")
+        || source_code.contains("async (")
+        || source_code.contains(": Promise<")
+        || source_code.contains("@throws")
+        || source_code.contains(" throw ")
+    {
+        signals.is_fallible = true;
+    }
+
+    // is_nullable
+    if source_code.contains("| null")
+        || source_code.contains("| undefined")
+        || source_code.contains("?: ")
+        || source_code.contains(": null")
+    {
+        signals.is_nullable = true;
+    }
+
+    // is_mutating
+    if source_code.contains("emit(")
+        || source_code.contains("$patch(")
+        || source_code.contains(".value =")
+        || source_code.contains("commit(")
+    {
+        signals.is_mutating = true;
+    }
+
+    // panic_call_count: non-null assertion occurrences
+    let count = count_occurrences(source_code, "!.")
+        + count_occurrences(source_code, "!;")
+        + count_occurrences(source_code, "!,")
+        + count_occurrences(source_code, "!)");
+    signals.panic_call_count = count;
+
+    // has_panic_risk
+    if count > 2 || source_code.contains(".value!") || source_code.contains(" throw ") {
+        signals.has_panic_risk = true;
+    }
+
+    // is_test
+    if source_code.contains("describe(")
+        || source_code.contains("it(")
+        || source_code.contains("test(")
+    {
+        signals.is_test = true;
+    }
+
+    // is_incomplete
+    let as_any_count = count_occurrences(source_code, "as any");
+    if source_code.contains("throw new Error('not implemented')")
+        || source_code.contains("throw new Error(\"not implemented\")")
+        || as_any_count > 3
+    {
+        signals.is_incomplete = true;
+    }
+
+    // debt_markers
+    signals.debt_markers = collect_debt_markers(source_code, false);
+
+    signals
+}
+
+/// Dispatch to the right language analyser.
 pub fn analyze(language: &str, source_code: &str, entity_name: &str) -> ContractSignals {
-    if language == "rust" {
-        analyze_rust(source_code, entity_name)
-    } else {
-        // TODO(phase-13): non-Rust static analysis
-        ContractSignals::default()
+    match language {
+        "rust" => analyze_rust(source_code, entity_name),
+        "php" => analyze_php(source_code, entity_name),
+        "typescript" | "javascript" | "tsx" | "jsx" | "vue" => {
+            analyze_typescript(source_code, entity_name)
+        }
+        _ => ContractSignals::default(),
     }
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Scan `source_code` line-by-line and return every line that contains a
+/// recognised debt marker (`// TODO`, `// FIXME`, `// HACK`, `// XXX`, and
+/// optionally `# TODO` / `# FIXME` for languages that use `#` comments).
+/// Comparison is case-insensitive; the original trimmed line is returned.
+fn collect_debt_markers(source_code: &str, include_hash_comments: bool) -> Vec<String> {
+    let mut markers = Vec::new();
+    for line in source_code.lines() {
+        let trimmed = line.trim();
+        let upper = trimmed.to_uppercase();
+        let is_marker = upper.contains("// TODO")
+            || upper.contains("// FIXME")
+            || upper.contains("// HACK")
+            || upper.contains("// XXX")
+            || (include_hash_comments && (upper.contains("# TODO") || upper.contains("# FIXME")));
+        if is_marker {
+            markers.push(trimmed.to_string());
+        }
+    }
+    markers
+}
+
+fn count_occurrences(haystack: &str, needle: &str) -> u32 {
+    let mut count = 0u32;
+    let mut start = 0;
+    while let Some(pos) = haystack[start..].find(needle) {
+        count += 1;
+        start += pos + needle.len();
+    }
+    count
+}
 
 fn extract_callee_from_let_discard(line: &str) -> Option<String> {
     // `let _ = foo(...)` or `let _ = obj.foo(...)`

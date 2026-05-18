@@ -1034,7 +1034,7 @@ fn word_to_chapter_number(word: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{SqliteBackend, edge_store, fts, summary_store};
+    use crate::storage::SqliteBackend;
     use crate::types::{Chunk, Corpus, Edge, Entity, Location, Summary, SummaryTargetKind};
 
     fn make_service() -> (QueryService, Arc<dyn StorageBackend>) {

@@ -824,8 +824,10 @@ mod tests {
         // Very short function — will be below min_chunk_bytes threshold.
         std::fs::write(dir.path().join("tiny.rs"), "fn x() {}").unwrap();
 
-        let mut opts = ChunkOptions::default();
-        opts.min_chunk_bytes = 50; // "fn x() {}" is 10 bytes → dropped
+        let opts = ChunkOptions {
+            min_chunk_bytes: 50, // "fn x() {}" is 10 bytes → dropped
+            ..ChunkOptions::default()
+        };
 
         let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
 
@@ -960,8 +962,10 @@ h1 { color: red; }
         )
         .unwrap();
 
-        let mut opts = ChunkOptions::default();
-        opts.include_globs = vec!["src/**".into()];
+        let opts = ChunkOptions {
+            include_globs: vec!["src/**".into()],
+            ..ChunkOptions::default()
+        };
 
         let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
 

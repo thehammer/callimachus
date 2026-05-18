@@ -218,7 +218,7 @@ mod tests {
             DiscoveredSource, EntityMerge, ExtractedSemantic, ExtractedStructure, SourceAdapter,
         },
         storage::{SqliteBackend, StorageBackend},
-        types::{Chunk, Corpus, Edge, Entity, Location},
+        types::{Chunk, Corpus, Entity, Location},
     };
 
     use super::{IndexOptions, IndexPipeline};

@@ -312,9 +312,11 @@ async fn large_file_splits_into_multiple_chunks() {
         .collect::<String>();
     std::fs::write(dir.path().join("big.rs"), &large_fn).unwrap();
 
-    let mut opts = ChunkOptions::default();
-    opts.max_chunk_bytes = 500;
-    opts.min_chunk_bytes = 10;
+    let opts = ChunkOptions {
+        max_chunk_bytes: 500,
+        min_chunk_bytes: 10,
+        ..ChunkOptions::default()
+    };
 
     let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
 
