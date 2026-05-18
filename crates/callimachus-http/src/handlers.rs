@@ -212,7 +212,6 @@ pub async fn find_scene(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use axum_test::TestServer;
     use callimachus_core::{
         query::QueryService,

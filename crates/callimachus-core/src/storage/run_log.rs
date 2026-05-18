@@ -87,6 +87,21 @@ pub fn abandon_stale(db: &Database, corpus_id: &str) -> Result<u64> {
     Ok(updated as u64)
 }
 
+fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
+    let stats_json: String = row.get(6)?;
+    let stats: PassStats = serde_json::from_str(&stats_json).unwrap_or_default();
+    Ok(RunRecord {
+        id: row.get(0)?,
+        corpus_id: row.get(1)?,
+        pass: row.get(2)?,
+        started_at: row.get(3)?,
+        finished_at: row.get(4)?,
+        status: row.get(5)?,
+        stats,
+        provider: row.get(7)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,19 +163,4 @@ mod tests {
         let count = abandon_stale(&db, "corpus-1").unwrap();
         assert_eq!(count, 0, "completed runs should not be abandoned");
     }
-}
-
-fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
-    let stats_json: String = row.get(6)?;
-    let stats: PassStats = serde_json::from_str(&stats_json).unwrap_or_default();
-    Ok(RunRecord {
-        id: row.get(0)?,
-        corpus_id: row.get(1)?,
-        pass: row.get(2)?,
-        started_at: row.get(3)?,
-        finished_at: row.get(4)?,
-        status: row.get(5)?,
-        stats,
-        provider: row.get(7)?,
-    })
 }

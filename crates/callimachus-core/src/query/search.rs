@@ -309,7 +309,15 @@ mod tests {
         // 2D embeddings for easy manual cosine math.
         let specs: &[(&str, &str, &str, [f32; 2])] = &[
             ("chunk-A", "wiki/a", "page-a content", [1.0, 0.0]),
-            ("chunk-B", "wiki/b", "page-b content", [0.7071, 0.7071]),
+            (
+                "chunk-B",
+                "wiki/b",
+                "page-b content",
+                [
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                ],
+            ),
             ("chunk-C", "wiki/c", "page-c content", [0.0, 1.0]),
         ];
 

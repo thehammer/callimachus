@@ -157,7 +157,7 @@ mod tests {
         },
         corrections::types::CorrectionKind,
         indexing::{IndexPipeline, change_detector::ChangeSet, pipeline::IndexOptions},
-        storage::{SqliteBackend, StorageBackend, correction_store},
+        storage::{SqliteBackend, StorageBackend},
         types::{Chunk, Corpus, Entity, Location},
     };
 

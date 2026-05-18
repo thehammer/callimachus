@@ -5,6 +5,7 @@
 //! that each signal is detected correctly.
 
 use callimachus_adapter_code::contracts::analyze_rust;
+use callimachus_adapter_code::contracts::{analyze, analyze_php, analyze_typescript};
 
 const FIXTURE: &str = include_str!("fixtures/contract_sample.rs");
 
@@ -22,9 +23,7 @@ fn fn_snippet(fn_name: &str) -> String {
         match ch {
             '{' => depth += 1,
             '}' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
+                depth = depth.saturating_sub(1);
                 if depth == 0 && i > 0 {
                     end_off = i + 1;
                     break;
@@ -181,9 +180,164 @@ fn branch_count_nonzero_for_branchy_fn() {
 
 #[test]
 fn non_rust_language_returns_default() {
-    use callimachus_adapter_code::contracts::analyze;
     let s = analyze("python", "def foo(): pass", "foo");
     assert!(!s.is_public);
     assert!(!s.is_fallible);
     assert_eq!(s.panic_call_count, 0);
+}
+
+#[test]
+fn analyze_php_detects_public_method() {
+    let src = "public function doThing(string $x): void { echo $x; }";
+    let s = analyze_php(src, "doThing");
+    assert!(s.is_public, "expected is_public");
+}
+
+#[test]
+fn analyze_php_detects_nullable_and_fallible() {
+    let src = r#"
+public function findUser(int $id): ?User {
+    // @throws NotFoundException
+    throw new NotFoundException("not found");
+}
+"#;
+    let s = analyze_php(src, "findUser");
+    assert!(s.is_nullable, "expected is_nullable");
+    assert!(s.is_fallible, "expected is_fallible");
+}
+
+#[test]
+fn analyze_php_detects_eloquent_mutation() {
+    let src = r#"
+public function saveRecord(): void {
+    $this->name = "updated";
+    $this->save();
+}
+"#;
+    let s = analyze_php(src, "saveRecord");
+    assert!(s.is_mutating, "expected is_mutating");
+}
+
+#[test]
+fn analyze_php_detects_findorfail_panic() {
+    let src = r#"
+public function getUser(int $id): User {
+    return User::findOrFail($id);
+}
+"#;
+    let s = analyze_php(src, "getUser");
+    assert!(s.has_panic_risk, "expected has_panic_risk");
+    assert!(s.panic_call_count >= 1, "expected at least 1 panic call");
+}
+
+#[test]
+fn analyze_php_detects_test_class() {
+    let src = r#"
+class UserTest extends TestCase {
+    /** @test */
+    public function test_it_creates_user(): void {
+        $this->assertTrue(true);
+    }
+}
+"#;
+    let s = analyze_php(src, "UserTest");
+    assert!(s.is_test, "expected is_test");
+}
+
+#[test]
+fn analyze_php_collects_debt_markers() {
+    let src = r#"
+public function legacyStuff(): void {
+    // TODO: refactor this
+    // FIXME: broken in edge case
+    // HACK: workaround for old API
+    doSomething();
+}
+"#;
+    let s = analyze_php(src, "legacyStuff");
+    assert!(!s.debt_markers.is_empty(), "expected debt_markers");
+    let joined = s.debt_markers.join("\n").to_uppercase();
+    assert!(joined.contains("TODO"), "missing TODO");
+    assert!(joined.contains("FIXME"), "missing FIXME");
+    assert!(joined.contains("HACK"), "missing HACK");
+}
+
+#[test]
+fn analyze_typescript_detects_export() {
+    let src = "export function greet(name: string): string { return `Hello ${name}`; }";
+    let s = analyze_typescript(src, "greet");
+    assert!(s.is_public, "expected is_public");
+}
+
+#[test]
+fn analyze_typescript_detects_async_promise() {
+    let src = r#"
+export async function fetchData(url: string): Promise<Response> {
+    return await fetch(url);
+}
+"#;
+    let s = analyze_typescript(src, "fetchData");
+    assert!(s.is_fallible, "expected is_fallible for async/Promise");
+}
+
+#[test]
+fn analyze_typescript_detects_emit_mutation() {
+    let src = r#"
+function updateStore() {
+    store.commit('setUser', user);
+    emit('updated', user);
+}
+"#;
+    let s = analyze_typescript(src, "updateStore");
+    assert!(s.is_mutating, "expected is_mutating");
+}
+
+#[test]
+fn analyze_typescript_detects_nonnull_assertion_panic() {
+    let src = r#"
+function process(data: Data | null) {
+    const value = data!.value;
+    const name = data!.name;
+    const id = data!.id;
+    return value! + name!;
+}
+"#;
+    // panic_call_count counts !. !; !, !) occurrences — 5 non-null assertions
+    let s = analyze_typescript(src, "process");
+    assert!(
+        s.has_panic_risk,
+        "expected has_panic_risk for non-null assertions"
+    );
+}
+
+#[test]
+fn analyze_typescript_detects_describe_test() {
+    let src = r#"
+describe('UserService', () => {
+    it('should create a user', () => {
+        expect(true).toBe(true);
+    });
+});
+"#;
+    let s = analyze_typescript(src, "UserService.spec");
+    assert!(s.is_test, "expected is_test");
+}
+
+#[test]
+fn analyze_dispatch_routes_vue_to_typescript() {
+    let src = r#"
+export default {
+    setup() {
+        const count = ref(0);
+        function increment() { count.value = count.value + 1; }
+        return { count, increment };
+    }
+}
+"#;
+    let s = analyze("vue", src, "MyComponent");
+    // Vue is routed to analyze_typescript; count.value = is_mutating, export is_public
+    assert!(
+        s.is_public || s.is_mutating,
+        "vue should route to typescript analyzer"
+    );
 }

@@ -302,6 +302,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn php_corpus_selects_code_adapter() {
+        let db: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let corpus = Corpus::new(
+            "php-test".to_string(),
+            "PHP Test".to_string(),
+            "code".to_string(),
+            env!("CARGO_MANIFEST_DIR").to_string(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        // Dry run should select CodeAdapter (PHP files are in a code corpus) and complete without error.
+        run_index("php-test", db, true).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn unknown_kind_returns_adapter_error() {
         let db: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::open_in_memory().unwrap());
         let corpus = Corpus::new(

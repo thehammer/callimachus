@@ -328,11 +328,29 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
         content: &str,
         summary: Option<&str>,
         purpose: Option<&str>,
-        signals: &serde_json::Value,
+        _signals: &serde_json::Value,
         llm: &dyn LlmProvider,
     ) -> Result<Option<ExtractedContract>> {
-        // Run real static analysis regardless of what the pipeline passed in.
-        let static_signals = contracts::analyze_rust(content, &entity.canonical_name);
+        // Detect language from the entity's URI extension (same pattern as extract_purpose).
+        let lang = entity
+            .first_location
+            .as_ref()
+            .map(|loc| loc.uri.as_str())
+            .unwrap_or("")
+            .rsplit('.')
+            .next()
+            .map(|ext| match ext {
+                "rs" => "rust",
+                "php" => "php",
+                "ts" | "tsx" => "typescript",
+                "js" | "jsx" => "javascript",
+                "vue" => "vue",
+                _ => "other",
+            })
+            .unwrap_or("other");
+
+        // Run language-aware static analysis.
+        let static_signals = contracts::analyze(lang, content, &entity.canonical_name);
 
         let summary_section = summary
             .map(|s| format!("Summary: {s}\n"))
@@ -354,18 +372,29 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
             static_signals.is_test,
         );
 
-        // Pass through the language from the opaque signals JSON if present.
-        let language = signals
-            .get("language")
-            .and_then(|v| v.as_str())
-            .unwrap_or("rust");
+        let language = lang;
+
+        let language_note = match lang {
+            "php" => {
+                "Note: 'has_panic_risk' means unhandled exception risk (findOrFail, abort(), throw new). 'is_mutating' covers Eloquent writes and $this-> assignments."
+            }
+            "typescript" | "javascript" | "tsx" | "jsx" | "vue" => {
+                "Note: 'has_panic_risk' means non-null assertion (!) usage or unguarded ref.value access. 'is_fallible' covers async/Promise and explicit throw."
+            }
+            _ => "",
+        };
+        let language_note_section = if language_note.is_empty() {
+            String::new()
+        } else {
+            format!("{language_note}\n")
+        };
 
         let prompt = format!(
             r#"You are analysing a {language} code entity to extract its behavioural contract.
 
 Entity: {name}
 Kind: {kind}
-{summary_section}{purpose_section}Static signals: {signals_text}
+{summary_section}{purpose_section}{language_note_section}Static signals: {signals_text}
 
 Source:
 <code>
@@ -391,6 +420,7 @@ Return JSON matching this schema exactly:
             language = language,
             name = entity.canonical_name,
             kind = entity.kind,
+            language_note_section = language_note_section,
             code = &content[..content.floor_char_boundary(4000.min(content.len()))],
         );
 
