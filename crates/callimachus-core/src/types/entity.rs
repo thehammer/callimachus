@@ -9,6 +9,10 @@ pub struct Entity {
     /// Adapter-defined kind: "character", "place", "organization", "object",
     /// "function", "class", "concept", etc.
     pub kind: String,
+    /// Cross-corpus abstract taxonomy kind (e.g. "person", "process", "component").
+    /// Resolved from kind_taxonomy at insert time; empty string if no mapping.
+    #[serde(default)]
+    pub abstract_kind: String,
     pub aliases: Vec<String>,
     pub description: Option<String>,
     pub first_location: Option<Location>,
@@ -25,6 +29,7 @@ impl Entity {
             corpus_id,
             canonical_name,
             kind,
+            abstract_kind: String::new(),
             aliases: vec![],
             description: None,
             first_location: None,

@@ -946,6 +946,46 @@ impl QueryService {
             }))
         })
     }
+
+    /// List entities across corpora filtered by abstract taxonomy kind.
+    pub fn entity_search_by_abstract_kind(
+        &self,
+        input: EntitySearchByAbstractKindInput,
+    ) -> ToolResult<EntitySearchByAbstractKindOutput> {
+        self.try_result(|| {
+            let corpus_id_refs: Vec<&str> = input.corpus_ids.iter().map(String::as_str).collect();
+            let all_entities = self
+                .db
+                .entity_list_by_abstract_kind(&corpus_id_refs, &input.abstract_kind)?;
+            let limit = input.limit.unwrap_or(50);
+            let entities: Vec<Entity> = all_entities.into_iter().take(limit).collect();
+            let count = entities.len();
+            Ok(ToolResult::ok(EntitySearchByAbstractKindOutput {
+                entities,
+                count,
+            }))
+        })
+    }
+
+    /// Return the full kind_taxonomy table.
+    pub fn list_abstract_kinds(
+        &self,
+        _input: ListAbstractKindsInput,
+    ) -> ToolResult<ListAbstractKindsOutput> {
+        self.try_result(|| {
+            let raw = self.db.kind_taxonomy_list()?;
+            let rows: Vec<TaxonomyRow> = raw
+                .into_iter()
+                .map(|(concrete_kind, corpus_kind, abstract_kind)| TaxonomyRow {
+                    concrete_kind,
+                    corpus_kind,
+                    abstract_kind,
+                })
+                .collect();
+            let count = rows.len();
+            Ok(ToolResult::ok(ListAbstractKindsOutput { rows, count }))
+        })
+    }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

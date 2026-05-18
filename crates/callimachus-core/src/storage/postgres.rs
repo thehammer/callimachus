@@ -146,6 +146,16 @@ impl StorageBackend for PostgresBackend {
     fn entities_at_location(&self, _corpus_id: &str, _uri: &str) -> Result<Vec<Entity>> {
         Err(unimplemented())
     }
+    fn entity_list_by_abstract_kind(
+        &self,
+        _corpus_ids: &[&str],
+        _abstract_kind: &str,
+    ) -> Result<Vec<Entity>> {
+        Err(unimplemented())
+    }
+    fn kind_taxonomy_list(&self) -> Result<Vec<(String, String, String)>> {
+        Err(unimplemented())
+    }
 
     fn edge_upsert(&self, _edge: &Edge) -> Result<()> {
         Err(unimplemented())

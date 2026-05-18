@@ -175,6 +175,18 @@ impl StorageBackend for SqliteBackend {
         entity_store::at_location(&db!(self), corpus_id, uri)
     }
 
+    fn entity_list_by_abstract_kind(
+        &self,
+        corpus_ids: &[&str],
+        abstract_kind: &str,
+    ) -> Result<Vec<Entity>> {
+        entity_store::list_by_abstract_kind(&db!(self), corpus_ids, abstract_kind)
+    }
+
+    fn kind_taxonomy_list(&self) -> Result<Vec<(String, String, String)>> {
+        entity_store::list_taxonomy(&db!(self))
+    }
+
     // ── Edge ──────────────────────────────────────────────────────────────────
 
     fn edge_upsert(&self, edge: &Edge) -> Result<()> {
