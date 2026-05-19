@@ -262,6 +262,16 @@ The index is a single SQLite file. Key tables:
 
 ---
 
+## How it relates to LLMs
+
+Callimachus is designed around a specific insight about how LLMs work: they acquire general knowledge at training time but have no knowledge of your specific corpus. Standard retrieval (RAG) bridges this by stuffing raw text into the context window at query time — asking the model to re-comprehend the source on every query. Callimachus bridges it differently: by running the comprehension once at index time and storing the results as structured, queryable artifacts.
+
+The relationship is complementary. The LLM brings general reasoning. Callimachus brings specific knowledge, pre-built. Neither re-reads the source at query time.
+
+**[How Callimachus Complements LLMs](docs/llm-complement.md)** — a longer explainer covering the training/index-time parallel, the partial application intuition, and why this architecture makes sense for large corpora.
+
+---
+
 ## Language and concepts
 
 Callimachus uses precise terminology borrowed from philosophy and linguistics — *corpus*, *epistemology*, *ontology*, *semantic* — with specific meanings in this context.
@@ -280,6 +290,8 @@ codebase using the index it produces of itself:
 2. Is complexity concentrated at the leaves or distributed across the hierarchy?
 3. Is the codebase well-factored, and where is the most significant structural debt?
 4. If you were a new contributor, where would this codebase most frustrate you?
+
+**[Query Patterns](docs/query-patterns.md)** documents how each question is answered — what MCP tools and queries surface the answer, and what the equivalent manual approach looks like without Callimachus.
 
 ---
 
