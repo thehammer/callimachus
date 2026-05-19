@@ -54,6 +54,7 @@ pub async fn run(
         no_git_filter,
         concurrency: None,
         tier_config: config.model_tiers.clone(),
+        change_manifest: None,
     };
 
     let dry_label = if dry_run { " [dry-run]" } else { "" };
@@ -142,6 +143,7 @@ pub fn resolve_provider(
 fn resolve_passes(pass: Option<String>) -> Result<Vec<Pass>> {
     match pass.as_deref() {
         None => Ok(vec![
+            Pass::History,
             Pass::Chunk,
             Pass::Structure,
             Pass::Semantic,
@@ -151,6 +153,7 @@ fn resolve_passes(pass: Option<String>) -> Result<Vec<Pass>> {
             Pass::Contract,
         ]),
         Some("all") => Ok(vec![
+            Pass::History,
             Pass::Chunk,
             Pass::Structure,
             Pass::Semantic,
@@ -161,6 +164,7 @@ fn resolve_passes(pass: Option<String>) -> Result<Vec<Pass>> {
             Pass::Theme,
             Pass::Embed,
         ]),
+        Some("history") => Ok(vec![Pass::History]),
         Some("chunk") => Ok(vec![Pass::Chunk]),
         Some("structure") => Ok(vec![Pass::Structure]),
         Some("semantic") => Ok(vec![Pass::Semantic]),
@@ -171,7 +175,7 @@ fn resolve_passes(pass: Option<String>) -> Result<Vec<Pass>> {
         Some("theme") => Ok(vec![Pass::Theme]),
         Some("embed") => Ok(vec![Pass::Embed]),
         Some(other) => bail!(
-            "unknown pass '{other}'; use: all, chunk, structure, semantic, aliases, summarize, purpose, contract, theme, embed"
+            "unknown pass '{other}'; use: all, history, chunk, structure, semantic, aliases, summarize, purpose, contract, theme, embed"
         ),
     }
 }

@@ -1,6 +1,8 @@
+use crate::indexing::change_manifest::{ChangeKind, ChangedSource};
 use crate::indexing::model_tier::RoutingInputs;
 use crate::types::{Chunk, Corpus, Edge, Entity};
 use callimachus_llm::LlmProvider;
+use sha2::{Digest, Sha256};
 
 /// A discovered concrete input, ready for chunking.
 #[derive(Debug, Clone)]
@@ -194,4 +196,147 @@ pub trait SourceAdapter: Send + Sync {
     ) -> anyhow::Result<Option<ExtractedThemes>> {
         Ok(None)
     }
+
+    // ── Stage 0 methods (default: hash-of-hashes) ────────────────────────────
+
+    /// Version reference for the corpus's current state.
+    ///
+    /// Default implementation: walks `source_path`, computes SHA-256 of each
+    /// file's content, sorts entries by path, then hashes the concatenated
+    /// `"{path}\0{hex_hash}\n"` lines.  Returns the result as
+    /// `"v1-tree:<hex-digest>"`.
+    ///
+    /// Adapters that have access to a faster or more precise version signal
+    /// (e.g. git commit SHA) should override this.
+    fn current_version(&self, source_path: &str) -> anyhow::Result<String> {
+        default_current_version(source_path)
+    }
+
+    /// Files that changed between two version refs.
+    ///
+    /// `from_version = None` ⇒ return all source paths (first-run case).
+    ///
+    /// Default implementation: returns all files as `Added` when
+    /// `from_version` is None or when the versions differ (conservative but
+    /// correct).  Adapters with git access should override this to return
+    /// only the actual diff.
+    ///
+    /// Note: the default impl is deliberately conservative — it never misses
+    /// a changed file, but it may return files that haven't actually changed.
+    /// The CodeAdapter override uses `git2` diff for precise results.
+    fn changed_sources(
+        &self,
+        source_path: &str,
+        from_version: Option<&str>,
+        to_version: &str,
+    ) -> anyhow::Result<Vec<ChangedSource>> {
+        default_changed_sources(source_path, from_version, to_version)
+    }
+}
+
+// ── Default Stage-0 helpers ───────────────────────────────────────────────────
+
+/// Default implementation of `current_version`: SHA-256 hash-of-hashes over
+/// every file under `source_path`.
+pub fn default_current_version(source_path: &str) -> anyhow::Result<String> {
+    use std::io::Read;
+
+    let root = std::path::Path::new(source_path);
+    if !root.exists() {
+        return Ok("v1-tree:empty".to_string());
+    }
+
+    // Collect (relative_path, file_hash) pairs, sorted for determinism.
+    let mut entries: Vec<(String, String)> = Vec::new();
+
+    if root.is_file() {
+        let mut content = Vec::new();
+        std::fs::File::open(root)?.read_to_end(&mut content)?;
+        let hash = hex::encode(Sha256::digest(&content));
+        entries.push((source_path.to_string(), hash));
+    } else {
+        walk_files(root, root, &mut entries)?;
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut outer = Sha256::new();
+    for (path, hash) in &entries {
+        outer.update(path.as_bytes());
+        outer.update(b"\0");
+        outer.update(hash.as_bytes());
+        outer.update(b"\n");
+    }
+    Ok(format!("v1-tree:{}", hex::encode(outer.finalize())))
+}
+
+fn walk_files(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<(String, String)>,
+) -> anyhow::Result<()> {
+    use std::io::Read;
+
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        // Skip hidden files/dirs (e.g. .git).
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('.'))
+        {
+            continue;
+        }
+        if path.is_dir() {
+            walk_files(root, &path, out)?;
+        } else if path.is_file() {
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            let rel_str = rel.to_string_lossy().to_string();
+            let mut content = Vec::new();
+            std::fs::File::open(&path)?.read_to_end(&mut content)?;
+            let hash = hex::encode(Sha256::digest(&content));
+            out.push((rel_str, hash));
+        }
+    }
+    Ok(())
+}
+
+/// Default implementation of `changed_sources`: conservative — returns all
+/// files as Added whenever `from_version` is None or differs from `to_version`.
+pub fn default_changed_sources(
+    source_path: &str,
+    from_version: Option<&str>,
+    to_version: &str,
+) -> anyhow::Result<Vec<ChangedSource>> {
+    // If versions match, nothing changed.
+    if from_version == Some(to_version) {
+        return Ok(vec![]);
+    }
+    // Otherwise, return every source path as Added (conservative).
+    collect_all_as_added(source_path)
+}
+
+fn collect_all_as_added(source_path: &str) -> anyhow::Result<Vec<ChangedSource>> {
+    let root = std::path::Path::new(source_path);
+    if !root.exists() {
+        return Ok(vec![]);
+    }
+    if root.is_file() {
+        return Ok(vec![ChangedSource {
+            path: source_path.to_string(),
+            kind: ChangeKind::Added,
+            commit_meta: None,
+        }]);
+    }
+    let mut paths: Vec<(String, String)> = Vec::new();
+    walk_files(root, root, &mut paths)?;
+    Ok(paths
+        .into_iter()
+        .map(|(path, _)| ChangedSource {
+            path,
+            kind: ChangeKind::Added,
+            commit_meta: None,
+        })
+        .collect())
 }

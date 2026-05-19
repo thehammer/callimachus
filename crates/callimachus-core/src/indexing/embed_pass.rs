@@ -48,7 +48,12 @@ pub async fn run(
     }
 
     // Load all chunks for this corpus.
-    let chunks = db.chunk_list(&corpus.id)?;
+    let mut chunks = db.chunk_list(&corpus.id)?;
+
+    // Skip chunks whose source file is unchanged according to the manifest.
+    if let Some(m) = opts.change_manifest.as_ref() {
+        chunks.retain(|c| m.is_dirty_for_chunk(c));
+    }
 
     let mut stats = PassStats::default();
 

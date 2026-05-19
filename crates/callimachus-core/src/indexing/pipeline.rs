@@ -4,17 +4,21 @@ use callimachus_llm::LlmProvider;
 
 use crate::{
     adapter::SourceAdapter,
-    indexing::model_tier::TierConfig,
+    indexing::{change_manifest::ChangeManifest, model_tier::TierConfig},
     storage::{StorageBackend, run_log},
     types::{Corpus, Pass, RunStatus},
 };
 
 use super::{
-    aliases_pass, chunk_pass, contract_pass, embed_pass, purpose_pass, semantic_pass,
+    aliases_pass, chunk_pass, contract_pass, embed_pass, history_pass, purpose_pass, semantic_pass,
     structure_pass, summarize_pass, theme_pass,
 };
 
 /// Which passes the pipeline should execute (default: all except Embed).
+///
+/// When `passes` omits `Pass::History`, the pipeline treats every source as
+/// dirty (synthesises an all-dirty manifest) so that downstream passes
+/// behave identically to a pre-Stage-0 run.
 #[derive(Debug, Clone)]
 pub struct IndexOptions {
     pub passes: Vec<Pass>,
@@ -33,12 +37,18 @@ pub struct IndexOptions {
     /// passes use a single provider.  When enabled, the pipeline builds three
     /// provider variants (haiku/sonnet/opus) and the passes route per entity.
     pub tier_config: TierConfig,
+    /// Manifest produced by Pass::History.  When None the pipeline uses an
+    /// all-dirty sentinel so downstream passes process everything.
+    /// Set by the orchestrator after Pass::History runs; callers constructing
+    /// IndexOptions for a subset of passes may leave this None.
+    pub change_manifest: Option<ChangeManifest>,
 }
 
 impl Default for IndexOptions {
     fn default() -> Self {
         Self {
             passes: vec![
+                Pass::History,
                 Pass::Chunk,
                 Pass::Structure,
                 Pass::Semantic,
@@ -54,6 +64,7 @@ impl Default for IndexOptions {
             full: false,
             no_git_filter: false,
             tier_config: TierConfig::default(),
+            change_manifest: None,
         }
     }
 }
@@ -150,7 +161,18 @@ impl IndexPipeline {
             );
         }
 
-        for pass in &opts.passes {
+        // Build a mutable copy of opts so we can inject the ChangeManifest after
+        // Pass::History runs.  If passes don't include History, synthesise an
+        // all-dirty manifest so downstream passes process everything.
+        let mut opts_local = opts.clone();
+        if !opts_local.passes.contains(&Pass::History) {
+            opts_local.change_manifest = Some(ChangeManifest::all_dirty("synthetic"));
+        }
+
+        // Track the final manifest version so we can write it back after success.
+        let mut history_version: Option<String> = None;
+
+        for pass in &opts_local.passes.clone() {
             let run_id = self
                 .db
                 .run_start(&corpus.id, &pass.to_string(), Some(self.llm.name()))?;
@@ -158,12 +180,24 @@ impl IndexPipeline {
             tracing::info!("[{}] starting…", pass);
 
             let stats = match pass {
+                Pass::History => {
+                    let (manifest, stats) = history_pass::run(
+                        Arc::clone(&self.db),
+                        corpus,
+                        Arc::clone(&self.adapter),
+                        &opts_local,
+                    )
+                    .await?;
+                    history_version = Some(manifest.current_version.clone());
+                    opts_local.change_manifest = Some(manifest);
+                    stats
+                }
                 Pass::Chunk => {
                     chunk_pass::run(
                         Arc::clone(&self.db),
                         corpus,
                         Arc::clone(&self.adapter),
-                        &opts,
+                        &opts_local,
                     )
                     .await?
                 }
@@ -172,7 +206,7 @@ impl IndexPipeline {
                         Arc::clone(&self.db),
                         corpus,
                         Arc::clone(&self.adapter),
-                        &opts,
+                        &opts_local,
                     )
                     .await?
                 }
@@ -182,7 +216,7 @@ impl IndexPipeline {
                         corpus,
                         Arc::clone(&self.adapter),
                         Arc::clone(&self.llm),
-                        &opts,
+                        &opts_local,
                     )
                     .await?
                 }
@@ -192,7 +226,7 @@ impl IndexPipeline {
                         corpus,
                         Arc::clone(&self.adapter),
                         Arc::clone(&self.llm),
-                        &opts,
+                        &opts_local,
                     )
                     .await?
                 }
@@ -204,12 +238,13 @@ impl IndexPipeline {
                         Arc::clone(&tiers.haiku),
                         Arc::clone(&tiers.sonnet),
                         Arc::clone(&tiers.opus),
-                        &opts,
+                        &opts_local,
                     )
                     .await?
                 }
                 Pass::Embed => {
-                    embed_pass::run(self.db.as_ref(), corpus, self.embedder.clone(), &opts).await?
+                    embed_pass::run(self.db.as_ref(), corpus, self.embedder.clone(), &opts_local)
+                        .await?
                 }
                 Pass::Purpose => {
                     purpose_pass::run(
@@ -219,7 +254,7 @@ impl IndexPipeline {
                         Arc::clone(&tiers.haiku),
                         Arc::clone(&tiers.sonnet),
                         Arc::clone(&tiers.opus),
-                        &opts,
+                        &opts_local,
                     )
                     .await?
                 }
@@ -231,7 +266,7 @@ impl IndexPipeline {
                         Arc::clone(&tiers.haiku),
                         Arc::clone(&tiers.sonnet),
                         Arc::clone(&tiers.opus),
-                        &opts,
+                        &opts_local,
                     )
                     .await?
                 }
@@ -241,7 +276,7 @@ impl IndexPipeline {
                         corpus,
                         Arc::clone(&self.adapter),
                         Arc::clone(&self.llm),
-                        &opts,
+                        &opts_local,
                     )
                     .await?
                 }
@@ -268,9 +303,17 @@ impl IndexPipeline {
         result.runs = self.db.run_latest(&corpus.id, 20)?;
 
         // Mark the corpus as ready with a last-indexed timestamp.
-        if !opts.dry_run {
+        if !opts_local.dry_run {
             let now = chrono::Utc::now().to_rfc3339();
             self.db.corpus_set_last_indexed(&corpus.id, &now)?;
+
+            // Write back the version anchor only after all passes succeed and
+            // only when Pass::History was actually run.  Partial failures
+            // must not advance the anchor so the next run replays correctly.
+            if let Some(version) = history_version {
+                self.db
+                    .corpus_set_last_indexed_version(&corpus.id, &version)?;
+            }
         }
 
         Ok(result)
@@ -412,8 +455,8 @@ mod tests {
         assert!(result.total_chunks > 0, "expected chunks after indexing");
         assert_eq!(
             result.runs.len(),
-            7,
-            "expected 7 run-log entries (chunk, structure, semantic, aliases, summarize, purpose, contract)"
+            8,
+            "expected 8 run-log entries (history, chunk, structure, semantic, aliases, summarize, purpose, contract)"
         );
         for run in &result.runs {
             assert_eq!(run.status, "completed");

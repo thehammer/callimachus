@@ -16,7 +16,13 @@ pub async fn run(
 ) -> anyhow::Result<PassStats> {
     let mut stats = PassStats::default();
 
-    let chunks = db.chunk_list(&corpus.id)?;
+    let mut chunks = db.chunk_list(&corpus.id)?;
+
+    // Skip chunks whose source file is unchanged according to the manifest.
+    if let Some(m) = opts.change_manifest.as_ref() {
+        chunks.retain(|c| m.is_dirty_for_chunk(c));
+    }
+
     let total = chunks.len() as u64;
 
     // Two-phase approach: collect all structural data first, then write entities

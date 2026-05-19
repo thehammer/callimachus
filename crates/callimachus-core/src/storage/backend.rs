@@ -34,6 +34,11 @@ pub trait StorageBackend: Send + Sync {
     fn corpus_update_status(&self, id: &str, status: CorpusStatus) -> Result<()>;
     fn corpus_set_last_indexed(&self, id: &str, at: &str) -> Result<()>;
     fn corpus_set_pipeline_version(&self, id: &str, version: u32) -> Result<()>;
+    /// Write the version reference (git SHA or v1-tree hash) after a successful
+    /// pipeline run that included Pass::History.
+    fn corpus_set_last_indexed_version(&self, id: &str, version: &str) -> Result<()>;
+    /// Read back the stored version reference (None until first history pass).
+    fn corpus_get_last_indexed_version(&self, id: &str) -> Result<Option<String>>;
     fn corpus_delete(&self, id: &str) -> Result<bool>;
     fn corpus_exists(&self, id: &str) -> Result<bool>;
 
@@ -52,6 +57,21 @@ pub trait StorageBackend: Send + Sync {
     fn chunk_set_parent_path(&self, chunk_id: &str, parent_path: &str) -> Result<()>;
     fn chunk_set_semantic_processed(&self, chunk_id: &str) -> Result<()>;
     fn chunk_delete_by_id(&self, chunk_id: &str) -> Result<bool>;
+    /// Update the source_hash column for a chunk written by chunk_pass.
+    fn chunk_set_source_hash(&self, chunk_id: &str, hash: &str) -> Result<()>;
+    /// Write history metadata (version + optional commit info) for a chunk.
+    /// Sets `last_modified_at_version`; also sets `introduced_at_version` if
+    /// the chunk row does not yet have one.
+    fn chunk_set_history(
+        &self,
+        chunk_id: &str,
+        version: &str,
+        commit_message: Option<&str>,
+        author: Option<&str>,
+    ) -> Result<()>;
+    /// Return `(chunk_id, location_uri, source_hash)` for all chunks in a corpus.
+    /// Used by Stage 0 to compare stored state against fresh adapter output.
+    fn chunk_list_source_paths(&self, corpus_id: &str) -> Result<Vec<(String, String, String)>>;
     /// Get location URIs of child chunks (chunks whose parent_path equals `parent_uri`).
     fn chunk_children_by_uri(&self, corpus_id: &str, parent_uri: &str) -> Result<Vec<Location>>;
 

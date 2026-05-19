@@ -25,7 +25,13 @@ pub async fn run(
     let router = ModelTierRouter::new(&opts.tier_config);
     let mut tier_counts = [0u64; 3]; // [haiku, sonnet, opus]
 
-    let all_chunks = db.chunk_list(&corpus.id)?;
+    let mut all_chunks = db.chunk_list(&corpus.id)?;
+
+    // Skip chunks whose source file is unchanged according to the manifest.
+    if let Some(m) = opts.change_manifest.as_ref() {
+        all_chunks.retain(|c| m.is_dirty_for_chunk(c));
+    }
+
     let levels = adapter.summary_levels();
 
     tracing::info!(

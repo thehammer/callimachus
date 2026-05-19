@@ -34,11 +34,17 @@ pub async fn run(
 ) -> anyhow::Result<PassStats> {
     let mut stats = PassStats::default();
 
-    let chunks = if opts.full {
+    let mut chunks = if opts.full {
         db.chunk_list(&corpus.id)?
     } else {
         db.chunk_list_unprocessed(&corpus.id)?
     };
+
+    // Skip chunks whose source file is unchanged according to the manifest.
+    if let Some(m) = opts.change_manifest.as_ref() {
+        chunks.retain(|c| m.is_dirty_for_chunk(c));
+    }
+
     let total = chunks.len() as u64;
 
     if llm.supports_parallel() {

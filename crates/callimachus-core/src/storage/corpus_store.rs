@@ -6,8 +6,8 @@ use std::str::FromStr;
 
 pub fn insert(db: &Database, corpus: &Corpus) -> Result<()> {
     db.conn().execute(
-        "INSERT INTO corpora (id, name, kind, source, config, status, created_at, last_indexed_at, pipeline_version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO corpora (id, name, kind, source, config, status, created_at, last_indexed_at, pipeline_version, last_indexed_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             corpus.id,
             corpus.name,
@@ -18,6 +18,7 @@ pub fn insert(db: &Database, corpus: &Corpus) -> Result<()> {
             corpus.created_at,
             corpus.last_indexed_at,
             corpus.pipeline_version as i64,
+            corpus.last_indexed_version,
         ],
     )?;
     Ok(())
@@ -25,7 +26,7 @@ pub fn insert(db: &Database, corpus: &Corpus) -> Result<()> {
 
 pub fn list(db: &Database) -> Result<Vec<Corpus>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, name, kind, source, config, status, created_at, last_indexed_at, pipeline_version
+        "SELECT id, name, kind, source, config, status, created_at, last_indexed_at, pipeline_version, last_indexed_version
          FROM corpora ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map([], row_to_corpus)?;
@@ -35,7 +36,7 @@ pub fn list(db: &Database) -> Result<Vec<Corpus>> {
 
 pub fn get(db: &Database, id: &str) -> Result<Option<Corpus>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, name, kind, source, config, status, created_at, last_indexed_at, pipeline_version
+        "SELECT id, name, kind, source, config, status, created_at, last_indexed_at, pipeline_version, last_indexed_version
          FROM corpora WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], row_to_corpus)?;
@@ -84,6 +85,23 @@ pub fn exists(db: &Database, id: &str) -> Result<bool> {
     Ok(count > 0)
 }
 
+pub fn set_last_indexed_version(db: &Database, id: &str, version: &str) -> Result<()> {
+    db.conn().execute(
+        "UPDATE corpora SET last_indexed_version = ?1 WHERE id = ?2",
+        params![version, id],
+    )?;
+    Ok(())
+}
+
+pub fn get_last_indexed_version(db: &Database, id: &str) -> Result<Option<String>> {
+    let v: Option<String> = db.conn().query_row(
+        "SELECT last_indexed_version FROM corpora WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    Ok(v)
+}
+
 pub fn set_pipeline_version(db: &Database, id: &str, version: u32) -> Result<()> {
     let updated = db.conn().execute(
         "UPDATE corpora SET pipeline_version = ?1 WHERE id = ?2",
@@ -111,6 +129,7 @@ fn row_to_corpus(row: &rusqlite::Row<'_>) -> rusqlite::Result<Corpus> {
         created_at: row.get(6)?,
         last_indexed_at: row.get(7)?,
         pipeline_version: row.get::<_, i64>(8)? as u32,
+        last_indexed_version: row.get(9)?,
     })
 }
 

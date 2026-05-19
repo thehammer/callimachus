@@ -39,6 +39,17 @@ pub async fn run(
         tracing::info!("[aliases] dry-run mode; skipping resolution");
         return Ok(stats);
     }
+    // Skip when the manifest says nothing changed — alias resolution is
+    // corpus-wide so there's nothing useful to do if no sources are dirty.
+    if opts
+        .change_manifest
+        .as_ref()
+        .is_some_and(|m| !m.all_dirty && m.dirty_count() == 0)
+    {
+        tracing::info!("[aliases] no dirty sources — skipping alias resolution");
+        stats.skipped = all_entities.len() as u64;
+        return Ok(stats);
+    }
 
     match resolve_with_retry(adapter.as_ref(), &all_entities, llm.as_ref()).await {
         Ok(merges) => {

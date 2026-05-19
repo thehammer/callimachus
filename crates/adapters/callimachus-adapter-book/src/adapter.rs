@@ -24,6 +24,7 @@ impl Default for BookAdapter {
     }
 }
 
+// uses default current_version / changed_sources
 #[async_trait::async_trait]
 impl SourceAdapter for BookAdapter {
     fn kind(&self) -> &str {

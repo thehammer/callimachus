@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Pass {
+    /// History-aware change detection (Stage 0). Runs before Chunk.
+    /// Produces a ChangeManifest that downstream passes use to skip
+    /// unchanged sources. When omitted, all sources are treated as dirty.
+    History,
     /// Stream chunks from the adapter and content-address them.
     Chunk,
     /// Parser-driven structural extraction (no LLM).
@@ -27,6 +31,7 @@ pub enum Pass {
 impl std::fmt::Display for Pass {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Pass::History => write!(f, "history"),
             Pass::Chunk => write!(f, "chunk"),
             Pass::Structure => write!(f, "structure"),
             Pass::Semantic => write!(f, "semantic"),
@@ -44,6 +49,7 @@ impl std::str::FromStr for Pass {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "history" => Ok(Pass::History),
             "chunk" => Ok(Pass::Chunk),
             "structure" => Ok(Pass::Structure),
             "semantic" => Ok(Pass::Semantic),

@@ -48,6 +48,12 @@ pub struct Corpus {
     /// 0 means indexed before versioning was introduced.
     #[serde(default)]
     pub pipeline_version: u32,
+    /// Version reference at which this corpus was last successfully indexed
+    /// by Pass::History.  For git-backed code corpora this is `"git:<full-oid>"`;
+    /// for others it is `"v1-tree:<hex-digest>"`.  `None` until the first
+    /// successful pipeline run that includes Pass::History.
+    #[serde(default)]
+    pub last_indexed_version: Option<String>,
 }
 
 impl Corpus {
@@ -62,6 +68,7 @@ impl Corpus {
             created_at: chrono::Utc::now().to_rfc3339(),
             last_indexed_at: None,
             pipeline_version: 0,
+            last_indexed_version: None,
         }
     }
 }
