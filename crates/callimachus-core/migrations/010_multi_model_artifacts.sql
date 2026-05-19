@@ -122,4 +122,38 @@ CREATE INDEX idx_summaries_target ON summaries (corpus_id, target_kind, target_i
 ALTER TABLE themes ADD COLUMN model_tier TEXT NOT NULL DEFAULT 'unknown';
 UPDATE themes SET model = 'unknown' WHERE model IS NULL;
 
+-- ── Historical provenance fix ─────────────────────────────────────────────────
+-- Prior to this migration, LlmProvider::name() on AnthropicApiProvider returned
+-- "anthropic-api" (the provider label) instead of the actual model name.  Every
+-- artifact written before this migration therefore has model = 'anthropic-api'.
+-- We know the actual model was 'claude-sonnet-4-5' (the DEFAULT_MODEL constant;
+-- no model override was ever shipped in the default config).  Correct all four
+-- tables, then derive model_tier from the now-accurate model column.
+
+UPDATE entity_purposes  SET model = 'claude-sonnet-4-5' WHERE model = 'anthropic-api';
+UPDATE entity_contracts SET model = 'claude-sonnet-4-5' WHERE model = 'anthropic-api';
+UPDATE summaries        SET model = 'claude-sonnet-4-5' WHERE model = 'anthropic-api';
+UPDATE themes           SET model = 'claude-sonnet-4-5' WHERE model = 'anthropic-api';
+
+UPDATE entity_purposes  SET model_tier = CASE
+    WHEN model LIKE '%opus%'   THEN 'opus'
+    WHEN model LIKE '%sonnet%' THEN 'sonnet'
+    WHEN model LIKE '%haiku%'  THEN 'haiku'
+    ELSE 'unknown' END;
+UPDATE entity_contracts SET model_tier = CASE
+    WHEN model LIKE '%opus%'   THEN 'opus'
+    WHEN model LIKE '%sonnet%' THEN 'sonnet'
+    WHEN model LIKE '%haiku%'  THEN 'haiku'
+    ELSE 'unknown' END;
+UPDATE summaries        SET model_tier = CASE
+    WHEN model LIKE '%opus%'   THEN 'opus'
+    WHEN model LIKE '%sonnet%' THEN 'sonnet'
+    WHEN model LIKE '%haiku%'  THEN 'haiku'
+    ELSE 'unknown' END;
+UPDATE themes           SET model_tier = CASE
+    WHEN model LIKE '%opus%'   THEN 'opus'
+    WHEN model LIKE '%sonnet%' THEN 'sonnet'
+    WHEN model LIKE '%haiku%'  THEN 'haiku'
+    ELSE 'unknown' END;
+
 PRAGMA foreign_keys = ON;

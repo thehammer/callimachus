@@ -204,7 +204,7 @@ impl LlmProvider for AnthropicApiProvider {
     }
 
     fn name(&self) -> &str {
-        "anthropic-api"
+        &self.default_model
     }
 
     fn supports_parallel(&self) -> bool {
@@ -345,7 +345,18 @@ mod tests {
     #[test]
     fn name_and_parallel() {
         let p = AnthropicApiProvider::new("k".to_string(), None, None);
-        assert_eq!(p.name(), "anthropic-api");
+        // name() returns the actual model name, not the provider label.
+        assert_eq!(p.name(), "claude-sonnet-4-5");
         assert!(p.supports_parallel());
+    }
+
+    #[test]
+    fn name_reflects_configured_model() {
+        let p = AnthropicApiProvider::new(
+            "k".to_string(),
+            Some("claude-haiku-4-5-20251001".to_string()),
+            None,
+        );
+        assert_eq!(p.name(), "claude-haiku-4-5-20251001");
     }
 }
