@@ -167,6 +167,20 @@ pub async fn run(
                 let contract = EntityContract {
                     entity_id: entity.id.clone(),
                     corpus_id: corpus.id.clone(),
+                    // Static signals from deterministic analysis.
+                    is_public: extracted.is_public,
+                    is_must_use: extracted.is_must_use,
+                    is_deprecated: extracted.is_deprecated,
+                    is_fallible: extracted.is_fallible,
+                    is_nullable: extracted.is_nullable,
+                    is_mutating: extracted.is_mutating,
+                    is_diverging: extracted.is_diverging,
+                    has_panic_risk: extracted.has_panic_risk,
+                    has_unsafe: extracted.has_unsafe,
+                    is_incomplete: extracted.is_incomplete,
+                    panic_call_count: extracted.panic_call_count as i64,
+                    debt_markers: extracted.debt_markers,
+                    // LLM-inferred semantics.
                     assumptions: extracted.assumptions,
                     risks: extracted.risks,
                     intent_gap: extracted.intent_gap,
@@ -174,7 +188,6 @@ pub async fn run(
                     model,
                     model_tier: tier_str,
                     generated_at: now,
-                    ..EntityContract::default()
                 };
                 db.contract_upsert(&contract)?;
 

@@ -439,18 +439,37 @@ Return JSON matching this schema exactly:
 
         if text.is_empty() || text == "[dry-run]" {
             return Ok(Some(ExtractedContract {
-                assumptions: vec![],
-                risks: vec![],
-                intent_gap: None,
-                caller_notes: None,
-                verified_by_names: vec![],
-                discards_result_callees: vec![],
+                is_public: static_signals.is_public,
+                is_must_use: static_signals.is_must_use,
+                is_deprecated: static_signals.is_deprecated,
+                is_fallible: static_signals.is_fallible,
+                is_nullable: static_signals.is_nullable,
+                is_mutating: static_signals.is_mutating,
+                is_diverging: static_signals.is_diverging,
+                has_panic_risk: static_signals.has_panic_risk,
+                has_unsafe: static_signals.has_unsafe,
+                is_incomplete: static_signals.is_incomplete,
+                panic_call_count: static_signals.panic_call_count,
+                debt_markers: static_signals.debt_markers.clone(),
+                ..ExtractedContract::default()
             }));
         }
 
         let clean = strip_markdown_fences(text);
         match serde_json::from_str::<serde_json::Value>(&clean) {
             Ok(v) => Ok(Some(ExtractedContract {
+                is_public: static_signals.is_public,
+                is_must_use: static_signals.is_must_use,
+                is_deprecated: static_signals.is_deprecated,
+                is_fallible: static_signals.is_fallible,
+                is_nullable: static_signals.is_nullable,
+                is_mutating: static_signals.is_mutating,
+                is_diverging: static_signals.is_diverging,
+                has_panic_risk: static_signals.has_panic_risk,
+                has_unsafe: static_signals.has_unsafe,
+                is_incomplete: static_signals.is_incomplete,
+                panic_call_count: static_signals.panic_call_count,
+                debt_markers: static_signals.debt_markers.clone(),
                 assumptions: json_str_array(&v, "assumptions"),
                 risks: json_str_array(&v, "risks"),
                 intent_gap: v

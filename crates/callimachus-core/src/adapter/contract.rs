@@ -55,8 +55,28 @@ pub struct ExtractedBlock {
     pub description: String,
 }
 
-/// Result of `extract_contract`: LLM-inferred semantic contract data.
+/// Result of `extract_contract`: static signals merged with LLM-inferred semantics.
+///
+/// Static signal fields are populated by the adapter's deterministic analysis
+/// (tree-sitter / regex) before the LLM call; they should always be accurate
+/// regardless of whether the LLM succeeds.  LLM-inferred fields may be empty
+/// when the model returns nothing useful.
+#[derive(Default)]
 pub struct ExtractedContract {
+    // ── Static signals (adapter-populated, no LLM) ───────────────────────────
+    pub is_public: bool,
+    pub is_must_use: bool,
+    pub is_deprecated: bool,
+    pub is_fallible: bool,
+    pub is_nullable: bool,
+    pub is_mutating: bool,
+    pub is_diverging: bool,
+    pub has_panic_risk: bool,
+    pub has_unsafe: bool,
+    pub is_incomplete: bool,
+    pub panic_call_count: u32,
+    pub debt_markers: Vec<String>,
+    // ── LLM-inferred semantics ───────────────────────────────────────────────
     pub assumptions: Vec<String>,
     pub risks: Vec<String>,
     pub intent_gap: Option<String>,
