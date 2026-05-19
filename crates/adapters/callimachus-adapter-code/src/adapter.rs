@@ -706,14 +706,12 @@ fn build_chunk_options(meta: &serde_json::Value) -> ChunkOptions {
             .collect();
     }
     if let Some(globs) = meta.get("exclude_globs").and_then(|v| v.as_array()) {
-        // Merge with defaults — user can override entirely if desired.
+        // Append user-supplied globs to the defaults so the standard exclusions always apply.
         let user_globs: Vec<String> = globs
             .iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect();
-        if !user_globs.is_empty() {
-            opts.exclude_globs = user_globs;
-        }
+        opts.exclude_globs.extend(user_globs);
     }
     if let Some(b) = meta.get("no_git_filter").and_then(|v| v.as_bool()) {
         opts.no_git_filter = b;
