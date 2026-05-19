@@ -282,7 +282,7 @@ Several of that framework's principles are directly expressed in Callimachus's a
 - **Right Action** — the scholia model is a structured review layer. You don't just accept the index; you apply corrections where it's wrong. Review is built into the workflow, not bolted on.
 - **Right Effort** — pre-computed semantic artifacts redirect effort toward higher-leverage work. Comprehension runs once at index time; practitioners spend their attention on reasoning, not re-reading.
 
-**[The Aightfold Path](https://github.com/thehammer/aightfold-path)** — the underlying framework. A mental model for skillful AI-assisted software development, drawn from the Buddhist Eightfold Path. Callimachus is one concrete instantiation of what "tooling that embodies the discipline structurally" looks like.
+**[The AIghtfold Path](https://github.com/thehammer/aightfold-path)** — the underlying framework. A mental model for skillful AI-assisted software development, drawn from the Buddhist Eightfold Path. Callimachus is one concrete instantiation of what "tooling that embodies the discipline structurally" looks like.
 
 ---
 
