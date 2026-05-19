@@ -12,7 +12,7 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Supported MCP protocol versions (newest first).
 const SUPPORTED_VERSIONS: &[&str] = &["2025-03-26", "2024-11-05"];
 
-/// The MCP stdio server. Exposes all 17 tools (12 corpus-scoped + 5 collection-scoped).
+/// The MCP stdio server. Exposes all 27 tools (22 corpus-scoped + 5 collection-scoped).
 pub struct McpServer {
     qs: QueryService,
     backend: Arc<dyn StorageBackend>,
@@ -332,8 +332,8 @@ mod tests {
         let server = make_server();
         let resp = server.handle("tools/list", Value::Null, json!(1)).await;
         let tools = resp["result"]["tools"].as_array().unwrap();
-        // 23 original + 2 taxonomy tools (entity_search_by_abstract_kind, list_abstract_kinds)
-        assert_eq!(tools.len(), 25);
+        // 23 original + 2 taxonomy tools + 2 scholia tools (list_scholia, apply_scholion)
+        assert_eq!(tools.len(), 27);
     }
 
     #[tokio::test]

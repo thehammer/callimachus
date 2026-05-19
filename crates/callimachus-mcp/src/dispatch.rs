@@ -1,3 +1,4 @@
+use callimachus_core::corrections::types::CorrectionKind;
 use callimachus_core::query::{
     ChapterSummaryInput, CharacterProfileInput, CollectionEntityMeetInput,
     CollectionEntityResolveInput, CollectionListInput, CollectionOverviewInput,
@@ -187,6 +188,231 @@ pub async fn dispatch(
             let input = serde_json::from_value::<ListAbstractKindsInput>(args).unwrap_or_default();
             serde_json::to_value(qs.list_abstract_kinds(input)).unwrap_or_else(err_json)
         }
+        // ── Scholia tools ───────────────────────────────────────────────────
+        "list_scholia" => {
+            let corpus_id = match args.get("corpus_id").and_then(|v| v.as_str()) {
+                Some(id) => id.to_string(),
+                None => {
+                    return serde_json::json!({
+                        "ok": false,
+                        "kind": "invalid_input",
+                        "message": "corpus_id is required"
+                    });
+                }
+            };
+            match backend.correction_list(&corpus_id) {
+                Err(e) => serde_json::json!({
+                    "ok": false,
+                    "kind": "error",
+                    "code": "storage_error",
+                    "message": e.to_string(),
+                    "retriable": false
+                }),
+                Ok(scholia) => {
+                    let items: Vec<_> = scholia
+                        .into_iter()
+                        .map(|s| {
+                            serde_json::json!({
+                                "id": s.id,
+                                "corpus_id": s.corpus_id,
+                                "kind": s.kind.kind_name(),
+                                "applied_at": s.applied_at,
+                            })
+                        })
+                        .collect();
+                    serde_json::json!({ "ok": true, "data": { "scholia": items } })
+                }
+            }
+        }
+        "apply_scholion" => {
+            let kind_str = match args.get("kind").and_then(|v| v.as_str()) {
+                Some(k) => k,
+                None => {
+                    return serde_json::json!({
+                        "ok": false,
+                        "kind": "invalid_input",
+                        "message": "kind is required"
+                    });
+                }
+            };
+
+            let corpus_id = args.get("corpus_id").and_then(|v| v.as_str());
+            let collection_id = args.get("collection_id").and_then(|v| v.as_str());
+
+            let correction_kind = match kind_str {
+                "merge" => {
+                    let entity_a_id = args
+                        .get("entity_a_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let entity_b_id = args
+                        .get("entity_b_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let canonical_id = args
+                        .get("canonical_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&entity_a_id)
+                        .to_string();
+                    CorrectionKind::Merge {
+                        entity_a_id,
+                        entity_b_id,
+                        canonical_id,
+                    }
+                }
+                "unmerge" => {
+                    use callimachus_core::corrections::types::SplitGranularity;
+                    let entity_id = args
+                        .get("entity_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let split_by = match args.get("split_by").and_then(|v| v.as_str()) {
+                        Some("chapter") => SplitGranularity::Chapter,
+                        _ => SplitGranularity::Scene,
+                    };
+                    CorrectionKind::Unmerge {
+                        entity_id,
+                        split_by,
+                    }
+                }
+                "rename" => {
+                    let entity_id = args
+                        .get("entity_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let new_name = args
+                        .get("new_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    CorrectionKind::Rename {
+                        entity_id,
+                        new_name,
+                    }
+                }
+                "alias" => {
+                    let entity_id = args
+                        .get("entity_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let add = args
+                        .get("add")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(String::from)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let remove = args
+                        .get("remove")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(String::from)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    CorrectionKind::Alias {
+                        entity_id,
+                        add,
+                        remove,
+                    }
+                }
+                "edit_summary" => {
+                    let target_kind = args
+                        .get("target_kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("entity")
+                        .to_string();
+                    let target_id = args
+                        .get("target_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let text = args
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    CorrectionKind::EditSummary {
+                        target_kind,
+                        target_id,
+                        text,
+                    }
+                }
+                "entity_link" => {
+                    use callimachus_core::corrections::types::EntityLinkKind;
+                    let corpus_a_id = args
+                        .get("corpus_a_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let entity_a_id = args
+                        .get("entity_a_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let corpus_b_id = args
+                        .get("corpus_b_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let entity_b_id = args
+                        .get("entity_b_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let link_kind_str =
+                        args.get("link_kind").and_then(|v| v.as_str()).unwrap_or("");
+                    let link_kind = match EntityLinkKind::from_str(link_kind_str) {
+                        Some(k) => k,
+                        None => {
+                            return serde_json::json!({
+                                "ok": false,
+                                "kind": "invalid_input",
+                                "message": format!("unknown link_kind: {link_kind_str}")
+                            });
+                        }
+                    };
+                    let note = args.get("note").and_then(|v| v.as_str()).map(String::from);
+                    CorrectionKind::EntityLink {
+                        corpus_a_id,
+                        entity_a_id,
+                        corpus_b_id,
+                        entity_b_id,
+                        kind: link_kind,
+                        note,
+                    }
+                }
+                other => {
+                    return serde_json::json!({
+                        "ok": false,
+                        "kind": "invalid_input",
+                        "message": format!("unknown scholion kind: {other}")
+                    });
+                }
+            };
+
+            match backend.correction_insert(corpus_id, collection_id, &correction_kind) {
+                Err(e) => serde_json::json!({
+                    "ok": false,
+                    "kind": "error",
+                    "code": "storage_error",
+                    "message": e.to_string(),
+                    "retriable": false
+                }),
+                Ok(id) => serde_json::json!({ "ok": true, "data": { "id": id } }),
+            }
+        }
+
         unknown => serde_json::json!({
             "ok": false,
             "kind": "invalid_input",

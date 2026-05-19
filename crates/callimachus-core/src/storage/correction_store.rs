@@ -25,7 +25,7 @@ pub fn insert(
     let kind_name = kind.kind_name();
     let payload = serde_json::to_string(kind)?;
     db.conn().execute(
-        "INSERT INTO corrections (id, corpus_id, collection_id, kind, payload, applied_at)
+        "INSERT INTO scholia (id, corpus_id, collection_id, kind, payload, applied_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![id, corpus_id, collection_id, kind_name, payload, now],
     )?;
@@ -36,7 +36,7 @@ pub fn insert(
 /// Collection-scoped corrections (EntityLink) are excluded.
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Correction>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, collection_id, payload, applied_at FROM corrections
+        "SELECT id, corpus_id, collection_id, payload, applied_at FROM scholia
          WHERE corpus_id = ?1 ORDER BY applied_at ASC",
     )?;
     collect_corrections(stmt.query_map(params![corpus_id], row_to_correction)?)
@@ -45,7 +45,7 @@ pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Correction>> {
 /// List collection-scoped corrections (EntityLink records) for one collection.
 pub fn list_for_collection(db: &Database, collection_id: &str) -> Result<Vec<Correction>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, collection_id, payload, applied_at FROM corrections
+        "SELECT id, corpus_id, collection_id, payload, applied_at FROM scholia
          WHERE collection_id = ?1 ORDER BY applied_at ASC",
     )?;
     collect_corrections(stmt.query_map(params![collection_id], row_to_correction)?)
@@ -54,7 +54,7 @@ pub fn list_for_collection(db: &Database, collection_id: &str) -> Result<Vec<Cor
 /// List corrections for ALL scopes, ordered by applied_at ASC.
 pub fn list_all(db: &Database) -> Result<Vec<Correction>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, collection_id, payload, applied_at FROM corrections
+        "SELECT id, corpus_id, collection_id, payload, applied_at FROM scholia
          ORDER BY applied_at ASC",
     )?;
     collect_corrections(stmt.query_map([], row_to_correction)?)
@@ -62,10 +62,9 @@ pub fn list_all(db: &Database) -> Result<Vec<Correction>> {
 
 /// Delete a correction by ID. Returns `true` if a row was deleted.
 pub fn delete(db: &Database, correction_id: &str) -> Result<bool> {
-    let n = db.conn().execute(
-        "DELETE FROM corrections WHERE id = ?1",
-        params![correction_id],
-    )?;
+    let n = db
+        .conn()
+        .execute("DELETE FROM scholia WHERE id = ?1", params![correction_id])?;
     Ok(n > 0)
 }
 
