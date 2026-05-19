@@ -97,11 +97,20 @@ pub trait StorageBackend: Send + Sync {
     fn summary_upsert(&self, summary: &Summary) -> Result<()>;
     fn summary_list(&self, corpus_id: &str) -> Result<Vec<Summary>>;
     fn summary_delete_for_target(&self, corpus_id: &str, target_id: &str) -> Result<()>;
+    /// Best-tier summary for the target (None ⇒ no row). Transparent to callers.
     fn summary_get(
         &self,
         corpus_id: &str,
         target_kind: &SummaryTargetKind,
         target_id: &str,
+    ) -> Result<Option<Summary>>;
+    /// Exact-model lookup; returns `None` if no row for that model exists.
+    fn summary_get_for_model(
+        &self,
+        corpus_id: &str,
+        target_kind: &SummaryTargetKind,
+        target_id: &str,
+        model: &str,
     ) -> Result<Option<Summary>>;
 
     // ── Run log ───────────────────────────────────────────────────────────────
@@ -164,7 +173,15 @@ pub trait StorageBackend: Send + Sync {
     // ── Purpose ───────────────────────────────────────────────────────────────
 
     fn purpose_upsert(&self, p: &EntityPurpose) -> Result<()>;
+    /// Best-tier artifact for the entity (None ⇒ no row). Transparent to callers.
     fn purpose_get(&self, corpus_id: &str, entity_id: &str) -> Result<Option<EntityPurpose>>;
+    /// Exact-model lookup; returns `None` if no row for that model exists.
+    fn purpose_get_for_model(
+        &self,
+        corpus_id: &str,
+        entity_id: &str,
+        model: &str,
+    ) -> Result<Option<EntityPurpose>>;
     fn purpose_list(&self, corpus_id: &str) -> Result<Vec<EntityPurpose>>;
 
     // ── Block ─────────────────────────────────────────────────────────────────
@@ -175,8 +192,19 @@ pub trait StorageBackend: Send + Sync {
     // ── Contract ──────────────────────────────────────────────────────────────
 
     fn contract_upsert(&self, c: &EntityContract) -> Result<()>;
+    /// Best-tier artifact for the entity (None ⇒ no row). Transparent to callers.
     fn contract_get(&self, corpus_id: &str, entity_id: &str) -> Result<Option<EntityContract>>;
+    /// Exact-model lookup; returns `None` if no row for that model exists.
+    fn contract_get_for_model(
+        &self,
+        corpus_id: &str,
+        entity_id: &str,
+        model: &str,
+    ) -> Result<Option<EntityContract>>;
+    /// All contract rows (multiple per entity in multi-model corpora).
     fn contract_list(&self, corpus_id: &str) -> Result<Vec<EntityContract>>;
+    /// One best-tier row per entity. For callers that want exactly one per entity.
+    fn contract_list_best_per_entity(&self, corpus_id: &str) -> Result<Vec<EntityContract>>;
     fn contract_list_inconsistencies(&self, corpus_id: &str) -> Result<Vec<EntityContract>>;
 
     // ── Theme ─────────────────────────────────────────────────────────────────

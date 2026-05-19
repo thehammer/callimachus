@@ -1,5 +1,53 @@
 use crate::error::{LlmError, Result};
 
+/// Maps an LLM model name (as returned by `LlmClient::name()`) to a coarse
+/// tier label used by storage to order artifacts by quality.
+/// Returns one of: `"haiku"`, `"sonnet"`, `"opus"`, `"unknown"`.
+pub fn model_tier(model_name: &str) -> &'static str {
+    let lc = model_name.to_lowercase();
+    if lc.contains("opus") {
+        "opus"
+    } else if lc.contains("sonnet") {
+        "sonnet"
+    } else if lc.contains("haiku") {
+        "haiku"
+    } else {
+        "unknown"
+    }
+}
+
+#[cfg(test)]
+mod tier_tests {
+    use super::model_tier;
+
+    #[test]
+    fn opus_variants() {
+        assert_eq!(model_tier("claude-opus-4-20250514"), "opus");
+        assert_eq!(model_tier("claude-opus-4-5"), "opus");
+        assert_eq!(model_tier("Claude-Opus-3"), "opus"); // mixed case
+    }
+
+    #[test]
+    fn sonnet_variants() {
+        assert_eq!(model_tier("claude-sonnet-4-5-20250929"), "sonnet");
+        assert_eq!(model_tier("Claude-Sonnet-3-5"), "sonnet");
+    }
+
+    #[test]
+    fn haiku_variants() {
+        assert_eq!(model_tier("claude-haiku-4-5-20251001"), "haiku");
+        assert_eq!(model_tier("Claude-Haiku-3"), "haiku");
+    }
+
+    #[test]
+    fn unknown_models() {
+        assert_eq!(model_tier("gpt-4"), "unknown");
+        assert_eq!(model_tier("unknown"), "unknown");
+        assert_eq!(model_tier(""), "unknown");
+        assert_eq!(model_tier("dry-run"), "unknown");
+    }
+}
+
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse>;

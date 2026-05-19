@@ -342,7 +342,8 @@ mod tests {
             target_id: target_id.to_string(),
             depth: "chapter".to_string(),
             text: "a summary".to_string(),
-            model: None,
+            model: "unknown".to_string(),
+            model_tier: "unknown".to_string(),
             generated_at: chrono::Utc::now().to_rfc3339(),
         };
         db.summary_upsert(&s).unwrap();

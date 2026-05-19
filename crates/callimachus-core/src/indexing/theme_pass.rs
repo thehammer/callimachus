@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use callimachus_llm::LlmProvider;
+use callimachus_llm::{LlmProvider, model_tier};
 use uuid::Uuid;
 
 use crate::{
@@ -60,13 +60,16 @@ pub async fn run(
                 db.entity_upsert(&theme_entity)?;
 
                 // Insert theme record.
+                let model = llm.name().to_string();
+                let tier = model_tier(&model).to_string();
                 let theme = Theme {
                     id: theme_id.clone(),
                     corpus_id: corpus.id.clone(),
                     title: et.title.clone(),
                     statement: et.statement.clone(),
                     confidence: et.confidence,
-                    model: Some(llm.name().to_string()),
+                    model,
+                    model_tier: tier,
                     generated_at: now.clone(),
                 };
                 db.theme_upsert(&theme)?;

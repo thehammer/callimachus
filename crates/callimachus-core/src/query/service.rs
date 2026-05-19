@@ -443,7 +443,7 @@ impl QueryService {
                 Some(s) => Ok(ToolResult::ok(SummarizeOutput {
                     text: s.text,
                     generated_at: s.generated_at,
-                    model: s.model,
+                    model: Some(s.model),
                 })),
                 None => Ok(ToolResult::not_found(Some(vec![
                     "Run `calli index <corpus_id> --pass=summarize` to generate summaries"
@@ -1428,7 +1428,8 @@ mod tests {
             target_id: "c1".into(),
             depth: "corpus".into(),
             text: "A rich tale".into(),
-            model: None,
+            model: "unknown".into(),
+            model_tier: "unknown".into(),
             generated_at: chrono::Utc::now().to_rfc3339(),
         };
         db.summary_upsert(&summary).unwrap();

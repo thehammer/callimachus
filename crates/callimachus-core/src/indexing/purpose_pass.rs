@@ -3,6 +3,8 @@ use std::sync::Arc;
 use callimachus_llm::{LlmError, LlmProvider};
 use uuid::Uuid;
 
+use callimachus_llm::model_tier;
+
 use crate::{
     adapter::SourceAdapter,
     storage::{StorageBackend, run_log::PassStats},
@@ -37,8 +39,14 @@ pub async fn run(
     let total = candidates.len() as u64;
 
     for (i, entity) in candidates.iter().enumerate() {
-        // Idempotent: skip if already computed (unless --full).
-        if !opts.full && db.purpose_get(&corpus.id, &entity.id)?.is_some() {
+        // Idempotent: skip only if this exact model has already produced an artifact.
+        // A different model (e.g. Sonnet after Haiku) will add a new row.
+        let model_name = llm.name();
+        if !opts.full
+            && db
+                .purpose_get_for_model(&corpus.id, &entity.id, model_name)?
+                .is_some()
+        {
             stats.skipped += 1;
             let completed = i as u64 + 1;
             if completed.is_multiple_of(25) {
@@ -93,11 +101,14 @@ pub async fn run(
         {
             Ok(Some(extracted)) => {
                 let now = chrono::Utc::now().to_rfc3339();
+                let model = llm.name().to_string();
+                let tier = model_tier(&model).to_string();
                 let purpose = EntityPurpose {
                     entity_id: entity.id.clone(),
                     corpus_id: corpus.id.clone(),
                     purpose: extracted.purpose,
-                    model: Some(llm.name().to_string()),
+                    model,
+                    model_tier: tier,
                     generated_at: now.clone(),
                 };
                 db.purpose_upsert(&purpose)?;

@@ -239,7 +239,17 @@ impl StorageBackend for SqliteBackend {
         target_kind: &SummaryTargetKind,
         target_id: &str,
     ) -> Result<Option<Summary>> {
-        summary_store::get(&db!(self), corpus_id, target_kind, target_id)
+        summary_store::get_best(&db!(self), corpus_id, target_kind, target_id)
+    }
+
+    fn summary_get_for_model(
+        &self,
+        corpus_id: &str,
+        target_kind: &SummaryTargetKind,
+        target_id: &str,
+        model: &str,
+    ) -> Result<Option<Summary>> {
+        summary_store::get_for_model(&db!(self), corpus_id, target_kind, target_id, model)
     }
 
     // ── Run log ───────────────────────────────────────────────────────────────
@@ -373,7 +383,16 @@ impl StorageBackend for SqliteBackend {
     }
 
     fn purpose_get(&self, corpus_id: &str, entity_id: &str) -> Result<Option<EntityPurpose>> {
-        purpose_store::get(&db!(self), corpus_id, entity_id)
+        purpose_store::get_best(&db!(self), corpus_id, entity_id)
+    }
+
+    fn purpose_get_for_model(
+        &self,
+        corpus_id: &str,
+        entity_id: &str,
+        model: &str,
+    ) -> Result<Option<EntityPurpose>> {
+        purpose_store::get_for_model(&db!(self), corpus_id, entity_id, model)
     }
 
     fn purpose_list(&self, corpus_id: &str) -> Result<Vec<EntityPurpose>> {
@@ -397,11 +416,24 @@ impl StorageBackend for SqliteBackend {
     }
 
     fn contract_get(&self, corpus_id: &str, entity_id: &str) -> Result<Option<EntityContract>> {
-        contract_store::get(&db!(self), corpus_id, entity_id)
+        contract_store::get_best(&db!(self), corpus_id, entity_id)
+    }
+
+    fn contract_get_for_model(
+        &self,
+        corpus_id: &str,
+        entity_id: &str,
+        model: &str,
+    ) -> Result<Option<EntityContract>> {
+        contract_store::get_for_model(&db!(self), corpus_id, entity_id, model)
     }
 
     fn contract_list(&self, corpus_id: &str) -> Result<Vec<EntityContract>> {
         contract_store::list(&db!(self), corpus_id)
+    }
+
+    fn contract_list_best_per_entity(&self, corpus_id: &str) -> Result<Vec<EntityContract>> {
+        contract_store::list_best_per_entity(&db!(self), corpus_id)
     }
 
     fn contract_list_inconsistencies(&self, corpus_id: &str) -> Result<Vec<EntityContract>> {

@@ -14,8 +14,8 @@ pub fn upsert(db: &Database, c: &EntityContract) -> Result<()> {
           is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
           is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
           panic_call_count, debt_markers, assumptions, risks,
-          intent_gap, caller_notes, model, generated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+          intent_gap, caller_notes, model, model_tier, generated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
         params![
             c.entity_id,
             c.corpus_id,
@@ -36,20 +36,32 @@ pub fn upsert(db: &Database, c: &EntityContract) -> Result<()> {
             c.intent_gap,
             c.caller_notes,
             c.model,
+            c.model_tier,
             c.generated_at,
         ],
     )?;
     Ok(())
 }
 
-pub fn get(db: &Database, corpus_id: &str, entity_id: &str) -> Result<Option<EntityContract>> {
+/// Return the highest-tier contract for the entity. opus > sonnet > haiku > unknown.
+/// Ties broken by `generated_at DESC`.
+pub fn get_best(db: &Database, corpus_id: &str, entity_id: &str) -> Result<Option<EntityContract>> {
     let mut stmt = db.conn().prepare(
         "SELECT entity_id, corpus_id,
                 is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
                 is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
                 panic_call_count, debt_markers, assumptions, risks,
-                intent_gap, caller_notes, model, generated_at
-         FROM entity_contracts WHERE corpus_id = ?1 AND entity_id = ?2",
+                intent_gap, caller_notes, model, model_tier, generated_at
+         FROM entity_contracts
+         WHERE corpus_id = ?1 AND entity_id = ?2
+         ORDER BY CASE model_tier
+                    WHEN 'opus'    THEN 3
+                    WHEN 'sonnet'  THEN 2
+                    WHEN 'haiku'   THEN 1
+                    ELSE 0
+                  END DESC,
+                  generated_at DESC
+         LIMIT 1",
     )?;
     let mut rows = stmt.query_map(params![corpus_id, entity_id], row_to_contract)?;
     match rows.next() {
@@ -58,13 +70,37 @@ pub fn get(db: &Database, corpus_id: &str, entity_id: &str) -> Result<Option<Ent
     }
 }
 
+/// Return the contract produced by an exact model name, or `None` if not found.
+pub fn get_for_model(
+    db: &Database,
+    corpus_id: &str,
+    entity_id: &str,
+    model: &str,
+) -> Result<Option<EntityContract>> {
+    let mut stmt = db.conn().prepare(
+        "SELECT entity_id, corpus_id,
+                is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
+                is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
+                panic_call_count, debt_markers, assumptions, risks,
+                intent_gap, caller_notes, model, model_tier, generated_at
+         FROM entity_contracts
+         WHERE corpus_id = ?1 AND entity_id = ?2 AND model = ?3",
+    )?;
+    let mut rows = stmt.query_map(params![corpus_id, entity_id, model], row_to_contract)?;
+    match rows.next() {
+        Some(r) => Ok(Some(r?)),
+        None => Ok(None),
+    }
+}
+
+/// All contract rows for the corpus (multiple per entity when multi-model).
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<EntityContract>> {
     let mut stmt = db.conn().prepare(
         "SELECT entity_id, corpus_id,
                 is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
                 is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
                 panic_call_count, debt_markers, assumptions, risks,
-                intent_gap, caller_notes, model, generated_at
+                intent_gap, caller_notes, model, model_tier, generated_at
          FROM entity_contracts WHERE corpus_id = ?1 ORDER BY entity_id ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_contract)?;
@@ -72,22 +108,80 @@ pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<EntityContract>> {
         .map_err(crate::error::CalError::from)
 }
 
-/// Return contracts that show signs of inconsistency or technical debt:
-/// - `is_incomplete = 1`
-/// - `intent_gap IS NOT NULL`
-/// - `is_fallible = 0 AND risks array is non-empty` (risks text longer than "[]")
+/// One best-tier contract per entity. Useful when callers need exactly one row
+/// per entity (e.g. debt analysis, graph queries).
+pub fn list_best_per_entity(db: &Database, corpus_id: &str) -> Result<Vec<EntityContract>> {
+    let mut stmt = db.conn().prepare(
+        "SELECT entity_id, corpus_id,
+                is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
+                is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
+                panic_call_count, debt_markers, assumptions, risks,
+                intent_gap, caller_notes, model, model_tier, generated_at
+         FROM entity_contracts c1
+         WHERE corpus_id = ?1
+           AND generated_at = (
+               SELECT MAX(c2.generated_at) FROM entity_contracts c2
+               WHERE c2.entity_id   = c1.entity_id
+                 AND c2.corpus_id   = c1.corpus_id
+                 AND CASE c2.model_tier
+                       WHEN 'opus'   THEN 3
+                       WHEN 'sonnet' THEN 2
+                       WHEN 'haiku'  THEN 1
+                       ELSE 0
+                     END = (
+                       SELECT MAX(CASE c3.model_tier
+                                    WHEN 'opus'   THEN 3
+                                    WHEN 'sonnet' THEN 2
+                                    WHEN 'haiku'  THEN 1
+                                    ELSE 0
+                                  END)
+                       FROM entity_contracts c3
+                       WHERE c3.entity_id = c1.entity_id
+                         AND c3.corpus_id = c1.corpus_id
+                     )
+           )
+         ORDER BY entity_id ASC",
+    )?;
+    let rows = stmt.query_map(params![corpus_id], row_to_contract)?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(crate::error::CalError::from)
+}
+
+/// Return contracts that show signs of inconsistency or technical debt, one
+/// best-tier row per entity.
 pub fn list_with_inconsistencies(db: &Database, corpus_id: &str) -> Result<Vec<EntityContract>> {
     let mut stmt = db.conn().prepare(
         "SELECT entity_id, corpus_id,
                 is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
                 is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
                 panic_call_count, debt_markers, assumptions, risks,
-                intent_gap, caller_notes, model, generated_at
-         FROM entity_contracts
+                intent_gap, caller_notes, model, model_tier, generated_at
+         FROM entity_contracts c1
          WHERE corpus_id = ?1
            AND (is_incomplete = 1
                 OR intent_gap IS NOT NULL
                 OR (is_fallible = 0 AND length(risks) > 2))
+           AND generated_at = (
+               SELECT MAX(c2.generated_at) FROM entity_contracts c2
+               WHERE c2.entity_id   = c1.entity_id
+                 AND c2.corpus_id   = c1.corpus_id
+                 AND CASE c2.model_tier
+                       WHEN 'opus'   THEN 3
+                       WHEN 'sonnet' THEN 2
+                       WHEN 'haiku'  THEN 1
+                       ELSE 0
+                     END = (
+                       SELECT MAX(CASE c3.model_tier
+                                    WHEN 'opus'   THEN 3
+                                    WHEN 'sonnet' THEN 2
+                                    WHEN 'haiku'  THEN 1
+                                    ELSE 0
+                                  END)
+                       FROM entity_contracts c3
+                       WHERE c3.entity_id = c1.entity_id
+                         AND c3.corpus_id = c1.corpus_id
+                     )
+           )
          ORDER BY entity_id ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_contract)?;
@@ -124,6 +218,7 @@ fn row_to_contract(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntityContract> 
         intent_gap: row.get(16)?,
         caller_notes: row.get(17)?,
         model: row.get(18)?,
-        generated_at: row.get(19)?,
+        model_tier: row.get(19)?,
+        generated_at: row.get(20)?,
     })
 }

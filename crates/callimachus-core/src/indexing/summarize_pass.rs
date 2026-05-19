@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use callimachus_llm::LlmProvider;
+use callimachus_llm::{LlmProvider, model_tier};
 use uuid::Uuid;
 
 use crate::{
@@ -187,6 +187,8 @@ pub async fn run(
     {
         Ok(Some(text)) => {
             if !opts.dry_run {
+                let model = llm.name().to_string();
+                let tier = model_tier(&model).to_string();
                 let summary = Summary {
                     id: Uuid::new_v4().to_string(),
                     corpus_id: corpus.id.clone(),
@@ -194,7 +196,8 @@ pub async fn run(
                     target_id: corpus.id.clone(),
                     depth: "corpus".to_string(),
                     text,
-                    model: Some(llm.name().to_string()),
+                    model,
+                    model_tier: tier,
                     generated_at: chrono::Utc::now().to_rfc3339(),
                 };
                 db.summary_upsert(&summary)?;
@@ -226,6 +229,8 @@ fn make_summary(
     text: String,
     llm: &Arc<dyn LlmProvider>,
 ) -> Summary {
+    let model = llm.name().to_string();
+    let tier = model_tier(&model).to_string();
     Summary {
         id: Uuid::new_v4().to_string(),
         corpus_id: corpus.id.clone(),
@@ -233,7 +238,8 @@ fn make_summary(
         target_id,
         depth: depth.to_string(),
         text,
-        model: Some(llm.name().to_string()),
+        model,
+        model_tier: tier,
         generated_at: chrono::Utc::now().to_rfc3339(),
     }
 }

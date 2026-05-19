@@ -24,6 +24,9 @@ pub struct EntityContract {
     pub intent_gap: Option<String>,
     pub caller_notes: Option<String>,
     // ── Provenance ───────────────────────────────────────────────────────────
-    pub model: Option<String>,
+    /// The LLM model that generated this artifact.
+    pub model: String,
+    /// Coarse quality tier: "opus" > "sonnet" > "haiku" > "unknown".
+    pub model_tier: String,
     pub generated_at: String,
 }
