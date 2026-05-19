@@ -23,6 +23,8 @@ The plural is **corpora** (Latin; the anglicized "corpuses" is acceptable but le
 
 The word "corpus" is borrowed from linguistics, where it means a body of text used for analysis. Callimachus uses it the same way, extended to non-textual source materials (code) whose content can still be read as text.
 
+All corpora share a single index file — the [**pinakes**](glossary.md#pinakes). Named for the catalogue Callimachus of Cyrene compiled at the Library of Alexandria, it is the SQLite file (`.pinakes` extension) that holds everything the pipeline produces: entities, edges, summaries, purposes, contracts, and corrections. One pinakes per workspace; many corpora per pinakes.
+
 ---
 
 ## Stage 3 — Chunks
@@ -64,6 +66,8 @@ The order is not arbitrary. It encodes an [**epistemological**](glossary.md#epis
 
 Together, [**purpose**](glossary.md#purpose), [**contract**](glossary.md#contract), and [**summary**](glossary.md#summary) form a three-layer description of each entity: what it does (summary), why it exists (purpose), and what it promises (contract).
 
+These pre-built artifacts enable a fourth artifact at query time: the [**diegesis**](glossary.md#diegesis). Greek for "narrative exposition", a diegesis is a multi-paragraph explanation of a component assembled via BFS over `calls` edges — gathering purposes, summaries, and block descriptions without any new LLM calls. `calli inspect diegesis <corpus> <name>` (and the `explain_component` MCP tool) produce it.
+
 ---
 
 ## Stage 6 — Ontology: local and global
@@ -84,7 +88,7 @@ The pipeline is [epistemological](glossary.md#epistemology) (how knowledge is ac
 
 No index is perfect on first pass. The [**corrections model**](glossary.md#corrections-model) provides a mechanism for applying semantic fixes without re-indexing: merging entities the [aliases pass](glossary.md#aliases-pass) missed, linking entities across corpora that refer to the same real-world concept, annotating entities with additional context.
 
-Corrections are stored separately and applied at query time — they don't modify the base index, so they're cheap to apply and easy to revise.
+The individual records are called [**scholia**](glossary.md#scholion) (singular: [**scholion**](glossary.md#scholion)) — a term borrowed from the marginal notes ancient scholars added to manuscripts. Like those notes, scholia sit alongside the main text without altering it: they are stored in the `scholia` table and applied at query time by the `CorrectionsEngine`. Apply them via `calli scholion apply`; `calli correct` remains as a deprecated alias.
 
 The [**pipeline version**](glossary.md#pipeline-version) tracks schema generations. When new passes are introduced or schema changes are made, the version increments. `calli upgrade` brings older corpora forward without reprocessing from source. The goal is a single canonical state: all corpora at the current version, no historical divergence.
 
@@ -101,5 +105,15 @@ You now have the vocabulary to reason fluently about Callimachus:
 - The [**summarize pass**](glossary.md#summarize-pass) builds hierarchical prose via [**rollup**](glossary.md#rollup)
 - Entities carry [**summary**](glossary.md#summary) (what), [**purpose**](glossary.md#purpose) (why), [**contract**](glossary.md#contract) (obligations), and [**abstract kind**](glossary.md#abstract-kind) (global [ontology](glossary.md#ontology))
 - [**Collections**](glossary.md#collection) group corpora for cross-corpus queries
-- [**Corrections**](glossary.md#corrections-model) fix semantic issues at query time without re-indexing
+- [**Scholia**](glossary.md#scholion) fix semantic issues at query time without re-indexing
 - [**Pipeline versions**](glossary.md#pipeline-version) ensure corpora can be [**upgraded**](glossary.md#upgrade) as the system evolves
+
+Three Greek terms name the three artifacts that matter most:
+
+| Term | Meaning | Artifact |
+|---|---|---|
+| [**Pinakes**](glossary.md#pinakes) | "tablets / lists" | The index file — the single SQLite store that holds everything |
+| [**Scholion**](glossary.md#scholion) | "marginal note" | A post-indexing correction — a small, targeted fix applied at query time |
+| [**Diegesis**](glossary.md#diegesis) | "narrative exposition" | A BFS-assembled explanation of a component — zero LLM calls at query time |
+
+The naming is intentional. Callimachus of Cyrene compiled the Pinakes to make knowledge findable. Scholars added scholia to correct and extend what the original text said. Diegesis is the form in which that assembled understanding is narrated back. The three terms describe the file, the fix, and the explanation.

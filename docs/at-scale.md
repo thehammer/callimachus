@@ -32,7 +32,7 @@ Patents have exactly the structure Callimachus exploits:
 | Claims language | Contract (obligations, assumptions) |
 
 The irony: you could use Callimachus to determine whether Callimachus itself
-is patentable. Self-referential in the same way as `data/callimachus.db`.
+is patentable. Self-referential in the same way as `data/callimachus.pinakes`.
 
 ---
 
