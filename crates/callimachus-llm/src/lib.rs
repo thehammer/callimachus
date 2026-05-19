@@ -13,5 +13,5 @@ pub use claude_code::ClaudeCodeProvider;
 pub use dry_run::DryRunProvider;
 pub use error::LlmError;
 pub use openai_embed::OpenAiEmbeddingProvider;
-pub use provider::{CompletionRequest, CompletionResponse, LlmProvider, ProviderUsage};
+pub use provider::{CompletionRequest, CompletionResponse, LlmProvider, ProviderUsage, model_tier};
 pub use resolve::{ProviderConfig, auto_detect, build as build_provider};

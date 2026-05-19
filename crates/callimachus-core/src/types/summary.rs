@@ -43,7 +43,9 @@ pub struct Summary {
     /// Adapter-defined depth label: "corpus", "chapter", "scene", "function", etc.
     pub depth: String,
     pub text: String,
-    /// The LLM model that generated this summary, if any.
-    pub model: Option<String>,
+    /// The LLM model that generated this summary.
+    pub model: String,
+    /// Coarse quality tier: "opus" > "sonnet" > "haiku" > "unknown".
+    pub model_tier: String,
     pub generated_at: String,
 }

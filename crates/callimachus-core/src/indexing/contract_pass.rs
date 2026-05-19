@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use callimachus_llm::{LlmError, LlmProvider};
+use callimachus_llm::{LlmError, LlmProvider, model_tier};
 use uuid::Uuid;
 
 use crate::{
@@ -37,8 +37,13 @@ pub async fn run(
     let total = candidates.len() as u64;
 
     for (i, entity) in candidates.iter().enumerate() {
-        // Idempotent (unless --full).
-        if !opts.full && db.contract_get(&corpus.id, &entity.id)?.is_some() {
+        // Idempotent: skip only if this exact model has already produced an artifact.
+        let model_name = llm.name();
+        if !opts.full
+            && db
+                .contract_get_for_model(&corpus.id, &entity.id, model_name)?
+                .is_some()
+        {
             stats.skipped += 1;
             let completed = i as u64 + 1;
             if completed.is_multiple_of(25) {
@@ -113,6 +118,8 @@ pub async fn run(
         {
             Ok(Some(extracted)) => {
                 let now = chrono::Utc::now().to_rfc3339();
+                let model = llm.name().to_string();
+                let tier = model_tier(&model).to_string();
                 let contract = EntityContract {
                     entity_id: entity.id.clone(),
                     corpus_id: corpus.id.clone(),
@@ -120,7 +127,8 @@ pub async fn run(
                     risks: extracted.risks,
                     intent_gap: extracted.intent_gap,
                     caller_notes: extracted.caller_notes,
-                    model: Some(llm.name().to_string()),
+                    model,
+                    model_tier: tier,
                     generated_at: now,
                     ..EntityContract::default()
                 };
@@ -200,6 +208,8 @@ fn store_default_contract(
     let contract = EntityContract {
         entity_id: entity.id.clone(),
         corpus_id: corpus.id.clone(),
+        model: "unknown".to_string(),
+        model_tier: "unknown".to_string(),
         generated_at: now,
         ..EntityContract::default()
     };

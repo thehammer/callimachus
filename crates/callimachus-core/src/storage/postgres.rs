@@ -191,6 +191,15 @@ impl StorageBackend for PostgresBackend {
     fn summary_delete_for_target(&self, _corpus_id: &str, _target_id: &str) -> Result<()> {
         Err(unimplemented())
     }
+    fn summary_get_for_model(
+        &self,
+        _corpus_id: &str,
+        _target_kind: &SummaryTargetKind,
+        _target_id: &str,
+        _model: &str,
+    ) -> Result<Option<Summary>> {
+        Err(unimplemented())
+    }
     fn summary_get(
         &self,
         _corpus_id: &str,
@@ -300,6 +309,14 @@ impl StorageBackend for PostgresBackend {
     fn purpose_get(&self, _corpus_id: &str, _entity_id: &str) -> Result<Option<EntityPurpose>> {
         Err(unimplemented())
     }
+    fn purpose_get_for_model(
+        &self,
+        _corpus_id: &str,
+        _entity_id: &str,
+        _model: &str,
+    ) -> Result<Option<EntityPurpose>> {
+        Err(unimplemented())
+    }
     fn purpose_list(&self, _corpus_id: &str) -> Result<Vec<EntityPurpose>> {
         Err(unimplemented())
     }
@@ -321,7 +338,18 @@ impl StorageBackend for PostgresBackend {
     fn contract_get(&self, _corpus_id: &str, _entity_id: &str) -> Result<Option<EntityContract>> {
         Err(unimplemented())
     }
+    fn contract_get_for_model(
+        &self,
+        _corpus_id: &str,
+        _entity_id: &str,
+        _model: &str,
+    ) -> Result<Option<EntityContract>> {
+        Err(unimplemented())
+    }
     fn contract_list(&self, _corpus_id: &str) -> Result<Vec<EntityContract>> {
+        Err(unimplemented())
+    }
+    fn contract_list_best_per_entity(&self, _corpus_id: &str) -> Result<Vec<EntityContract>> {
         Err(unimplemented())
     }
     fn contract_list_inconsistencies(&self, _corpus_id: &str) -> Result<Vec<EntityContract>> {

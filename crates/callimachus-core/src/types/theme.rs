@@ -8,6 +8,9 @@ pub struct Theme {
     pub title: String,
     pub statement: String,
     pub confidence: f32,
-    pub model: Option<String>,
+    /// The LLM model that generated this artifact.
+    pub model: String,
+    /// Coarse quality tier: "opus" > "sonnet" > "haiku" > "unknown".
+    pub model_tier: String,
     pub generated_at: String,
 }
