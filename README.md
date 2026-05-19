@@ -272,6 +272,20 @@ The relationship is complementary. The LLM brings general reasoning. Callimachus
 
 ---
 
+## Design philosophy
+
+Callimachus was built alongside a broader framework for thinking about skillful AI-assisted development — the idea that the same model produces leverage or liability depending on how it's wielded, and that good tooling should embody discipline structurally rather than relying on individual virtue alone.
+
+Several of that framework's principles are directly expressed in Callimachus's architecture:
+
+- **Right Mindfulness** — the index is a queryable ground truth about your corpus. When a model says something about your codebase or your novel, there's a structured artifact to verify against. Confabulation becomes detectable.
+- **Right Action** — the scholia model is a structured review layer. You don't just accept the index; you apply corrections where it's wrong. Review is built into the workflow, not bolted on.
+- **Right Effort** — pre-computed semantic artifacts redirect effort toward higher-leverage work. Comprehension runs once at index time; practitioners spend their attention on reasoning, not re-reading.
+
+**[The Aightfold Path](https://github.com/thehammer/aightfold-path)** — the underlying framework. A mental model for skillful AI-assisted software development, drawn from the Buddhist Eightfold Path. Callimachus is one concrete instantiation of what "tooling that embodies the discipline structurally" looks like.
+
+---
+
 ## Language and concepts
 
 Callimachus uses precise terminology borrowed from philosophy and linguistics — *corpus*, *epistemology*, *ontology*, *semantic* — with specific meanings in this context.
