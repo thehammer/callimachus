@@ -19,9 +19,14 @@ use std::sync::Arc;
     long_about = None,
 )]
 struct Cli {
-    /// Path to the index database.
+    /// Path to the Pinakes index file (e.g. index.pinakes).
+    /// Overridden by CALLIMACHUS_PINAKES environment variable.
+    #[arg(long, global = true, env = "CALLIMACHUS_PINAKES")]
+    pinakes: Option<PathBuf>,
+
+    /// Path to the index file [deprecated: use --pinakes].
     /// Overridden by CALLIMACHUS_DB environment variable.
-    #[arg(long, global = true, env = "CALLIMACHUS_DB")]
+    #[arg(long, global = true, env = "CALLIMACHUS_DB", hide = false)]
     db: Option<PathBuf>,
 
     /// Log level (error, warn, info, debug, trace).
@@ -299,7 +304,7 @@ async fn main() -> Result<()> {
         .init();
 
     let global_config = config::GlobalConfig::load().unwrap_or_default();
-    let db_path = config::resolve_db_path(cli.db, &global_config);
+    let db_path = config::resolve_pinakes_path(cli.pinakes, cli.db, &global_config);
 
     match cli.command {
         Command::Corpus(sub) => {
