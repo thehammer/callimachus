@@ -1,9 +1,13 @@
 use anyhow::Result;
 use callimachus_core::corrections::CorrectionsEngine;
 use callimachus_core::corrections::types::{Correction, CorrectionKind, EntityLinkKind};
+use callimachus_core::query::service::QueryService;
+use callimachus_core::query::types::ExplainComponentInput;
 use callimachus_core::storage::StorageBackend;
+use callimachus_core::types::ToolResult;
 use callimachus_core::types::chunk::Chunk;
 use callimachus_core::types::entity::Entity;
+use std::sync::Arc;
 
 /// Return entities for `corpus_id`, optionally filtered by name substring and/or kind.
 /// Results are ordered by `appearance_count DESC` and capped at `limit` (default: 50).
@@ -52,6 +56,51 @@ pub fn run_chunk(location: &str, db: &dyn StorageBackend) -> Result<Option<Chunk
 /// Return all correction records for `corpus_id`, ordered by `applied_at ASC`.
 pub fn run_corrections(corpus_id: &str, db: &dyn StorageBackend) -> Result<Vec<Correction>> {
     Ok(db.correction_list(corpus_id)?)
+}
+
+/// Assemble and print a diegesis (narrative explanation) for `entity` in `corpus_id`.
+/// Uses BFS over call edges via the query service.
+pub fn run_diegesis(
+    corpus_id: &str,
+    entity: &str,
+    max_depth: Option<u8>,
+    db: Arc<dyn StorageBackend>,
+) -> Result<()> {
+    let svc = QueryService::new(db);
+    // Try the input as an entity ID first; fall back to module prefix (name) lookup.
+    // This lets both `calli inspect diegesis <corpus> <entity-id>` and
+    // `calli inspect diegesis <corpus> <entity-name>` work from the CLI.
+    let input = ExplainComponentInput {
+        corpus_id: corpus_id.to_string(),
+        entity_id: None,
+        module_prefix: Some(entity.to_string()),
+        max_depth,
+    };
+    match svc.explain_component(input) {
+        ToolResult::Ok(s) => {
+            println!("{}", s.data.narrative);
+            Ok(())
+        }
+        ToolResult::Err(e) => {
+            let msg = match &e.error {
+                callimachus_core::types::ToolError::NotFound { suggestions } => {
+                    let hint = suggestions
+                        .as_deref()
+                        .map(|s| format!(": did you mean one of {:?}?", s))
+                        .unwrap_or_default();
+                    format!("entity not found{hint}")
+                }
+                callimachus_core::types::ToolError::Error { message, .. } => message.clone(),
+                callimachus_core::types::ToolError::Ambiguous { candidates } => {
+                    format!("ambiguous entity; candidates: {:?}", candidates)
+                }
+                callimachus_core::types::ToolError::InvalidInput { message } => {
+                    format!("invalid input: {message}")
+                }
+            };
+            anyhow::bail!("{msg}")
+        }
+    }
 }
 
 /// Print entity-link corrections for a collection, optionally filtered by kind.

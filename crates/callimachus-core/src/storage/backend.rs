@@ -222,4 +222,9 @@ pub trait StorageBackend: Send + Sync {
     fn entities_without_inbound_calls(&self, corpus_id: &str) -> Result<Vec<Entity>>;
     /// Entities with no inbound `verified_by` edges (no test coverage).
     fn entities_without_verified_by(&self, corpus_id: &str) -> Result<Vec<Entity>>;
+
+    // ── Schema ────────────────────────────────────────────────────────────────
+
+    /// Return the current schema migration version (SQLite `user_version` pragma).
+    fn schema_version(&self) -> Result<u64>;
 }

@@ -467,6 +467,16 @@ impl StorageBackend for SqliteBackend {
     fn entities_without_verified_by(&self, corpus_id: &str) -> Result<Vec<Entity>> {
         sqlite_graph::entities_without_verified_by(&db!(self), corpus_id)
     }
+
+    // ── Schema ────────────────────────────────────────────────────────────────
+
+    fn schema_version(&self) -> Result<u64> {
+        let guard = db!(self);
+        let v: i64 = guard
+            .conn()
+            .pragma_query_value(None, "user_version", |row| row.get(0))?;
+        Ok(v as u64)
+    }
 }
 
 #[cfg(test)]

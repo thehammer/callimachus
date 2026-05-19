@@ -464,6 +464,12 @@ pub struct ExplainComponentOutput {
     pub nodes: Vec<ExplainNode>,
 }
 
+/// Greek term for a narrative exposition.
+/// `Diegesis` is the output of `explain_component` — a multi-paragraph narrative
+/// assembled via BFS over call edges using pre-indexed purposes, summaries, and
+/// block descriptions, with zero LLM calls at query time.
+pub type Diegesis = ExplainComponentOutput;
+
 // ── entity_search_by_abstract_kind ───────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
