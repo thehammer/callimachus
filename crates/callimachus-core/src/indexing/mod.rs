@@ -3,6 +3,7 @@ pub mod change_detector;
 pub mod chunk_pass;
 pub mod contract_pass;
 pub mod embed_pass;
+pub mod model_tier;
 pub mod pipeline;
 pub mod purpose_pass;
 pub mod reindex_pass;

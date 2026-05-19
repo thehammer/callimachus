@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
-use callimachus_llm::{LlmError, LlmProvider};
+use callimachus_llm::{LlmError, LlmProvider, model_tier};
 use uuid::Uuid;
-
-use callimachus_llm::model_tier;
 
 use crate::{
     adapter::SourceAdapter,
+    indexing::model_tier::{ModelTier, ModelTierRouter},
     storage::{StorageBackend, run_log::PassStats},
     types::{Corpus, Entity, EntityBlock, EntityPurpose},
 };
@@ -22,10 +21,14 @@ pub async fn run(
     db: Arc<dyn StorageBackend>,
     corpus: &Corpus,
     adapter: Arc<dyn SourceAdapter>,
-    llm: Arc<dyn LlmProvider>,
+    llm_haiku: Arc<dyn LlmProvider>,
+    llm_sonnet: Arc<dyn LlmProvider>,
+    llm_opus: Arc<dyn LlmProvider>,
     opts: &IndexOptions,
 ) -> anyhow::Result<PassStats> {
     let mut stats = PassStats::default();
+    let router = ModelTierRouter::new(&opts.tier_config);
+    let mut tier_counts = [0u64; 3]; // [haiku, sonnet, opus]
 
     if opts.dry_run {
         return Ok(stats);
@@ -39,23 +42,7 @@ pub async fn run(
     let total = candidates.len() as u64;
 
     for (i, entity) in candidates.iter().enumerate() {
-        // Idempotent: skip only if this exact model has already produced an artifact.
-        // A different model (e.g. Sonnet after Haiku) will add a new row.
-        let model_name = llm.name();
-        if !opts.full
-            && db
-                .purpose_get_for_model(&corpus.id, &entity.id, model_name)?
-                .is_some()
-        {
-            stats.skipped += 1;
-            let completed = i as u64 + 1;
-            if completed.is_multiple_of(25) {
-                tracing::info!("[purpose] {}/{} entities", completed, total);
-            }
-            continue;
-        }
-
-        // Fetch content via first location.
+        // Fetch content via first location (needed for routing and extraction).
         let content = match entity.first_location.as_ref() {
             Some(loc) => match db.chunk_get_by_uri(&loc.uri)? {
                 Some(chunk) => chunk.content,
@@ -78,6 +65,56 @@ pub async fn run(
             }
         };
 
+        // Compute routing inputs.
+        let in_deg = db.entity_in_degree(&corpus.id, &entity.id).unwrap_or(0);
+        let out_deg = db.entity_out_degree(&corpus.id, &entity.id).unwrap_or(0);
+        // Detect language from entity location for static analysis.
+        let language = entity
+            .first_location
+            .as_ref()
+            .map(|l| l.uri.as_str())
+            .map(detect_language_from_uri)
+            .unwrap_or("unknown");
+        let mut routing = adapter.static_routing_inputs(language, &content, &entity.canonical_name);
+        routing.kind = entity.kind.clone();
+        routing.in_degree = in_deg;
+        routing.out_degree = out_deg;
+
+        let tier = router.route(&routing);
+        let llm: &dyn LlmProvider = match tier {
+            ModelTier::Haiku => llm_haiku.as_ref(),
+            ModelTier::Sonnet => llm_sonnet.as_ref(),
+            ModelTier::Opus => llm_opus.as_ref(),
+        };
+        tier_counts[tier as usize] += 1;
+
+        tracing::debug!(
+            "[purpose] entity={} tier={} kind={} in_deg={} out_deg={} fallible={} panics={}",
+            entity.id,
+            tier,
+            entity.kind,
+            in_deg,
+            out_deg,
+            routing.is_fallible,
+            routing.panic_call_count
+        );
+
+        // Idempotent: skip only if this exact model has already produced an artifact.
+        // A different model (e.g. Sonnet after Haiku) will add a new row.
+        let model_name = llm.name();
+        if !opts.full
+            && db
+                .purpose_get_for_model(&corpus.id, &entity.id, model_name)?
+                .is_some()
+        {
+            stats.skipped += 1;
+            let completed = i as u64 + 1;
+            if completed.is_multiple_of(25) {
+                tracing::info!("[purpose] {}/{} entities", completed, total);
+            }
+            continue;
+        }
+
         // Fetch existing summary text if available.
         let summary_opt = db
             .summary_get(
@@ -95,7 +132,7 @@ pub async fn run(
             entity,
             &content,
             summary_opt.as_deref(),
-            llm.as_ref(),
+            llm,
         )
         .await
         {
@@ -166,7 +203,31 @@ pub async fn run(
         }
     }
 
+    tracing::info!(
+        "[purpose] tier distribution: haiku={} sonnet={} opus={}",
+        tier_counts[ModelTier::Haiku as usize],
+        tier_counts[ModelTier::Sonnet as usize],
+        tier_counts[ModelTier::Opus as usize],
+    );
+
     Ok(stats)
+}
+
+fn detect_language_from_uri(uri: &str) -> &'static str {
+    let path = uri.split('#').next().unwrap_or(uri);
+    if path.ends_with(".rs") {
+        "rust"
+    } else if path.ends_with(".ts") || path.ends_with(".tsx") || path.ends_with(".js") {
+        "typescript"
+    } else if path.ends_with(".py") {
+        "python"
+    } else if path.ends_with(".go") {
+        "go"
+    } else if path.ends_with(".php") {
+        "php"
+    } else {
+        "unknown"
+    }
 }
 
 async fn extract_with_retry(

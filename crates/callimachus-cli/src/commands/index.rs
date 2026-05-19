@@ -53,6 +53,7 @@ pub async fn run(
         full,
         no_git_filter,
         concurrency: None,
+        tier_config: config.model_tiers.clone(),
     };
 
     let dry_label = if dry_run { " [dry-run]" } else { "" };

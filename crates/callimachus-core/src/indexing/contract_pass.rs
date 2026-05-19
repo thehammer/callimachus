@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     adapter::SourceAdapter,
+    indexing::model_tier::{ModelTier, ModelTierRouter},
     storage::{StorageBackend, run_log::PassStats},
     types::{Corpus, Edge, Entity, EntityContract},
 };
@@ -20,10 +21,14 @@ pub async fn run(
     db: Arc<dyn StorageBackend>,
     corpus: &Corpus,
     adapter: Arc<dyn SourceAdapter>,
-    llm: Arc<dyn LlmProvider>,
+    llm_haiku: Arc<dyn LlmProvider>,
+    llm_sonnet: Arc<dyn LlmProvider>,
+    llm_opus: Arc<dyn LlmProvider>,
     opts: &IndexOptions,
 ) -> anyhow::Result<PassStats> {
     let mut stats = PassStats::default();
+    let router = ModelTierRouter::new(&opts.tier_config);
+    let mut tier_counts = [0u64; 3]; // [haiku, sonnet, opus]
 
     if opts.dry_run {
         return Ok(stats);
@@ -37,22 +42,10 @@ pub async fn run(
     let total = candidates.len() as u64;
 
     for (i, entity) in candidates.iter().enumerate() {
-        // Idempotent: skip only if this exact model has already produced an artifact.
-        let model_name = llm.name();
-        if !opts.full
-            && db
-                .contract_get_for_model(&corpus.id, &entity.id, model_name)?
-                .is_some()
-        {
-            stats.skipped += 1;
-            let completed = i as u64 + 1;
-            if completed.is_multiple_of(25) {
-                tracing::info!("[contract] {}/{} entities", completed, total);
-            }
-            continue;
-        }
+        // Detect language early (needed for routing and signals_json).
+        let language = detect_language(entity);
 
-        // Fetch source content.
+        // Fetch source content first — needed for both routing and extraction.
         let content = match entity.first_location.as_ref() {
             Some(loc) => match db.chunk_get_by_uri(&loc.uri)? {
                 Some(chunk) => chunk.content,
@@ -77,8 +70,47 @@ pub async fn run(
             }
         };
 
-        // Detect language from location path (used in signals_json).
-        let language = detect_language(entity);
+        // Compute routing inputs: static signals + graph degrees.
+        let in_deg = db.entity_in_degree(&corpus.id, &entity.id).unwrap_or(0);
+        let out_deg = db.entity_out_degree(&corpus.id, &entity.id).unwrap_or(0);
+        let mut routing = adapter.static_routing_inputs(language, &content, &entity.canonical_name);
+        routing.kind = entity.kind.clone();
+        routing.in_degree = in_deg;
+        routing.out_degree = out_deg;
+
+        let tier = router.route(&routing);
+        let llm: &dyn LlmProvider = match tier {
+            ModelTier::Haiku => llm_haiku.as_ref(),
+            ModelTier::Sonnet => llm_sonnet.as_ref(),
+            ModelTier::Opus => llm_opus.as_ref(),
+        };
+        tier_counts[tier as usize] += 1;
+
+        tracing::debug!(
+            "[contract] entity={} tier={} kind={} in_deg={} out_deg={} fallible={} panics={}",
+            entity.id,
+            tier,
+            entity.kind,
+            in_deg,
+            out_deg,
+            routing.is_fallible,
+            routing.panic_call_count
+        );
+
+        // Idempotent: skip only if this exact model has already produced an artifact.
+        let model_name = llm.name();
+        if !opts.full
+            && db
+                .contract_get_for_model(&corpus.id, &entity.id, model_name)?
+                .is_some()
+        {
+            stats.skipped += 1;
+            let completed = i as u64 + 1;
+            if completed.is_multiple_of(25) {
+                tracing::info!("[contract] {}/{} entities", completed, total);
+            }
+            continue;
+        }
 
         // Fetch related text.
         let summary_opt = db
@@ -112,14 +144,14 @@ pub async fn run(
             summary_opt.as_deref(),
             purpose_opt.as_deref(),
             &signals_json,
-            llm.as_ref(),
+            llm,
         )
         .await
         {
             Ok(Some(extracted)) => {
                 let now = chrono::Utc::now().to_rfc3339();
                 let model = llm.name().to_string();
-                let tier = model_tier(&model).to_string();
+                let tier_str = model_tier(&model).to_string();
                 let contract = EntityContract {
                     entity_id: entity.id.clone(),
                     corpus_id: corpus.id.clone(),
@@ -128,7 +160,7 @@ pub async fn run(
                     intent_gap: extracted.intent_gap,
                     caller_notes: extracted.caller_notes,
                     model,
-                    model_tier: tier,
+                    model_tier: tier_str,
                     generated_at: now,
                     ..EntityContract::default()
                 };
@@ -195,6 +227,13 @@ pub async fn run(
             tracing::info!("[contract] {}/{} entities", completed, total);
         }
     }
+
+    tracing::info!(
+        "[contract] tier distribution: haiku={} sonnet={} opus={}",
+        tier_counts[ModelTier::Haiku as usize],
+        tier_counts[ModelTier::Sonnet as usize],
+        tier_counts[ModelTier::Opus as usize],
+    );
 
     Ok(stats)
 }

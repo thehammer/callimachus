@@ -42,6 +42,26 @@ impl AnthropicApiProvider {
             usage: Arc::new(Mutex::new(ProviderUsage::default())),
         }
     }
+
+    /// Create a variant of this provider that uses `model` as its default.
+    ///
+    /// The returned provider **shares** the same `reqwest::Client` (connection
+    /// pool), `api_key`, `base_url`, and `Arc<Mutex<ProviderUsage>>` with the
+    /// parent.  Cost and token accounting therefore accumulates in one place
+    /// across all tier variants — callers can read `.usage()` on any one of
+    /// them to get the combined total.
+    ///
+    /// `reqwest::Client` is cheap to clone: the clone shares the same
+    /// connection pool internally.
+    pub fn with_model(&self, model: impl Into<String>) -> AnthropicApiProvider {
+        AnthropicApiProvider {
+            client: self.client.clone(),
+            api_key: self.api_key.clone(),
+            base_url: self.base_url.clone(),
+            default_model: model.into(),
+            usage: Arc::clone(&self.usage),
+        }
+    }
 }
 
 // ---------- Anthropic API wire types ----------
@@ -230,6 +250,15 @@ impl LlmProvider for AnthropicApiProvider {
     fn supports_embeddings(&self) -> bool {
         false
     }
+
+    /// Build a variant of this provider that defaults to `model`.
+    ///
+    /// The returned `Arc<dyn LlmProvider>` shares this provider's connection
+    /// pool and usage `Arc` — see [`AnthropicApiProvider::with_model`] for
+    /// details.
+    fn with_model_override(&self, model: &str) -> Option<Arc<dyn LlmProvider>> {
+        Some(Arc::new(self.with_model(model)))
+    }
 }
 
 #[cfg(test)]
@@ -358,5 +387,53 @@ mod tests {
             None,
         );
         assert_eq!(p.name(), "claude-haiku-4-5-20251001");
+    }
+
+    #[tokio::test]
+    async fn with_model_sends_correct_model_on_wire() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(make_success_body("ok", "claude-haiku-4-5")),
+            )
+            .mount(&server)
+            .await;
+
+        let parent = provider_with_base_url(&server.uri());
+        let variant = parent.with_model("claude-haiku-4-5");
+        variant.complete(req("hello")).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        let body: serde_json::Value = received[0].body_json().unwrap();
+        assert_eq!(body["model"], "claude-haiku-4-5");
+    }
+
+    #[tokio::test]
+    async fn with_model_shares_usage_with_parent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+            )
+            .mount(&server)
+            .await;
+
+        let parent = provider_with_base_url(&server.uri());
+        let variant = parent.with_model("model-b");
+
+        // One call on the parent, one on the variant — both share the same Arc.
+        parent.complete(req("call one")).await.unwrap();
+        variant.complete(req("call two")).await.unwrap();
+
+        assert_eq!(
+            parent.usage().calls,
+            2,
+            "usage should be shared across variants"
+        );
     }
 }

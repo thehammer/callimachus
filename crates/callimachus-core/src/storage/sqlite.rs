@@ -219,6 +219,14 @@ impl StorageBackend for SqliteBackend {
         edge_store::entity_ids_at_location(&db!(self), location_uri)
     }
 
+    fn entity_in_degree(&self, corpus_id: &str, entity_id: &str) -> Result<u32> {
+        edge_store::in_degree(&db!(self), corpus_id, entity_id)
+    }
+
+    fn entity_out_degree(&self, corpus_id: &str, entity_id: &str) -> Result<u32> {
+        edge_store::out_degree(&db!(self), corpus_id, entity_id)
+    }
+
     // ── Summary ───────────────────────────────────────────────────────────────
 
     fn summary_upsert(&self, summary: &Summary) -> Result<()> {

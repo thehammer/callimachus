@@ -181,6 +181,12 @@ impl StorageBackend for PostgresBackend {
     fn edge_entity_ids_at_location(&self, _location_uri: &str) -> Result<Vec<String>> {
         Err(unimplemented())
     }
+    fn entity_in_degree(&self, _corpus_id: &str, _entity_id: &str) -> Result<u32> {
+        todo!("PostgresBackend::entity_in_degree — not yet implemented")
+    }
+    fn entity_out_degree(&self, _corpus_id: &str, _entity_id: &str) -> Result<u32> {
+        todo!("PostgresBackend::entity_out_degree — not yet implemented")
+    }
 
     fn summary_upsert(&self, _summary: &Summary) -> Result<()> {
         Err(unimplemented())

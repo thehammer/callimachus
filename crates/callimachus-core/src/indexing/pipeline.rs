@@ -4,6 +4,7 @@ use callimachus_llm::LlmProvider;
 
 use crate::{
     adapter::SourceAdapter,
+    indexing::model_tier::TierConfig,
     storage::{StorageBackend, run_log},
     types::{Corpus, Pass, RunStatus},
 };
@@ -28,6 +29,10 @@ pub struct IndexOptions {
     pub full: bool,
     /// If true, disable git-aware file walking in the code adapter.
     pub no_git_filter: bool,
+    /// Tier-routing configuration.  When `enabled = false` (default), all
+    /// passes use a single provider.  When enabled, the pipeline builds three
+    /// provider variants (haiku/sonnet/opus) and the passes route per entity.
+    pub tier_config: TierConfig,
 }
 
 impl Default for IndexOptions {
@@ -48,6 +53,62 @@ impl Default for IndexOptions {
             concurrency: None,
             full: false,
             no_git_filter: false,
+            tier_config: TierConfig::default(),
+        }
+    }
+}
+
+/// Three provider variants, one per tier.
+///
+/// When tier routing is disabled, all three point to the same underlying
+/// provider (three `Arc::clone`s — cheap).  When enabled, they are built
+/// via `AnthropicApiProvider::with_model` and share a connection pool and
+/// usage accounting `Arc`.
+pub struct TierProviders {
+    pub haiku: Arc<dyn LlmProvider>,
+    pub sonnet: Arc<dyn LlmProvider>,
+    pub opus: Arc<dyn LlmProvider>,
+}
+
+/// Build three tier providers from `base`.
+///
+/// If `tier_config.enabled` is true and `base` supports `with_model_override`
+/// (i.e. it is an `AnthropicApiProvider`), produces three variants with the
+/// configured model names sharing the same connection pool and usage `Arc`.
+///
+/// For non-Anthropic providers (DryRun, ClaudeCode), logs a WARN and returns
+/// the same provider for all three tiers — indexing still completes correctly,
+/// just without tier routing.
+pub fn build_tier_providers(base: Arc<dyn LlmProvider>, cfg: &TierConfig) -> TierProviders {
+    if !cfg.enabled {
+        return TierProviders {
+            haiku: Arc::clone(&base),
+            sonnet: Arc::clone(&base),
+            opus: Arc::clone(&base),
+        };
+    }
+
+    let haiku_opt = base.with_model_override(&cfg.haiku_model);
+    let sonnet_opt = base.with_model_override(&cfg.sonnet_model);
+    let opus_opt = base.with_model_override(&cfg.opus_model);
+
+    match (haiku_opt, sonnet_opt, opus_opt) {
+        (Some(haiku), Some(sonnet), Some(opus)) => TierProviders {
+            haiku,
+            sonnet,
+            opus,
+        },
+        _ => {
+            tracing::warn!(
+                "tier routing is enabled but provider '{}' does not support \
+                 with_model_override; falling back to single-provider mode for all tiers",
+                base.name()
+            );
+            TierProviders {
+                haiku: Arc::clone(&base),
+                sonnet: Arc::clone(&base),
+                opus: Arc::clone(&base),
+            }
         }
     }
 }
@@ -75,6 +136,9 @@ pub struct IndexPipeline {
 impl IndexPipeline {
     pub async fn run(&self, corpus: &Corpus, opts: IndexOptions) -> anyhow::Result<IndexResult> {
         let mut result = IndexResult::default();
+
+        // Build tier providers once for the whole run.
+        let tiers = build_tier_providers(Arc::clone(&self.llm), &opts.tier_config);
 
         // Mark any runs that were interrupted mid-pass as failed so the pipeline
         // starts from a consistent state.
@@ -137,7 +201,9 @@ impl IndexPipeline {
                         Arc::clone(&self.db),
                         corpus,
                         Arc::clone(&self.adapter),
-                        Arc::clone(&self.llm),
+                        Arc::clone(&tiers.haiku),
+                        Arc::clone(&tiers.sonnet),
+                        Arc::clone(&tiers.opus),
                         &opts,
                     )
                     .await?
@@ -150,7 +216,9 @@ impl IndexPipeline {
                         Arc::clone(&self.db),
                         corpus,
                         Arc::clone(&self.adapter),
-                        Arc::clone(&self.llm),
+                        Arc::clone(&tiers.haiku),
+                        Arc::clone(&tiers.sonnet),
+                        Arc::clone(&tiers.opus),
                         &opts,
                     )
                     .await?
@@ -160,7 +228,9 @@ impl IndexPipeline {
                         Arc::clone(&self.db),
                         corpus,
                         Arc::clone(&self.adapter),
-                        Arc::clone(&self.llm),
+                        Arc::clone(&tiers.haiku),
+                        Arc::clone(&tiers.sonnet),
+                        Arc::clone(&tiers.opus),
                         &opts,
                     )
                     .await?
@@ -410,5 +480,64 @@ mod tests {
 
         let count = db.chunk_count(&corpus.id).unwrap();
         assert_eq!(count, 0, "dry-run should not write chunks");
+    }
+
+    /// When tier routing is enabled and the base provider supports
+    /// `with_model_override`, `build_tier_providers` returns three distinct
+    /// variants — each using the model name from the tier config.
+    #[test]
+    fn tier_routing_uses_correct_provider_per_tier() {
+        use callimachus_llm::{AnthropicApiProvider, LlmProvider};
+
+        use crate::indexing::model_tier::TierConfig;
+
+        use super::build_tier_providers;
+
+        let cfg = TierConfig {
+            enabled: true,
+            haiku_model: "haiku-test".to_string(),
+            sonnet_model: "sonnet-test".to_string(),
+            opus_model: "opus-test".to_string(),
+            ..TierConfig::default()
+        };
+
+        // AnthropicApiProvider supports with_model_override.
+        let base: Arc<dyn LlmProvider> = Arc::new(AnthropicApiProvider::new(
+            "test-key".to_string(),
+            Some("sonnet-test".to_string()),
+            None,
+        ));
+
+        let tiers = build_tier_providers(Arc::clone(&base), &cfg);
+
+        assert_eq!(tiers.haiku.name(), "haiku-test");
+        assert_eq!(tiers.sonnet.name(), "sonnet-test");
+        assert_eq!(tiers.opus.name(), "opus-test");
+    }
+
+    /// When tier routing is enabled but the provider does not support
+    /// `with_model_override` (e.g. DryRunProvider), `build_tier_providers`
+    /// falls back gracefully — all three tiers use the base provider's name.
+    #[test]
+    fn tier_routing_falls_back_for_provider_without_override() {
+        use callimachus_llm::LlmProvider;
+
+        use crate::indexing::model_tier::TierConfig;
+
+        use super::build_tier_providers;
+
+        let cfg = TierConfig {
+            enabled: true,
+            ..TierConfig::default()
+        };
+
+        // DryRunProvider returns None from with_model_override.
+        let base: Arc<dyn LlmProvider> = Arc::new(DryRunProvider::new());
+        let tiers = build_tier_providers(Arc::clone(&base), &cfg);
+
+        // All three should fall back to the base provider's name.
+        assert_eq!(tiers.haiku.name(), "dry-run");
+        assert_eq!(tiers.sonnet.name(), "dry-run");
+        assert_eq!(tiers.opus.name(), "dry-run");
     }
 }
