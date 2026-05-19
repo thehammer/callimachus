@@ -571,6 +571,32 @@ Return JSON:
             Err(_) => Ok(None),
         }
     }
+
+    /// Populate [`RoutingInputs`] from tree-sitter static analysis of the source.
+    ///
+    /// Uses the same `contracts::analyze` call as `extract_contract` so the
+    /// signals are consistent with what the LLM prompt will see.  Non-code
+    /// adapters inherit the default `RoutingInputs::default()` (all zeros/false).
+    fn static_routing_inputs(
+        &self,
+        language: &str,
+        content: &str,
+        entity_name: &str,
+    ) -> callimachus_core::indexing::model_tier::RoutingInputs {
+        let s = contracts::analyze(language, content, entity_name);
+        callimachus_core::indexing::model_tier::RoutingInputs {
+            has_unsafe: s.has_unsafe,
+            is_fallible: s.is_fallible,
+            is_public: s.is_public,
+            is_mutating: s.is_mutating,
+            panic_call_count: s.panic_call_count,
+            has_debt_markers: !s.debt_markers.is_empty(),
+            body_lines: s.body_lines,
+            kind: String::new(), // caller fills in from entity.kind
+            in_degree: 0,        // caller fills in from storage
+            out_degree: 0,       // caller fills in from storage
+        }
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

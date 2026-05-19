@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     adapter::SourceAdapter,
+    indexing::model_tier::{ModelTier, ModelTierRouter, RoutingInputs},
     storage::{StorageBackend, run_log::PassStats},
     types::{Corpus, Summary, SummaryTargetKind},
 };
@@ -15,10 +16,14 @@ pub async fn run(
     db: Arc<dyn StorageBackend>,
     corpus: &Corpus,
     adapter: Arc<dyn SourceAdapter>,
-    llm: Arc<dyn LlmProvider>,
+    llm_haiku: Arc<dyn LlmProvider>,
+    llm_sonnet: Arc<dyn LlmProvider>,
+    llm_opus: Arc<dyn LlmProvider>,
     opts: &IndexOptions,
 ) -> anyhow::Result<PassStats> {
     let mut stats = PassStats::default();
+    let router = ModelTierRouter::new(&opts.tier_config);
+    let mut tier_counts = [0u64; 3]; // [haiku, sonnet, opus]
 
     let all_chunks = db.chunk_list(&corpus.id)?;
     let levels = adapter.summary_levels();
@@ -49,7 +54,8 @@ pub async fn run(
             }
 
             // Build context from child level summaries (if this is not the first level).
-            let context_chunk = if level_idx > 0 {
+            // Count child summaries for tier routing.
+            let (context_chunk, child_summary_count) = if level_idx > 0 {
                 let child_kind = levels[level_idx - 1];
                 let child_summaries: Vec<String> = all_chunks
                     .iter()
@@ -65,8 +71,9 @@ pub async fn run(
                     })
                     .collect();
 
+                let count = child_summaries.len() as u32;
                 if child_summaries.is_empty() {
-                    (*chunk).clone()
+                    ((*chunk).clone(), count)
                 } else {
                     let mut c = (*chunk).clone();
                     c.content = child_summaries
@@ -75,20 +82,49 @@ pub async fn run(
                         .map(|(j, s)| format!("{} {}: {s}", child_kind, j + 1))
                         .collect::<Vec<_>>()
                         .join("\n\n");
-                    c
+                    (c, count)
                 }
             } else {
-                (*chunk).clone()
+                ((*chunk).clone(), 0u32)
             };
 
-            match adapter
-                .summarize(&context_chunk, llm.as_ref(), level_kind)
-                .await
-            {
+            // Tier routing for chunks.
+            // NOTE: Unlike entity passes, chunks lack entity-level signals (unsafe,
+            // fallibility, etc.).  We derive a proxy from chunk properties:
+            // body_lines ≈ content length, has_debt_markers from content scan,
+            // and child_summary_count as a rough proxy for out-degree.
+            // See docs/plans/tiered-model-selection.md for rationale.
+            let chunk_lines = context_chunk.content.lines().count() as u32;
+            let has_debt_markers = context_chunk.content.contains("FIXME")
+                || context_chunk.content.contains("HACK")
+                || context_chunk.content.contains("TODO");
+            let chunk_routing = RoutingInputs {
+                body_lines: chunk_lines,
+                has_debt_markers,
+                out_degree: child_summary_count,
+                kind: level_kind.to_string(),
+                ..RoutingInputs::default()
+            };
+            let tier = router.route(&chunk_routing);
+            let llm: &dyn LlmProvider = match tier {
+                ModelTier::Haiku => llm_haiku.as_ref(),
+                ModelTier::Sonnet => llm_sonnet.as_ref(),
+                ModelTier::Opus => llm_opus.as_ref(),
+            };
+            tier_counts[tier as usize] += 1;
+
+            // Use the appropriate provider wrapper for make_summary.
+            let llm_arc: Arc<dyn LlmProvider> = match tier {
+                ModelTier::Haiku => Arc::clone(&llm_haiku),
+                ModelTier::Sonnet => Arc::clone(&llm_sonnet),
+                ModelTier::Opus => Arc::clone(&llm_opus),
+            };
+
+            match adapter.summarize(&context_chunk, llm, level_kind).await {
                 Ok(Some(text)) => {
                     if !opts.dry_run {
                         let summary =
-                            make_summary(corpus, chunk.id.clone(), level_kind, text, &llm);
+                            make_summary(corpus, chunk.id.clone(), level_kind, text, &llm_arc);
                         db.summary_upsert(&summary)?;
                     }
                     stats.processed += 1;
@@ -181,13 +217,21 @@ pub async fn run(
         }
     };
 
-    match adapter
-        .summarize(&corpus_chunk, llm.as_ref(), "corpus")
-        .await
-    {
+    // Route the corpus-level summary to Sonnet (it's always a moderate-complexity task).
+    let corpus_llm: &dyn LlmProvider = llm_sonnet.as_ref();
+    tier_counts[ModelTier::Sonnet as usize] += 1;
+
+    tracing::info!(
+        "[summarize] tier distribution: haiku={} sonnet={} opus={}",
+        tier_counts[ModelTier::Haiku as usize],
+        tier_counts[ModelTier::Sonnet as usize],
+        tier_counts[ModelTier::Opus as usize],
+    );
+
+    match adapter.summarize(&corpus_chunk, corpus_llm, "corpus").await {
         Ok(Some(text)) => {
             if !opts.dry_run {
-                let model = llm.name().to_string();
+                let model = corpus_llm.name().to_string();
                 let tier = model_tier(&model).to_string();
                 let summary = Summary {
                     id: Uuid::new_v4().to_string(),

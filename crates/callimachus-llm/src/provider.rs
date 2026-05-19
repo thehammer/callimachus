@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::error::{LlmError, Result};
 
 /// Maps an LLM model name (as returned by `LlmClient::name()`) to a coarse
@@ -69,6 +71,18 @@ pub trait LlmProvider: Send + Sync {
     fn supports_embeddings(&self) -> bool {
         false
     }
+
+    /// Return a variant of this provider that uses `model` as its default,
+    /// sharing the same connection pool and usage accounting `Arc` with the
+    /// parent.
+    ///
+    /// Returns `None` for providers that don't support per-model variants
+    /// (e.g. `DryRunProvider`, `ClaudeCodeProvider`).  The pipeline uses this
+    /// to build tier variants for `AnthropicApiProvider` while degrading
+    /// gracefully for other providers.
+    fn with_model_override(&self, _model: &str) -> Option<Arc<dyn LlmProvider>> {
+        None
+    }
 }
 
 /// Blanket impl so `Box<dyn LlmProvider>` can be used wherever `LlmProvider` is required.
@@ -94,6 +108,9 @@ impl LlmProvider for Box<dyn LlmProvider> {
     }
     fn supports_embeddings(&self) -> bool {
         (**self).supports_embeddings()
+    }
+    fn with_model_override(&self, model: &str) -> Option<Arc<dyn LlmProvider>> {
+        (**self).with_model_override(model)
     }
 }
 

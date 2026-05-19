@@ -109,10 +109,16 @@ pub async fn run(
         opts,
     )
     .await?;
+    // For reindex, pass the same provider for all tiers (tier routing is controlled by
+    // IndexOptions::tier_config; build_tier_providers is handled by the main pipeline).
+    // Here we simply pass llm for all three tiers so the pass compiles — the router
+    // inside the pass will still route per entity using opts.tier_config.
     summarize_pass::run(
         Arc::clone(db),
         corpus,
         Arc::clone(adapter),
+        Arc::clone(llm),
+        Arc::clone(llm),
         Arc::clone(llm),
         opts,
     )

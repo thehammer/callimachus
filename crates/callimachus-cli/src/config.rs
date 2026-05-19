@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use callimachus_core::indexing::model_tier::TierConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -8,6 +9,10 @@ pub struct GlobalConfig {
     pub storage: StorageConfig,
     #[serde(default)]
     pub llm: LlmConfig,
+    /// Model tier routing configuration.  When absent from `config.toml`,
+    /// defaults to `TierConfig::default()` (disabled — single-model mode).
+    #[serde(default)]
+    pub model_tiers: TierConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -133,6 +133,26 @@ pub fn entity_ids_at_location(db: &Database, location_uri: &str) -> Result<Vec<S
     Ok(ids)
 }
 
+/// Returns the number of edges pointing *into* `entity_id` within `corpus_id` (in-degree).
+pub fn in_degree(db: &Database, corpus_id: &str, entity_id: &str) -> Result<u32> {
+    let n: i64 = db.conn().query_row(
+        "SELECT COUNT(*) FROM edges WHERE corpus_id = ?1 AND to_entity_id = ?2",
+        rusqlite::params![corpus_id, entity_id],
+        |r| r.get(0),
+    )?;
+    Ok(n as u32)
+}
+
+/// Returns the number of edges pointing *out of* `entity_id` within `corpus_id` (out-degree).
+pub fn out_degree(db: &Database, corpus_id: &str, entity_id: &str) -> Result<u32> {
+    let n: i64 = db.conn().query_row(
+        "SELECT COUNT(*) FROM edges WHERE corpus_id = ?1 AND from_entity_id = ?2",
+        rusqlite::params![corpus_id, entity_id],
+        |r| r.get(0),
+    )?;
+    Ok(n as u32)
+}
+
 fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
     let uri: String = row.get(5)?;
     let location = Location::parse(&uri).unwrap_or_else(|_| Location {
@@ -149,4 +169,71 @@ fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
         location,
         confidence: row.get::<_, f64>(6)? as f32,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::storage::{SqliteBackend, StorageBackend};
+    use crate::types::{Corpus, Edge, Entity, Location};
+
+    fn setup() -> (SqliteBackend, String) {
+        let db = SqliteBackend::open_in_memory().unwrap();
+        let corpus_id = "test-corpus";
+        let corpus = Corpus::new(
+            corpus_id.to_string(),
+            "Test".to_string(),
+            "fake".to_string(),
+            "/tmp".to_string(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+        (db, corpus_id.to_string())
+    }
+
+    fn entity(corpus_id: &str, id: &str) -> Entity {
+        Entity::new(
+            id.to_string(),
+            corpus_id.to_string(),
+            id.to_string(),
+            "function".to_string(),
+        )
+    }
+
+    fn edge(corpus_id: &str, id: &str, from: &str, to: &str) -> Edge {
+        Edge::new(
+            id.to_string(),
+            corpus_id.to_string(),
+            from.to_string(),
+            to.to_string(),
+            "calls".to_string(),
+            Location::new(corpus_id, "src/main.rs"),
+        )
+    }
+
+    #[test]
+    fn in_out_degree_counts() {
+        let (db, corpus_id) = setup();
+
+        // Insert three entities: A, B, C.
+        let a = entity(&corpus_id, "entity-a");
+        let b = entity(&corpus_id, "entity-b");
+        let c = entity(&corpus_id, "entity-c");
+        db.entity_upsert(&a).unwrap();
+        db.entity_upsert(&b).unwrap();
+        db.entity_upsert(&c).unwrap();
+
+        // Insert edges A→B and A→C.
+        db.edge_upsert(&edge(&corpus_id, "edge-ab", "entity-a", "entity-b"))
+            .unwrap();
+        db.edge_upsert(&edge(&corpus_id, "edge-ac", "entity-a", "entity-c"))
+            .unwrap();
+
+        // B has one inbound edge (from A).
+        assert_eq!(db.entity_in_degree(&corpus_id, "entity-b").unwrap(), 1);
+        // A has no inbound edges.
+        assert_eq!(db.entity_in_degree(&corpus_id, "entity-a").unwrap(), 0);
+        // A has two outbound edges (to B and C).
+        assert_eq!(db.entity_out_degree(&corpus_id, "entity-a").unwrap(), 2);
+        // C has no outbound edges.
+        assert_eq!(db.entity_out_degree(&corpus_id, "entity-c").unwrap(), 0);
+    }
 }

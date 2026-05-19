@@ -91,6 +91,10 @@ pub trait StorageBackend: Send + Sync {
     fn edge_location_uris_for_entity(&self, entity_id: &str) -> Result<Vec<String>>;
     /// Returns the set of entity IDs (from/to) for edges at `location_uri`.
     fn edge_entity_ids_at_location(&self, location_uri: &str) -> Result<Vec<String>>;
+    /// Returns the number of edges pointing *into* `entity_id` (in-degree).
+    fn entity_in_degree(&self, corpus_id: &str, entity_id: &str) -> Result<u32>;
+    /// Returns the number of edges pointing *out of* `entity_id` (out-degree).
+    fn entity_out_degree(&self, corpus_id: &str, entity_id: &str) -> Result<u32>;
 
     // ── Summary ───────────────────────────────────────────────────────────────
 

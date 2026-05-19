@@ -1,3 +1,4 @@
+use crate::indexing::model_tier::RoutingInputs;
 use crate::types::{Chunk, Corpus, Edge, Entity};
 use callimachus_llm::LlmProvider;
 
@@ -165,6 +166,22 @@ pub trait SourceAdapter: Send + Sync {
         _llm: &dyn LlmProvider,
     ) -> anyhow::Result<Option<ExtractedContract>> {
         Ok(None)
+    }
+
+    /// Return static routing signals for tier selection without any LLM call.
+    ///
+    /// Called by indexing passes before each LLM invocation to decide which
+    /// model tier to use for the entity.  The default implementation returns
+    /// all-zero/false inputs, causing the router to fall back to the configured
+    /// `default` tier.  Code adapters override this by calling their static
+    /// analysis (`analyze(language, content, name)`).
+    fn static_routing_inputs(
+        &self,
+        _language: &str,
+        _content: &str,
+        _entity_name: &str,
+    ) -> RoutingInputs {
+        RoutingInputs::default()
     }
 
     /// Extract corpus-level architectural themes (opt-in).
