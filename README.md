@@ -51,8 +51,8 @@ cargo build --release
 export PATH="$PWD/target/release:$PATH"
 
 # Query the bundled index
-calli --db data/callimachus.db inspect entities callimachus
-calli --db data/callimachus.db inspect runs callimachus
+calli --pinakes data/callimachus.pinakes inspect entities callimachus
+calli --pinakes data/callimachus.pinakes inspect runs callimachus
 ```
 
 Or open the project in Claude Code — `.mcp.json` wires `calli mcp` as an MCP server automatically, giving Claude tools to query the entity graph, retrieve chunks, and call `explain_component`.
@@ -130,13 +130,27 @@ If `claude` is on your PATH, Callimachus will use it automatically via subproces
 
 Auto-detection priority: `--provider` flag → config file api_key → `claude` on PATH.
 
+### Tiered model routing (optional)
+
+For large corpora, Callimachus can route each entity to the cheapest model capable of handling its complexity — Haiku for simple entities, Sonnet for moderately complex ones, Opus for high-risk or highly-connected components. Disabled by default; enable in `config.toml`:
+
+```toml
+[model_tiers]
+enabled = true
+# Thresholds are tunable; these are the defaults
+opus_in_degree_threshold = 10
+sonnet_body_lines_threshold = 80
+```
+
+When enabled, each indexing pass (Purpose, Contract, Summarize) routes per-entity and logs the tier distribution. Multi-model artifact storage means running the pipeline again with a different model adds new rows rather than overwriting existing ones — the highest-tier artifact wins at query time.
+
 ---
 
 ## Claude Code integration
 
 ### Automatic (project-level)
 
-`.mcp.json` is included in this repo. When you open this project in Claude Code, the `callimachus` MCP server starts automatically and points at `data/callimachus.db`.
+`.mcp.json` is included in this repo. When you open this project in Claude Code, the `callimachus` MCP server starts automatically and points at `data/callimachus.pinakes`.
 
 For your own project, after indexing, add an `.mcp.json`:
 
@@ -145,7 +159,7 @@ For your own project, after indexing, add an `.mcp.json`:
   "mcpServers": {
     "callimachus": {
       "command": "calli",
-      "args": ["--db", "/path/to/your/index.db", "mcp"]
+      "args": ["--pinakes", "/path/to/your/index.pinakes", "mcp"]
     }
   }
 }
@@ -159,7 +173,7 @@ For your own project, after indexing, add an `.mcp.json`:
     "callimachus": {
       "type": "stdio",
       "command": "calli",
-      "args": ["--db", "/path/to/index.db", "mcp"]
+      "args": ["--pinakes", "/path/to/index.pinakes", "mcp"]
     }
   }
 }
@@ -167,17 +181,20 @@ For your own project, after indexing, add an `.mcp.json`:
 
 ### Available MCP tools
 
-Once connected, Claude has access to 17 tools including:
+Once connected, Claude has access to 21 tools including:
 
 | Tool | Description |
 |---|---|
 | `entity_search` | Find entities by name or kind |
 | `entity_get` | Full record with summary, purpose, and contract |
+| `entity_search_by_abstract_kind` | Find entities by abstract kind across corpora (e.g. `process`, `person`) |
+| `list_abstract_kinds` | List all abstract kinds registered in the taxonomy |
 | `chunk_get` | Retrieve raw source for a location URI |
 | `entity_edges` | Graph edges in/out of an entity |
-| `explain_component` | BFS call graph assembled into a narrative (zero new LLM calls) |
+| `explain_component` | BFS call graph assembled into a diegesis — zero new LLM calls |
 | `fts_search` | Full-text search across all chunks |
 | `corpus_list`, `corpus_status` | Corpus metadata |
+| `list_scholia`, `apply_scholion` | List and apply non-destructive index corrections |
 | Collection tools | Cross-corpus entity queries |
 
 ---
@@ -194,22 +211,34 @@ calli corpus remove <id>
 # Indexing
 calli index <id>                    Run all default passes
 calli index <id> --pass chunk       Run a single pass
+calli index <id> --full             Force full reindex (bypass skip guards)
 calli reindex <id>                  Incremental reindex since last run
 calli watch <id>                    Watch source and reindex on changes
+
+# Pipeline versioning
+calli status                        Show pipeline version status for all corpora
+calli upgrade [<id>]                Upgrade corpus artifacts to current pipeline version
 
 # Inspection
 calli inspect entities <id>         Browse entities
 calli inspect chunk <location>      Show a chunk by URI
 calli inspect runs <id>             Indexing run history
-calli inspect corrections <id>      Applied corrections
+calli inspect diegesis <id> <name>  BFS narrative for an entity (zero LLM calls)
+calli inspect scholia <id>          Applied scholia (corrections)
 
-# Corrections
-calli correct <id> merge <a> <b>    Merge two entities
-calli correct <id> rename <id> <n>  Rename an entity
+# Scholia (non-destructive corrections)
+calli scholion list <id>            List all scholia for a corpus
+calli scholion apply <id> merge <a> <b>     Merge two entities
+calli scholion apply <id> rename <id> <n>   Rename an entity
+calli correct …                     (deprecated alias for calli scholion apply)
 
-# Collections (cross-corpus)
+# Cross-corpus
+calli link candidates <a> <b>       Suggest entity links between two corpora
 calli collection add <name>
 calli collection add-member <coll> <corpus>
+
+# Pinakes file
+calli pinakes info [<path>]         Show schema version, corpus count, file size
 
 # Servers
 calli mcp                           Start MCP stdio server
@@ -222,6 +251,8 @@ calli export <id>                   Export index as JSONL
 calli config show
 calli config path
 ```
+
+The index file uses the `.pinakes` extension (`--pinakes` flag or `CALLIMACHUS_PINAKES` env var). `--db` is accepted as a deprecated alias.
 
 ---
 
@@ -237,10 +268,10 @@ callimachus/
     callimachus-cli/            calli binary
     adapters/
       callimachus-adapter-book/ EPUB + plain text
-      callimachus-adapter-code/ Rust, Python, JS/TS, Go, … (tree-sitter)
+      callimachus-adapter-code/ Rust, Python, JS/TS, Go, PHP, Vue (tree-sitter)
       callimachus-adapter-wiki/ Markdown wikis
   data/
-    callimachus.db              Pre-built index of this codebase
+    callimachus.pinakes          Pre-built index of this codebase
   docs/
     architecture.md             Full architecture notes
     mcp-tools.md                MCP tool reference
@@ -252,12 +283,14 @@ The index is a single SQLite file. Key tables:
 | Table | Contents |
 |---|---|
 | `chunks` | Raw source units with full-text search index |
-| `entities` | Named things (functions, characters, concepts) with aliases |
+| `entities` | Named things (functions, characters, concepts) with aliases and `abstract_kind` |
 | `edges` | Typed relationships between entities |
-| `summaries` | Per-chunk behavioral summaries |
-| `entity_purposes` | Per-entity architectural intent |
-| `entity_contracts` | Per-entity assumptions, risks, caller notes |
+| `summaries` | Per-chunk behavioral summaries — composite PK `(target_id, model)` |
+| `entity_purposes` | Per-entity architectural intent — composite PK `(entity_id, model)` |
+| `entity_contracts` | Per-entity assumptions, risks, caller notes — composite PK `(entity_id, model)` |
 | `entity_blocks` | Sub-function block-level descriptions |
+| `kind_taxonomy` | Maps concrete entity kinds to abstract kinds for cross-corpus queries |
+| `scholia` | Non-destructive corrections applied at query time (entity merges, renames, overrides) |
 | `themes` | Corpus-level architectural invariants (opt-in) |
 
 ---
