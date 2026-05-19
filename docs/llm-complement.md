@@ -144,6 +144,7 @@ establishes preconditions for the next. This mirrors something real about
 how understanding is built:
 
 ```
+Change     → history                 (what has changed since last run)
 Existence  → chunk, structure        (what is here)
 Meaning    → semantic, aliases       (what things are)
 Description→ summarize               (what things do)

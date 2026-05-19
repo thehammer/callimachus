@@ -23,18 +23,20 @@ The same agent, with the same query patterns, can interrogate a novel or a milli
 Callimachus runs a pipeline of passes over your corpus:
 
 ```
-Chunk → Structure → Semantic → Aliases → Summarize → Purpose → Contract
+History → Chunk → Structure → Semantic → Aliases → Summarize → Purpose → Contract → Themes
 ```
 
 Each pass enriches the index with pre-built understanding:
 
+- **History** — compare current source state against the last indexed version; produce a change manifest so downstream passes skip unchanged files (fast incremental updates)
 - **Chunk** — split source into navigable units (chapters, functions, files)
-- **Structure** — extract entities (characters, functions, classes) and relationships (calls, references, travels_to)
+- **Structure** — parser-driven entity and edge extraction (tree-sitter for code, section headings for books/wikis); no LLM
 - **Semantic** — LLM-powered entity extraction with typed edges
 - **Aliases** — resolve name variants to canonical entities
-- **Summarize** — 1–3 sentence behavioral summary per entity
+- **Summarize** — 1–3 sentence behavioral summary per entity, bottom-up (function → file → corpus)
 - **Purpose** — architectural intent: *why* this entity exists
-- **Contract** — assumptions, risks, caller notes, and intent gaps per function
+- **Contract** — static signals (is_public, is_fallible, has_panic_risk, …) merged with LLM-inferred assumptions, risks, and caller notes
+- **Themes** — corpus-level architectural invariants (opt-in; code and wiki adapters)
 
 At query time, responses are assembled from these pre-built pieces — zero new LLM comprehension required.
 

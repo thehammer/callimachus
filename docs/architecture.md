@@ -81,22 +81,29 @@ Full-text search uses the `bm25` ranking function. Snippet extraction provides c
 
 ## 4. Indexing Pipeline
 
-The pipeline runs passes sequentially. Each pass can be resumed from a specific chunk if interrupted.
+The pipeline runs passes sequentially. All passes except `History` can be run individually with `--pass <name>`. The `--full` flag bypasses "skip if already processed" guards in every pass. The `--dry-run` flag counts without writing.
 
-### Passes
+### Passes (in execution order)
 
-1. **chunk** — Split source files into chunks (sections, paragraphs, code blocks). Yields `Chunk` records with location URIs (`calli://corpus_id/path/to/file#section`).
-2. **semantic** — Extract named entities and relationships from chunk content using the configured LLM provider.
-3. **structure** — (Code adapter only) Run tree-sitter AST analysis to extract structural entities (functions, classes, types) and call-graph edges.
-4. **summarize** — Generate LLM summaries for chunks, entities, and the corpus as a whole.
+| # | Pass | LLM | Description |
+|---|------|-----|-------------|
+| 0 | **history** | No | Compare current source state against the `last_indexed_version` anchor in the DB. Produces a `ChangeManifest` — a set of dirty paths — that all downstream passes consult to skip unchanged files. On first run, all sources are dirty. The version anchor is written back only after the full pipeline completes. |
+| 1 | **chunk** | No | Walk the source (git-tracked files for code; EPUB spine for books; Markdown files for wikis) and emit `Chunk` records with location URIs (`calli://corpus_id/path/to/file#section`). The code adapter applies default exclusion globs (`.git/**`, `.claude/**`, `vendor/**`, `node_modules/**`, etc.) on top of git filtering. |
+| 2 | **structure** | No | Parser-driven entity and edge extraction — no LLM. For code corpora, runs tree-sitter over each chunk to extract named entities (functions, classes, methods, interfaces) and typed edges (calls, defines, imports, extends, implements, instantiates). For book/wiki corpora, extracts section hierarchy and cross-references. Skipped for chunks whose path is not dirty. |
+| 3 | **semantic** | Yes | LLM-powered entity extraction and relationship identification over chunk content. Produces additional entities and edges beyond what the parser can see (e.g. thematic connections in books, inferred dependencies in code). Skipped for non-dirty chunks. |
+| 4 | **aliases** | Yes | Alias resolution: given the full entity set, asks the LLM (or uses heuristics) to suggest entity merges — `Eisenhorn` and `Gregor Eisenhorn` are the same entity. Applies merges via the entity store. Skipped entirely when no dirty sources exist. |
+| 5 | **summarize** | Yes | Hierarchical LLM summarization, bottom-up. For code: function-level first, then file-level; each file summary receives its function summaries as context. For books: scene → chapter → corpus. Finally, a corpus-level summary is always attempted. Skipped for non-dirty paths. |
+| 6 | **purpose** | Yes | For each entity with a source location, asks the LLM: *why does this entity exist?* Stores an `entity_purpose` with a one-sentence purpose statement and optional block-level descriptions for complex functions. Skipped for non-dirty entities. |
+| 7 | **contract** | Yes | Two-phase per entity. First, static analysis (tree-sitter / regex) populates boolean signals — `is_public`, `is_fallible`, `is_must_use`, `is_deprecated`, `has_panic_risk`, `has_unsafe`, etc. — without any LLM call. Then the LLM infers semantic fields: `assumptions`, `risks`, `intent_gap`, `caller_notes`, `verified_by_names`, `discards_result_callees`. If the LLM parse fails, the static signals are stored anyway. Skipped for non-dirty entities. |
+| 8 | **themes** *(opt-in)* | Yes | Corpus-level architectural invariants. Asks the LLM to identify 3–7 cross-cutting patterns or invariants across a sample of entities. Skipped entirely when no dirty sources exist. Not in the default pass list — add `--pass theme` explicitly or enable via `IndexOptions`. Currently implemented for code and wiki adapters. |
 
 ### Resumability
 
-Each run is logged with `start_chunk` and `last_chunk`. Re-running `calli index <corpus_id>` resumes from the last successful chunk via `--from-chunk`. The `--dry-run` flag validates without writing.
+Re-running `calli index <corpus_id>` is safe. Each pass skips entities or chunks it has already processed (unless `--full` is set). The `--from-chunk <id>` flag forces the chunk pass to start from a specific chunk ID, useful after an interrupted run.
 
-### Change Detection
+### Change detection
 
-`calli reindex` uses git blame + mtime comparison to identify modified files since the last run. Only changed files are re-chunked and re-processed.
+`Pass::History` runs before all other passes and produces a `ChangeManifest`. For git-backed corpora (code adapter) the version anchor is a full commit OID; for others it is a SHA-256 hash-of-hashes over all chunk content. All downstream passes call `manifest.is_dirty(path)` before processing any source. A second consecutive run with no source changes produces zero processed items in every pass.
 
 ## 5. Query Service
 

@@ -1,3 +1,27 @@
+//! Indexing pipeline orchestrator.
+//!
+//! [`IndexPipeline`] owns a corpus, a storage backend, an adapter, and an LLM
+//! provider.  Calling [`IndexPipeline::run`] executes a sequence of passes in
+//! order, each pass enriching the index with pre-built understanding:
+//!
+//! | # | Pass | LLM | What it does |
+//! |---|------|-----|--------------|
+//! | 0 | [`Pass::History`] | No | Compares current source state against the last-indexed-version anchor; produces a [`ChangeManifest`] that downstream passes use to skip unchanged files. |
+//! | 1 | [`Pass::Chunk`] | No | Walks the source and emits [`Chunk`](crate::types::Chunk) records with location URIs. |
+//! | 2 | [`Pass::Structure`] | No | Parser-driven entity and edge extraction (tree-sitter for code, section hierarchy for books/wikis). |
+//! | 3 | [`Pass::Semantic`] | Yes | LLM-powered entity and edge extraction over chunk content. |
+//! | 4 | [`Pass::Aliases`] | Yes | Merges entity name variants into canonical entities. |
+//! | 5 | [`Pass::Summarize`] | Yes | Bottom-up LLM summarization: function → file → corpus for code; scene → chapter → corpus for books. |
+//! | 6 | [`Pass::Purpose`] | Yes | Asks the LLM why each entity exists; stores an `entity_purpose` row. |
+//! | 7 | [`Pass::Contract`] | Yes | Static signals (is_public, is_fallible, …) plus LLM-inferred assumptions, risks, and caller notes; stores an `entity_contract` row. |
+//! | 8 | [`Pass::Theme`] | Yes | Corpus-level architectural invariants (opt-in; not in the default pass list). |
+//!
+//! Passes are epistemically ordered: each depends on the outputs of earlier
+//! passes.  They can be run individually with `calli index --pass <name>` or
+//! skipped by omitting them from [`IndexOptions::passes`].
+//!
+//! [`ChangeManifest`]: crate::indexing::change_manifest::ChangeManifest
+
 use std::sync::Arc;
 
 use callimachus_llm::LlmProvider;

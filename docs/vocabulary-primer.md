@@ -51,14 +51,15 @@ This extraction is the [**semantic pass**](glossary.md#semantic-pass) — "[sema
 
 Callimachus processes a corpus through a sequence of [**passes**](glossary.md#pass), each building on the last:
 
-1. **Chunk** — divide the source into chunks
-2. **Structure** — extract structural parent/child relationships between chunks
-3. **Semantic** — extract entities and edges from chunk content (LLM)
-4. **Aliases** — merge entity name variants (`Eisenhorn` = `Gregor Eisenhorn`)
-5. **Summarize** — generate prose descriptions at each level, rolling up from scenes to chapters to corpus via [**rollup**](glossary.md#rollup)
-6. **Purpose** — describe *why* each entity exists
-7. **Contract** — describe what each entity promises and assumes
-8. **Theme** *(opt-in)* — identify cross-cutting patterns across the whole corpus
+1. **History** — compare current source state against the last indexed version; produce a change manifest so downstream passes skip unchanged files (fast incremental updates; the corpus is fully reprocessed on first run)
+2. **Chunk** — divide the source into chunks
+3. **Structure** — extract structural parent/child relationships between chunks, and for code corpora, tree-sitter entity and edge extraction (no LLM)
+4. **Semantic** — extract entities and edges from chunk content (LLM)
+5. **Aliases** — merge entity name variants (`Eisenhorn` = `Gregor Eisenhorn`)
+6. **Summarize** — generate prose descriptions at each level, rolling up from scenes to chapters to corpus via [**rollup**](glossary.md#rollup)
+7. **Purpose** — describe *why* each entity exists
+8. **Contract** — describe what each entity promises and assumes; for code, also records static signals (is_public, is_fallible, has_panic_risk, etc.) derived without any LLM call
+9. **Theme** *(opt-in)* — identify cross-cutting patterns across the whole corpus
 
 The order is not arbitrary. It encodes an [**epistemological**](glossary.md#epistemology) argument — a claim about what must be known before something else can be known. You can't extract meaning from text you haven't chunked. You can't describe intent before you've established what something is. You can't merge aliases before you've extracted entities. Each pass is epistemically dependent on the passes before it.
 
