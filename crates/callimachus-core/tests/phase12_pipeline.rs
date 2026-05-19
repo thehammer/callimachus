@@ -175,6 +175,7 @@ impl SourceAdapter for Phase12Adapter {
                 caller_notes: Some("Always check the Result".to_string()),
                 verified_by_names: vec![],
                 discards_result_callees: vec![],
+                ..Default::default()
             }))
         } else {
             Ok(None)
