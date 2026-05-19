@@ -274,7 +274,7 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
 
         let req = CompletionRequest {
             prompt,
-            model: Some("claude-haiku-4-5-20251001".to_string()),
+            model: None, // use model from provider (tier-selected by caller)
             max_tokens: Some(500),
             chunk_id: None,
         };
@@ -429,7 +429,7 @@ Return JSON matching this schema exactly:
 
         let req = CompletionRequest {
             prompt,
-            model: Some("claude-haiku-4-5-20251001".to_string()),
+            model: None, // use model from provider (tier-selected by caller)
             max_tokens: Some(600),
             chunk_id: None,
         };
@@ -464,14 +464,7 @@ Return JSON matching this schema exactly:
                 verified_by_names: json_str_array(&v, "verified_by_names"),
                 discards_result_callees: json_str_array(&v, "discards_result_callees"),
             })),
-            Err(_) => Ok(Some(ExtractedContract {
-                assumptions: vec![],
-                risks: vec![text.to_string()],
-                intent_gap: None,
-                caller_notes: None,
-                verified_by_names: vec![],
-                discards_result_callees: vec![],
-            })),
+            Err(_) => Ok(None),
         }
     }
 
@@ -527,7 +520,7 @@ Return JSON:
 
         let req = CompletionRequest {
             prompt,
-            model: Some("claude-sonnet-4-5-20250929".to_string()),
+            model: None, // use model from provider (tier-selected by caller)
             max_tokens: Some(1500),
             chunk_id: None,
         };
