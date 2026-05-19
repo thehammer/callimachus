@@ -86,7 +86,10 @@ mod tests {
 
     #[test]
     fn preserves_plain_identifier() {
-        assert_eq!(sanitize_fts5_query("NewsletterService"), "NewsletterService");
+        assert_eq!(
+            sanitize_fts5_query("NewsletterService"),
+            "NewsletterService"
+        );
     }
 
     #[test]
