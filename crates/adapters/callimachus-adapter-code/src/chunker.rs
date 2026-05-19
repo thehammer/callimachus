@@ -10,6 +10,22 @@ use crate::languages::{self, LangConfig, TEXT_EXTENSIONS};
 /// Files larger than this are truncated before being stored as a text chunk.
 const MAX_TEXT_FILE_BYTES: usize = 256 * 1024;
 
+/// Default file globs that are always excluded from chunking. Per-corpus
+/// `exclude_globs` from corpus metadata are appended to (not substituted
+/// for) this list.
+pub const DEFAULT_EXCLUDE_GLOBS: &[&str] = &[
+    ".git/**",
+    ".claude/**",
+    "vendor/**",
+    "node_modules/**",
+    "storage/**",
+    "bootstrap/cache/**",
+    "public/build/**",
+    "target/**",
+    "dist/**",
+    "build/**",
+];
+
 // ── Options ──────────────────────────────────────────────────────────────────
 
 /// Options controlling how a directory is chunked.
@@ -32,13 +48,10 @@ impl Default for ChunkOptions {
             max_chunk_bytes: 4000,
             min_chunk_bytes: 100,
             include_globs: vec![],
-            exclude_globs: vec![
-                "target/**".into(),
-                "node_modules/**".into(),
-                ".git/**".into(),
-                "dist/**".into(),
-                "build/**".into(),
-            ],
+            exclude_globs: DEFAULT_EXCLUDE_GLOBS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
             since_ref: None,
             no_git_filter: false,
         }
@@ -1044,5 +1057,40 @@ h1 { color: red; }
         let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
         assert!(chunks.iter().any(|c| c.location.uri.contains("a.rs")));
         assert!(chunks.iter().any(|c| c.location.uri.contains("b.rs")));
+    }
+
+    #[test]
+    fn default_excludes_cover_known_dirs() {
+        let defaults: Vec<String> = DEFAULT_EXCLUDE_GLOBS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+
+        // These paths must be excluded by the default globs.
+        let should_exclude = [
+            ".claude/worktrees/foo/bar.rs",
+            "vendor/laravel/framework/src/Foo.php",
+            "storage/logs/laravel.log",
+            "bootstrap/cache/config.php",
+            "public/build/assets/app.js",
+            "node_modules/foo/index.js",
+            "target/debug/build/x.rs",
+            ".git/HEAD",
+        ];
+        for path in &should_exclude {
+            assert!(
+                is_excluded(path, &defaults),
+                "expected {path:?} to be excluded by default globs"
+            );
+        }
+
+        // These paths must NOT be excluded by the default globs.
+        let should_not_exclude = ["src/lib.rs", "app/Http/Controllers/FooController.php"];
+        for path in &should_not_exclude {
+            assert!(
+                !is_excluded(path, &defaults),
+                "expected {path:?} to NOT be excluded by default globs"
+            );
+        }
     }
 }
