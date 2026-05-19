@@ -463,7 +463,7 @@ Return JSON matching this schema exactly:
             })),
             Err(_) => Ok(Some(ExtractedContract {
                 assumptions: vec![],
-                risks: vec![text.to_string()],
+                risks: vec![],
                 intent_gap: None,
                 caller_notes: None,
                 verified_by_names: vec![],
