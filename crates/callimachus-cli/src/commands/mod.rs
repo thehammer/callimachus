@@ -6,6 +6,7 @@ pub mod index;
 pub mod inspect;
 pub mod link;
 pub mod mcp;
+pub mod pinakes;
 pub mod reindex;
 pub mod serve;
 pub mod status;

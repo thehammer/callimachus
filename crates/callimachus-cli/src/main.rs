@@ -137,6 +137,21 @@ enum Command {
         #[command(subcommand)]
         sub: LinkSubcommand,
     },
+
+    /// Inspect a Pinakes index file.
+    Pinakes {
+        #[command(subcommand)]
+        sub: PinakesSubcommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PinakesSubcommand {
+    /// Print information about a Pinakes index file: path, size, schema version, and counts.
+    Info {
+        /// Path to the Pinakes file. Defaults to the active index path.
+        path: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -168,6 +183,13 @@ enum InspectCommand {
         collection_id: String,
         #[arg(long)]
         kind: Option<String>,
+    },
+    /// Assemble a diegesis (narrative exposition) for an entity via BFS over call edges.
+    Diegesis {
+        corpus_id: String,
+        entity: String,
+        #[arg(long)]
+        max_depth: Option<u8>,
     },
 }
 
@@ -315,7 +337,7 @@ async fn main() -> Result<()> {
 
         Command::Inspect { sub } => {
             let db = open_db(&db_path)?;
-            run_inspect(sub, db.as_ref())
+            run_inspect(sub, db)
         }
 
         Command::Correct { corpus_id, sub } => {
@@ -429,6 +451,13 @@ async fn main() -> Result<()> {
             };
             commands::link::run(link_sub, db.as_ref())
         }
+
+        Command::Pinakes { sub } => match sub {
+            PinakesSubcommand::Info { path } => {
+                let resolved = commands::pinakes::resolve_info_path(path, &db_path);
+                commands::pinakes::run_info(&resolved)
+            }
+        },
     }
 }
 
@@ -436,7 +465,7 @@ async fn main() -> Result<()> {
 // inspect dispatch
 // ---------------------------------------------------------------------------
 
-fn run_inspect(sub: InspectCommand, db: &dyn StorageBackend) -> Result<()> {
+fn run_inspect(sub: InspectCommand, db: Arc<dyn StorageBackend>) -> Result<()> {
     match sub {
         InspectCommand::Entities {
             corpus_id,
@@ -451,7 +480,7 @@ fn run_inspect(sub: InspectCommand, db: &dyn StorageBackend) -> Result<()> {
                 kind.as_deref(),
                 min_confidence,
                 limit,
-                db,
+                db.as_ref(),
             )?;
 
             let mut table =
@@ -468,27 +497,29 @@ fn run_inspect(sub: InspectCommand, db: &dyn StorageBackend) -> Result<()> {
             table.print();
         }
 
-        InspectCommand::Chunk { location } => match commands::inspect::run_chunk(&location, db)? {
-            None => {
-                eprintln!("error: chunk not found: {location}");
-                std::process::exit(1);
-            }
-            Some(chunk) => {
-                output::print_kv("id", &chunk.id);
-                output::print_kv("corpus_id", &chunk.corpus_id);
-                output::print_kv("location_uri", &chunk.location.uri);
-                output::print_kv("kind", &chunk.kind);
-                if let Some(pp) = &chunk.parent_path {
-                    output::print_kv("parent_path", pp);
+        InspectCommand::Chunk { location } => {
+            match commands::inspect::run_chunk(&location, db.as_ref())? {
+                None => {
+                    eprintln!("error: chunk not found: {location}");
+                    std::process::exit(1);
                 }
-                output::print_kv("byte_length", &chunk.byte_length.to_string());
-                output::print_kv("content", &chunk.content);
+                Some(chunk) => {
+                    output::print_kv("id", &chunk.id);
+                    output::print_kv("corpus_id", &chunk.corpus_id);
+                    output::print_kv("location_uri", &chunk.location.uri);
+                    output::print_kv("kind", &chunk.kind);
+                    if let Some(pp) = &chunk.parent_path {
+                        output::print_kv("parent_path", pp);
+                    }
+                    output::print_kv("byte_length", &chunk.byte_length.to_string());
+                    output::print_kv("content", &chunk.content);
+                }
             }
-        },
+        }
 
         InspectCommand::Runs { corpus_id, limit } => {
             let cap = limit.unwrap_or(20);
-            let runs = db.run_latest(&corpus_id, cap)?;
+            let runs = db.as_ref().run_latest(&corpus_id, cap)?;
             let mut table = output::Table::new(vec![
                 "PASS", "STATUS", "STARTED", "CHUNKS", "ENTITIES", "COST",
             ]);
@@ -516,7 +547,7 @@ fn run_inspect(sub: InspectCommand, db: &dyn StorageBackend) -> Result<()> {
         }
 
         InspectCommand::Corrections { corpus_id } => {
-            let corrections = commands::inspect::run_corrections(&corpus_id, db)?;
+            let corrections = commands::inspect::run_corrections(&corpus_id, db.as_ref())?;
             if corrections.is_empty() {
                 println!("(no corrections)");
                 return Ok(());
@@ -536,7 +567,15 @@ fn run_inspect(sub: InspectCommand, db: &dyn StorageBackend) -> Result<()> {
             collection_id,
             kind,
         } => {
-            commands::inspect::run_collection_links(&collection_id, kind.as_deref(), db)?;
+            commands::inspect::run_collection_links(&collection_id, kind.as_deref(), db.as_ref())?;
+        }
+
+        InspectCommand::Diegesis {
+            corpus_id,
+            entity,
+            max_depth,
+        } => {
+            commands::inspect::run_diegesis(&corpus_id, &entity, max_depth, db)?;
         }
     }
     Ok(())

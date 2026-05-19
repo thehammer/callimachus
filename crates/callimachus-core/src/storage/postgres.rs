@@ -379,6 +379,12 @@ impl StorageBackend for PostgresBackend {
     fn entities_without_verified_by(&self, _corpus_id: &str) -> Result<Vec<Entity>> {
         Err(unimplemented())
     }
+
+    // ── Schema ────────────────────────────────────────────────────────────────
+
+    fn schema_version(&self) -> Result<u64> {
+        Err(unimplemented())
+    }
 }
 
 #[cfg(test)]

@@ -319,7 +319,7 @@ pub static TOOL_LIST: Lazy<Vec<ToolDesc>> = Lazy::new(|| {
         },
         ToolDesc {
             name: "explain_component",
-            description: "Assemble a multi-paragraph narrative explaining a component by traversing pre-indexed purposes, summaries, and block blurbs. Zero LLM calls at query time.",
+            description: "Assemble a diegesis (multi-paragraph narrative) explaining a component via BFS over call edges, using pre-indexed purposes, summaries, and block blurbs. Zero LLM calls at query time.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

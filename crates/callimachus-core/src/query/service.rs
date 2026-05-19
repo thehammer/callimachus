@@ -918,8 +918,12 @@ impl QueryService {
                 }
             }
 
-            // Assemble narrative.
-            let mut narrative = String::new();
+            // Assemble narrative — prepend Diegesis header using seed entity's name.
+            let seed_name = nodes
+                .first()
+                .map(|n| n.name.as_str())
+                .unwrap_or("Component");
+            let mut narrative = format!("# Diegesis of {seed_name}\n\n");
             for node in &nodes {
                 let indent = "  ".repeat(node.depth as usize);
                 narrative.push_str(&format!("{indent}## {} (`{}`)\n", node.name, node.kind));
@@ -1545,5 +1549,29 @@ mod tests {
         };
         assert_eq!(s.data.entity.canonical_name, "Frodo");
         assert!(!s.data.edges.is_empty());
+    }
+
+    // ── explain_component / diegesis ──────────────────────────────────────────
+
+    #[test]
+    fn explain_component_narrative_starts_with_diegesis_of() {
+        let (svc, db) = make_service();
+        seed_corpus(db.as_ref(), "c1");
+        seed_entity(db.as_ref(), "c1", "e-query-service", "QueryService", None);
+
+        let result = svc.explain_component(ExplainComponentInput {
+            corpus_id: "c1".into(),
+            entity_id: Some("e-query-service".into()),
+            module_prefix: None,
+            max_depth: Some(1),
+        });
+        let ToolResult::Ok(s) = result else {
+            panic!("expected Ok: {result:?}")
+        };
+        assert!(
+            s.data.narrative.starts_with("# Diegesis of "),
+            "narrative should start with '# Diegesis of ' but got: {:?}",
+            &s.data.narrative[..s.data.narrative.len().min(50)]
+        );
     }
 }
