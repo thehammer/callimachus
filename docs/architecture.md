@@ -51,7 +51,7 @@ callimachus-adapter-{book,code,wiki}
 
 ## 3. Storage Schema
 
-All data lives in a single SQLite database (default: `~/.local/share/callimachus/index.db`).
+All data lives in a single SQLite file (default: `~/.local/share/callimachus/index.pinakes`).
 
 ### Tables
 

@@ -447,13 +447,13 @@ CREATE VIRTUAL TABLE chunks_fts USING fts5(
 );
 ```
 
-**Default DB location** (in order of precedence):
-1. `CALLIMACHUS_DB` environment variable (for Claude Desktop config / development)
-2. `--db <path>` CLI flag
-3. Per-corpus config `db_path = ...`
-4. `$XDG_DATA_HOME/callimachus/index.db` (Linux)
-   `~/Library/Application Support/callimachus/index.db` (macOS)
-   `%APPDATA%\callimachus\index.db` (Windows)
+**Default pinakes location** (in order of precedence):
+1. `CALLIMACHUS_PINAKES` environment variable (for Claude Desktop config / development)
+2. `--pinakes <path>` CLI flag
+3. Per-corpus config `pinakes_path = ...`
+4. `$XDG_DATA_HOME/callimachus/index.pinakes` (Linux)
+   `~/Library/Application Support/callimachus/index.pinakes` (macOS)
+   `%APPDATA%\callimachus\index.pinakes` (Windows)
 
 A single DB file holds all corpora (multi-corpus server). The corpus_id column scopes all queries.
 
@@ -575,7 +575,7 @@ model = "claude-sonnet-4-5"
 max_parallel_calls = 5
 
 [storage]
-db_path = "~/.local/share/callimachus/index.db"
+pinakes_path = "~/.local/share/callimachus/index.pinakes"
 
 [mcp]
 log_level = "warn"                  # stderr diagnostic noise level

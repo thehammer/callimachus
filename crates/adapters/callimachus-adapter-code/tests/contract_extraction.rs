@@ -102,6 +102,9 @@ async fn parse_failure_does_not_leak_raw_text_into_risks() {
 
     let c = result.expect("should return Some contract");
 
+    assert!(c.is_public, "is_public must remain true from static analysis");
+    assert!(c.is_fallible, "is_fallible must remain true from static analysis");
+
     // Core regression assertion: raw LLM text must not appear in risks.
     assert!(
         c.risks.is_empty(),
@@ -153,6 +156,9 @@ async fn valid_json_in_fence_is_parsed() {
         .expect("extract_contract should not error");
 
     let c = result.expect("should return Some contract");
+
+    assert!(c.is_public, "is_public must remain true from static analysis");
+    assert!(c.is_fallible, "is_fallible must remain true from static analysis");
 
     assert_eq!(c.assumptions, vec!["x must be small"]);
     assert_eq!(c.risks, vec!["overflow on large x"]);
