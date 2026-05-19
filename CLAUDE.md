@@ -2,7 +2,7 @@
 
 ## MCP Server
 
-This project ships with a pre-built index of its own codebase at `data/callimachus.db`.
+This project ships with a pre-built index of its own codebase at `data/callimachus.pinakes`.
 When you open this project in Claude Code, the `callimachus` MCP server starts automatically
 via `.mcp.json` and exposes the full entity graph, summaries, purposes, and contracts
 for this codebase as queryable tools.
@@ -24,8 +24,8 @@ cargo install --path crates/callimachus-cli
 
 ```bash
 # Query the bundled demo index
-calli --db data/callimachus.db inspect entities callimachus
-calli --db data/callimachus.db inspect runs callimachus
+calli --pinakes data/callimachus.pinakes inspect entities callimachus
+calli --pinakes data/callimachus.pinakes inspect runs callimachus
 
 # Index a new corpus
 calli corpus add code "My Project" /path/to/project
