@@ -183,21 +183,22 @@ For your own project, after indexing, add an `.mcp.json`:
 
 ### Available MCP tools
 
-Once connected, Claude has access to 21 tools including:
+Once connected, Claude has access to 27 tools. Key tools:
 
 | Tool | Description |
 |---|---|
-| `entity_search` | Find entities by name or kind |
-| `entity_get` | Full record with summary, purpose, and contract |
+| `entity` | Look up a named entity by name or ID |
+| `entity_contracts` | Full contract (risks, assumptions, static signals) and purpose for an entity |
 | `entity_search_by_abstract_kind` | Find entities by abstract kind across corpora (e.g. `process`, `person`) |
 | `list_abstract_kinds` | List all abstract kinds registered in the taxonomy |
-| `chunk_get` | Retrieve raw source for a location URI |
+| `read` | Retrieve raw source for a location URI |
 | `entity_edges` | Graph edges in/out of an entity |
 | `explain_component` | BFS call graph assembled into a diegesis — zero new LLM calls |
-| `fts_search` | Full-text search across all chunks |
-| `corpus_list`, `corpus_status` | Corpus metadata |
+| `search` | Full-text search across all chunks |
+| `corpus_list`, `corpus_overview`, `corpus_themes` | Corpus metadata and architectural themes |
 | `list_scholia`, `apply_scholion` | List and apply non-destructive index corrections |
-| Collection tools | Cross-corpus entity queries |
+| `find_unreachable`, `entities_without_tests`, `find_inconsistencies` | Code health queries |
+| Collection tools (`collection_list`, `collection_search`, `collection_entity_resolve`, …) | Cross-corpus entity queries |
 
 ---
 
@@ -265,7 +266,7 @@ callimachus/
   crates/
     callimachus-core/           Domain types, SQLite storage, indexing pipeline
     callimachus-llm/            LLM provider abstraction (Anthropic API, Claude Code)
-    callimachus-mcp/            MCP stdio server — 17 tools
+    callimachus-mcp/            MCP stdio server — 27 tools
     callimachus-http/           HTTP API server
     callimachus-cli/            calli binary
     adapters/

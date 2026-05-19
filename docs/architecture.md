@@ -165,6 +165,8 @@ Each of the 12 QueryService tools is registered with a JSON Schema input definit
 
 The HTTP server (`calli serve`) mirrors the MCP tool surface as a REST API using [Axum](https://github.com/tokio-rs/axum).
 
+The MCP server exposes all 27 tools. The HTTP server currently exposes the 12 original corpus-scoped tools. The 15 newer tools (code analysis, scholia, collection, and taxonomy tools) are available via MCP only.
+
 ### Default Binding
 
 `127.0.0.1:7700` — local only. **Do not expose to untrusted networks** without adding authentication. The CORS policy allows `*` origins because the server is local-only by default.
