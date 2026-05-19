@@ -497,23 +497,25 @@ fn run_inspect(sub: InspectCommand, db: Arc<dyn StorageBackend>) -> Result<()> {
             table.print();
         }
 
-        InspectCommand::Chunk { location } => match commands::inspect::run_chunk(&location, db.as_ref())? {
-            None => {
-                eprintln!("error: chunk not found: {location}");
-                std::process::exit(1);
-            }
-            Some(chunk) => {
-                output::print_kv("id", &chunk.id);
-                output::print_kv("corpus_id", &chunk.corpus_id);
-                output::print_kv("location_uri", &chunk.location.uri);
-                output::print_kv("kind", &chunk.kind);
-                if let Some(pp) = &chunk.parent_path {
-                    output::print_kv("parent_path", pp);
+        InspectCommand::Chunk { location } => {
+            match commands::inspect::run_chunk(&location, db.as_ref())? {
+                None => {
+                    eprintln!("error: chunk not found: {location}");
+                    std::process::exit(1);
                 }
-                output::print_kv("byte_length", &chunk.byte_length.to_string());
-                output::print_kv("content", &chunk.content);
+                Some(chunk) => {
+                    output::print_kv("id", &chunk.id);
+                    output::print_kv("corpus_id", &chunk.corpus_id);
+                    output::print_kv("location_uri", &chunk.location.uri);
+                    output::print_kv("kind", &chunk.kind);
+                    if let Some(pp) = &chunk.parent_path {
+                        output::print_kv("parent_path", pp);
+                    }
+                    output::print_kv("byte_length", &chunk.byte_length.to_string());
+                    output::print_kv("content", &chunk.content);
+                }
             }
-        },
+        }
 
         InspectCommand::Runs { corpus_id, limit } => {
             let cap = limit.unwrap_or(20);
