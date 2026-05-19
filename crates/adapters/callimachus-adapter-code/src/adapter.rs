@@ -483,7 +483,23 @@ Return JSON matching this schema exactly:
                 verified_by_names: json_str_array(&v, "verified_by_names"),
                 discards_result_callees: json_str_array(&v, "discards_result_callees"),
             })),
-            Err(_) => Ok(None),
+            // JSON parse failed — still store static signals so the row is
+            // never left with all-zero booleans.  LLM fields remain empty.
+            Err(_) => Ok(Some(ExtractedContract {
+                is_public: static_signals.is_public,
+                is_must_use: static_signals.is_must_use,
+                is_deprecated: static_signals.is_deprecated,
+                is_fallible: static_signals.is_fallible,
+                is_nullable: static_signals.is_nullable,
+                is_mutating: static_signals.is_mutating,
+                is_diverging: static_signals.is_diverging,
+                has_panic_risk: static_signals.has_panic_risk,
+                has_unsafe: static_signals.has_unsafe,
+                is_incomplete: static_signals.is_incomplete,
+                panic_call_count: static_signals.panic_call_count,
+                debt_markers: static_signals.debt_markers.clone(),
+                ..ExtractedContract::default()
+            })),
         }
     }
 
