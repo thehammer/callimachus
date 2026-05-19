@@ -92,7 +92,15 @@ enum Command {
         sub: InspectCommand,
     },
 
+    /// Apply a scholion (marginal annotation / correction) to the index.
+    Scholion {
+        corpus_id: String,
+        #[command(subcommand)]
+        sub: ScholionCommand,
+    },
+
     /// Apply a manual correction to the index.
+    /// Deprecated: use `calli scholion apply` instead.
     Correct {
         corpus_id: String,
         #[command(subcommand)]
@@ -183,6 +191,8 @@ enum InspectCommand {
     },
     /// Show applied corrections for a corpus.
     Corrections { corpus_id: String },
+    /// Show applied scholia for a corpus (alias for `corrections`).
+    Scholia { corpus_id: String },
     /// Show cross-corpus entity links for a collection.
     CollectionLinks {
         collection_id: String,
@@ -242,6 +252,18 @@ enum CorrectCommand {
         kind: String,
         #[arg(long)]
         note: Option<String>,
+    },
+}
+
+/// Top-level subcommands for `calli scholion <corpus_id>`.
+#[derive(Debug, Subcommand)]
+enum ScholionCommand {
+    /// List scholia (applied corrections) for a corpus.
+    List,
+    /// Apply a scholion to the index.
+    Apply {
+        #[command(subcommand)]
+        sub: CorrectCommand,
     },
 }
 
@@ -345,35 +367,24 @@ async fn main() -> Result<()> {
             run_inspect(sub, db)
         }
 
-        Command::Correct { corpus_id, sub } => {
+        Command::Scholion { corpus_id, sub } => {
             let db = open_db(&db_path)?;
-            // EntityLink is collection-scoped and handled separately.
-            if let CorrectCommand::EntityLink {
-                collection,
-                corpus_a,
-                entity_a,
-                corpus_b,
-                entity_b,
-                kind,
-                note,
-            } = sub
-            {
-                commands::correct::run_entity_link(
-                    EntityLinkArgs {
-                        collection_id: collection,
-                        corpus_a,
-                        entity_a,
-                        corpus_b,
-                        entity_b,
-                        kind,
-                        note,
-                    },
-                    db.as_ref(),
-                )
-            } else {
-                let correct_sub = translate_correct_sub(sub);
-                commands::correct::run(&corpus_id, correct_sub, db.as_ref())
+            match sub {
+                ScholionCommand::List => {
+                    let corrections = commands::inspect::run_corrections(&corpus_id, db.as_ref())?;
+                    print_corrections(&corrections, "(no scholia)");
+                    Ok(())
+                }
+                ScholionCommand::Apply { sub: apply_sub } => {
+                    run_correct_command(&corpus_id, apply_sub, db.as_ref())
+                }
             }
+        }
+
+        Command::Correct { corpus_id, sub } => {
+            eprintln!("warning: 'calli correct' is deprecated, use 'calli scholion apply'");
+            let db = open_db(&db_path)?;
+            run_correct_command(&corpus_id, sub, db.as_ref())
         }
 
         Command::Export {
@@ -551,21 +562,9 @@ fn run_inspect(sub: InspectCommand, db: Arc<dyn StorageBackend>) -> Result<()> {
             table.print();
         }
 
-        InspectCommand::Corrections { corpus_id } => {
+        InspectCommand::Corrections { corpus_id } | InspectCommand::Scholia { corpus_id } => {
             let corrections = commands::inspect::run_corrections(&corpus_id, db.as_ref())?;
-            if corrections.is_empty() {
-                println!("(no corrections)");
-                return Ok(());
-            }
-            for c in &corrections {
-                let description = describe_correction(c);
-                println!(
-                    "{:>25}  {:>10}  {}",
-                    c.applied_at,
-                    c.kind.kind_name(),
-                    description
-                );
-            }
+            print_corrections(&corrections, "(no corrections)");
         }
 
         InspectCommand::CollectionLinks {
@@ -584,6 +583,24 @@ fn run_inspect(sub: InspectCommand, db: Arc<dyn StorageBackend>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_corrections(
+    corrections: &[callimachus_core::corrections::types::Correction],
+    empty_msg: &str,
+) {
+    if corrections.is_empty() {
+        println!("{}", empty_msg);
+        return;
+    }
+    for c in corrections {
+        println!(
+            "{:>25}  {:>10}  {}",
+            c.applied_at,
+            c.kind.kind_name(),
+            describe_correction(c)
+        );
+    }
 }
 
 fn describe_correction(c: &callimachus_core::corrections::types::Correction) -> String {
@@ -649,6 +666,43 @@ fn describe_correction(c: &callimachus_core::corrections::types::Correction) -> 
                 entity_b_id
             )
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared dispatch: CorrectCommand → commands::correct (used by both Scholion and Correct)
+// ---------------------------------------------------------------------------
+
+fn run_correct_command(
+    corpus_id: &str,
+    sub: CorrectCommand,
+    db: &dyn StorageBackend,
+) -> Result<()> {
+    // EntityLink is collection-scoped and routed separately from corpus-scoped corrections.
+    if let CorrectCommand::EntityLink {
+        collection,
+        corpus_a,
+        entity_a,
+        corpus_b,
+        entity_b,
+        kind,
+        note,
+    } = sub
+    {
+        commands::correct::run_entity_link(
+            EntityLinkArgs {
+                collection_id: collection,
+                corpus_a,
+                entity_a,
+                corpus_b,
+                entity_b,
+                kind,
+                note,
+            },
+            db,
+        )
+    } else {
+        commands::correct::run(corpus_id, translate_correct_sub(sub), db)
     }
 }
 

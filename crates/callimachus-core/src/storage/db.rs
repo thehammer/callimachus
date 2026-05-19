@@ -17,6 +17,7 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../../migrations/010_multi_model_artifacts.sql"
         )),
+        M::up(include_str!("../../migrations/011_scholia.sql")),
     ])
 }
 

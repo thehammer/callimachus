@@ -9,7 +9,7 @@ pub struct ToolDesc {
     pub input_schema: Value,
 }
 
-/// All 23 Callimachus tools (18 corpus-scoped + 5 collection-scoped).
+/// All 27 Callimachus tools (22 corpus-scoped + 5 collection-scoped).
 pub static TOOL_LIST: Lazy<Vec<ToolDesc>> = Lazy::new(|| {
     vec![
         ToolDesc {
@@ -361,6 +361,68 @@ pub static TOOL_LIST: Lazy<Vec<ToolDesc>> = Lazy::new(|| {
                 "required": []
             }),
         },
+        // ── Scholia tools (Phase 2 Pinakes terminology) ───────────────────────
+        ToolDesc {
+            name: "list_scholia",
+            description: "List all scholia (marginal annotations / post-indexing corrections) for a corpus, ordered by application time.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "corpus_id": { "type": "string", "description": "The corpus identifier." }
+                },
+                "required": ["corpus_id"]
+            }),
+        },
+        ToolDesc {
+            name: "apply_scholion",
+            description: "Apply a scholion (correction) to the index. Supports merge, unmerge, rename, alias, edit_summary, and entity_link operations.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "corpus_id": {
+                        "type": "string",
+                        "description": "The corpus to apply the scholion to (required for all operations except entity_link)."
+                    },
+                    "collection_id": {
+                        "type": "string",
+                        "description": "The collection to apply the scholion to (required for entity_link only)."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["merge", "unmerge", "rename", "alias", "edit_summary", "entity_link"],
+                        "description": "The type of correction to apply."
+                    },
+                    "entity_a_id": { "type": "string", "description": "First entity ID (merge, entity_link)." },
+                    "entity_b_id": { "type": "string", "description": "Second entity ID (merge, entity_link)." },
+                    "canonical_id": { "type": "string", "description": "Which entity to keep as canonical (merge)." },
+                    "entity_id": { "type": "string", "description": "Entity ID (unmerge, rename, alias)." },
+                    "split_by": { "type": "string", "description": "Granularity for unmerge: 'scene' or 'chapter'." },
+                    "new_name": { "type": "string", "description": "New canonical name (rename)." },
+                    "add": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Aliases to add (alias)."
+                    },
+                    "remove": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Aliases to remove (alias)."
+                    },
+                    "target_kind": { "type": "string", "description": "Target kind for edit_summary: 'chunk', 'entity', or 'corpus'." },
+                    "target_id": { "type": "string", "description": "Target ID for edit_summary." },
+                    "text": { "type": "string", "description": "Replacement summary text (edit_summary)." },
+                    "corpus_a_id": { "type": "string", "description": "First corpus ID (entity_link)." },
+                    "corpus_b_id": { "type": "string", "description": "Second corpus ID (entity_link)." },
+                    "link_kind": {
+                        "type": "string",
+                        "enum": ["same_as", "implements", "exemplifies", "references", "contrasts"],
+                        "description": "Relationship kind (entity_link)."
+                    },
+                    "note": { "type": "string", "description": "Optional note (entity_link)." }
+                },
+                "required": ["kind"]
+            }),
+        },
     ]
 });
 
@@ -376,4 +438,76 @@ pub fn tools_list_json() -> Vec<Value> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Scholia MCP tools must appear in TOOL_LIST ────────────────────────────
+
+    /// `list_scholia` must be registered as an MCP tool.
+    ///
+    /// This test fails until the tool descriptor is added to `TOOL_LIST` as
+    /// part of the Pinakes Terminology Phase 2 implementation.
+    #[test]
+    fn list_scholia_tool_in_list() {
+        let names: Vec<&str> = TOOL_LIST.iter().map(|t| t.name).collect();
+        assert!(
+            names.contains(&"list_scholia"),
+            "list_scholia must be registered in TOOL_LIST; found tools: {:?}",
+            names
+        );
+    }
+
+    /// `apply_scholion` must be registered as an MCP tool.
+    ///
+    /// This test fails until the tool descriptor is added to `TOOL_LIST` as
+    /// part of the Pinakes Terminology Phase 2 implementation.
+    #[test]
+    fn apply_scholion_tool_in_list() {
+        let names: Vec<&str> = TOOL_LIST.iter().map(|t| t.name).collect();
+        assert!(
+            names.contains(&"apply_scholion"),
+            "apply_scholion must be registered in TOOL_LIST; found tools: {:?}",
+            names
+        );
+    }
+
+    /// Both new scholia tools must appear together — registering one without
+    /// the other indicates an incomplete migration.
+    #[test]
+    fn both_scholia_tools_registered_together() {
+        let names: Vec<&str> = TOOL_LIST.iter().map(|t| t.name).collect();
+        let has_list = names.contains(&"list_scholia");
+        let has_apply = names.contains(&"apply_scholion");
+        assert!(
+            has_list && has_apply,
+            "both list_scholia and apply_scholion must be in TOOL_LIST; \
+             list_scholia={}, apply_scholion={}",
+            has_list,
+            has_apply
+        );
+    }
+
+    /// Sanity check: existing tools must not have been removed during the
+    /// scholia migration.  Guards against an accidental full replacement of
+    /// TOOL_LIST.
+    #[test]
+    fn pre_existing_tools_not_removed_by_scholia_migration() {
+        let names: Vec<&str> = TOOL_LIST.iter().map(|t| t.name).collect();
+        for expected in &[
+            "corpus_list",
+            "search",
+            "entity",
+            "entity_contracts",
+            "collection_list",
+        ] {
+            assert!(
+                names.contains(expected),
+                "pre-existing tool '{}' must still be present in TOOL_LIST",
+                expected
+            );
+        }
+    }
 }
