@@ -1,5 +1,6 @@
 mod anthropic;
 mod claude_code;
+pub mod concurrency;
 mod dry_run;
 mod error;
 mod openai_embed;
@@ -10,6 +11,7 @@ mod resolve;
 
 pub use anthropic::AnthropicApiProvider;
 pub use claude_code::ClaudeCodeProvider;
+pub use concurrency::{AdaptiveLimiter, ConcurrencyStats, RateLimitSnapshot};
 pub use dry_run::DryRunProvider;
 pub use error::LlmError;
 pub use openai_embed::OpenAiEmbeddingProvider;

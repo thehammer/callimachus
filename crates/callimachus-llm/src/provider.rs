@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::error::{LlmError, Result};
+use crate::{
+    concurrency::{AdaptiveLimiter, ConcurrencyStats},
+    error::{LlmError, Result},
+};
 
 /// Maps an LLM model name (as returned by `LlmClient::name()`) to a coarse
 /// tier label used by storage to order artifacts by quality.
@@ -83,6 +86,19 @@ pub trait LlmProvider: Send + Sync {
     fn with_model_override(&self, _model: &str) -> Option<Arc<dyn LlmProvider>> {
         None
     }
+
+    /// Return the shared [`AdaptiveLimiter`] for this provider, if any.
+    ///
+    /// Only `AnthropicApiProvider` returns `Some`.  All other providers
+    /// return `None` and the pipeline falls back to a fixed default width.
+    fn concurrency_limiter(&self) -> Option<Arc<AdaptiveLimiter>> {
+        None
+    }
+
+    /// Snapshot of concurrency stats accumulated since the last [`AdaptiveLimiter::reset`].
+    fn concurrency_stats(&self) -> Option<ConcurrencyStats> {
+        None
+    }
 }
 
 /// Blanket impl so `Box<dyn LlmProvider>` can be used wherever `LlmProvider` is required.
@@ -111,6 +127,12 @@ impl LlmProvider for Box<dyn LlmProvider> {
     }
     fn with_model_override(&self, model: &str) -> Option<Arc<dyn LlmProvider>> {
         (**self).with_model_override(model)
+    }
+    fn concurrency_limiter(&self) -> Option<Arc<AdaptiveLimiter>> {
+        (**self).concurrency_limiter()
+    }
+    fn concurrency_stats(&self) -> Option<ConcurrencyStats> {
+        (**self).concurrency_stats()
     }
 }
 

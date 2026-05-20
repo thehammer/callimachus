@@ -607,4 +607,100 @@ mod tests {
         assert_eq!(tiers.sonnet.name(), "dry-run");
         assert_eq!(tiers.opus.name(), "dry-run");
     }
+
+    /// Verifies that running the pipeline with explicit `concurrency = Some(N)`
+    /// produces identical processed/skipped/failed counts to `concurrency = None`
+    /// (which defaults to 4 for DryRun providers).
+    ///
+    /// Since DryRun instantly returns without LLM work, both paths exercise the
+    /// same per-entity logic; what changes is only how many entities run concurrently.
+    #[tokio::test]
+    async fn concurrent_run_matches_sequential_counts() {
+        let (db, corpus) = setup();
+        let pipeline = IndexPipeline {
+            db: db.clone(),
+            adapter: Arc::new(FakeAdapter),
+            llm: Arc::new(DryRunProvider::new()),
+            embedder: None,
+        };
+
+        // Run with default concurrency (None → 4).
+        let r1 = pipeline
+            .run(&corpus, IndexOptions::default())
+            .await
+            .unwrap();
+
+        // Reset corpus and re-run with concurrency = 1 (effectively sequential).
+        // We use a fresh in-memory DB to get a clean slate.
+        let (db2, corpus2) = setup();
+        let pipeline2 = IndexPipeline {
+            db: db2.clone(),
+            adapter: Arc::new(FakeAdapter),
+            llm: Arc::new(DryRunProvider::new()),
+            embedder: None,
+        };
+        let r2 = pipeline2
+            .run(
+                &corpus2,
+                IndexOptions {
+                    concurrency: Some(1),
+                    ..IndexOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // Entity and chunk counts must be identical regardless of concurrency.
+        assert_eq!(
+            r1.total_chunks, r2.total_chunks,
+            "chunk counts should match"
+        );
+        assert_eq!(
+            r1.total_entities, r2.total_entities,
+            "entity counts should match"
+        );
+        assert_eq!(
+            r1.total_edges, r2.total_edges,
+            "edge counts should match"
+        );
+
+        // Run counts should be equal.
+        assert_eq!(r1.runs.len(), r2.runs.len(), "run counts should match");
+
+        // All runs should complete successfully in both cases.
+        for run in r1.runs.iter().chain(r2.runs.iter()) {
+            assert_eq!(
+                run.status, "completed",
+                "all runs should be completed; got {:?}",
+                run
+            );
+        }
+    }
+
+    /// DryRun pipeline with concurrency = None (uses default 4).
+    #[tokio::test]
+    async fn pipeline_runs_with_default_concurrency() {
+        let (db, corpus) = setup();
+        let pipeline = IndexPipeline {
+            db,
+            adapter: Arc::new(FakeAdapter),
+            llm: Arc::new(DryRunProvider::new()),
+            embedder: None,
+        };
+
+        let result = pipeline
+            .run(
+                &corpus,
+                IndexOptions {
+                    concurrency: None,
+                    ..IndexOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        for run in &result.runs {
+            assert_eq!(run.status, "completed");
+        }
+    }
 }

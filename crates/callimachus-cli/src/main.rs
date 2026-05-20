@@ -64,6 +64,10 @@ enum Command {
         /// Disable git-aware file walking; index every file under the source path.
         #[arg(long)]
         no_git_filter: bool,
+        /// Fixed concurrency for LLM-heavy passes (purpose, contract).
+        /// When omitted, the Anthropic rate-limit headers drive adaptive sizing.
+        #[arg(long)]
+        concurrency: Option<usize>,
     },
 
     /// Incremental reindex since a commit or date.
@@ -346,6 +350,7 @@ async fn main() -> Result<()> {
             dry_run,
             full,
             no_git_filter,
+            concurrency,
         } => {
             let db = open_db(&db_path)?;
             commands::index::run(
@@ -355,6 +360,7 @@ async fn main() -> Result<()> {
                 dry_run,
                 full,
                 no_git_filter,
+                concurrency,
                 None,
                 db,
                 &global_config,
