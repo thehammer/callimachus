@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
+    budget::TokenBudget,
     concurrency::{AdaptiveLimiter, ConcurrencyStats},
     error::{LlmError, Result},
 };
@@ -87,19 +88,27 @@ pub trait LlmProvider: Send + Sync {
         None
     }
 
-    /// Probe the provider's rate limits so the adaptive limiter is initialised
-    /// before the first real pass begins.
+    /// Probe the provider's rate limits so the token budget is seeded for
+    /// this model's family before the first real pass begins.
     ///
     /// The default implementation is a no-op.  `AnthropicApiProvider` overrides
     /// this to make a minimal 1-token request so the response headers can seed
-    /// the limiter's initial width before `buffer_unordered` is sized.
+    /// the budget's initial window before `buffer_unordered` is sized.
     async fn probe_rate_limits(&self) {}
 
     /// Return the shared [`AdaptiveLimiter`] for this provider, if any.
     ///
     /// Only `AnthropicApiProvider` returns `Some`.  All other providers
-    /// return `None` and the pipeline falls back to a fixed default width.
+    /// return `None`.
     fn concurrency_limiter(&self) -> Option<Arc<AdaptiveLimiter>> {
+        None
+    }
+
+    /// Return the shared [`TokenBudget`] for this provider, if any.
+    ///
+    /// Only `AnthropicApiProvider` returns `Some`.  All other providers
+    /// return `None` and pipeline falls back to fixed default width.
+    fn budget(&self) -> Option<Arc<TokenBudget>> {
         None
     }
 
@@ -142,6 +151,9 @@ impl LlmProvider for Box<dyn LlmProvider> {
     fn concurrency_limiter(&self) -> Option<Arc<AdaptiveLimiter>> {
         (**self).concurrency_limiter()
     }
+    fn budget(&self) -> Option<Arc<TokenBudget>> {
+        (**self).budget()
+    }
     fn concurrency_stats(&self) -> Option<ConcurrencyStats> {
         (**self).concurrency_stats()
     }
@@ -154,6 +166,13 @@ pub struct CompletionRequest {
     pub max_tokens: Option<u32>,
     /// For logging/attribution only.
     pub chunk_id: Option<String>,
+    /// Entity or chunk kind (e.g. `"function"`, `"class"`, `"summarize"`).
+    /// Used as part of the [`crate::budget::EstimatorKey`] for per-kind
+    /// token-size learning.
+    pub kind: String,
+    /// Pipeline pass name (e.g. `"purpose"`, `"contract"`, `"summarize"`).
+    /// Used as part of the [`crate::budget::EstimatorKey`].
+    pub pass: String,
 }
 
 #[derive(Debug)]

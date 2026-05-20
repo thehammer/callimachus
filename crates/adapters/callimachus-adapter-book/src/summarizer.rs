@@ -15,6 +15,8 @@ pub async fn summarize(
             model: None,
             max_tokens: Some(512),
             chunk_id: Some(chunk.id.clone()),
+            kind: chunk.kind.clone(),
+            pass: "summarize".to_string(),
         })
         .await
         .map_err(|e| anyhow::anyhow!("LLM error: {e}"))?;

@@ -54,6 +54,8 @@ Merges:"#
             model: None,
             max_tokens: Some(1024),
             chunk_id: None,
+            kind: "entity".to_string(),
+            pass: "aliases".to_string(),
         })
         .await
         .map_err(|e| anyhow::anyhow!("LLM error: {e}"))?;

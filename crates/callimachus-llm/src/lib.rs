@@ -1,4 +1,5 @@
 mod anthropic;
+pub mod budget;
 mod claude_code;
 pub mod concurrency;
 mod dry_run;
@@ -10,6 +11,7 @@ mod rate_limit;
 mod resolve;
 
 pub use anthropic::AnthropicApiProvider;
+pub use budget::{CallSizeEstimator, EstimatorKey, ModelFamily, TokenBudget, model_family_of};
 pub use claude_code::ClaudeCodeProvider;
 pub use concurrency::{AdaptiveLimiter, ConcurrencyStats, RateLimitSnapshot};
 pub use dry_run::DryRunProvider;

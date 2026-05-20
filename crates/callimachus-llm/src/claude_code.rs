@@ -183,6 +183,8 @@ mod tests {
             model: None,
             max_tokens: None,
             chunk_id: None,
+            kind: "test".to_string(),
+            pass: "test".to_string(),
         }
     }
 

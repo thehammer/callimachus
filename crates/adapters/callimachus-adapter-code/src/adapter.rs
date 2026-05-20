@@ -277,6 +277,8 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
             model: None, // use model from provider (tier-selected by caller)
             max_tokens: Some(500),
             chunk_id: None,
+            kind: entity.kind.clone(),
+            pass: "purpose".to_string(),
         };
 
         let response = llm.complete(req).await?;
@@ -432,6 +434,8 @@ Return JSON matching this schema exactly:
             model: None, // use model from provider (tier-selected by caller)
             max_tokens: Some(600),
             chunk_id: None,
+            kind: entity.kind.clone(),
+            pass: "contract".to_string(),
         };
 
         let response = llm.complete(req).await?;
@@ -558,6 +562,8 @@ Return JSON:
             model: None, // use model from provider (tier-selected by caller)
             max_tokens: Some(1500),
             chunk_id: None,
+            kind: "corpus".to_string(),
+            pass: "theme".to_string(),
         };
 
         let response = llm.complete(req).await?;
