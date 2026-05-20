@@ -25,6 +25,7 @@ enum PurposeOutcome {
     Skip,
     Failed(String),
     Extracted {
+        tier: ModelTier,
         purpose: EntityPurpose,
         blocks: Vec<BlockData>,
         edges: Vec<crate::types::Edge>,
@@ -50,7 +51,7 @@ pub async fn run(
     let mut stats = PassStats::default();
     // Keep tier_config for owned clone inside closures.
     let tier_config = opts.tier_config.clone();
-    let tier_counts = [0u64; 3]; // [haiku, sonnet, opus]
+    let mut tier_counts = [0u64; 3]; // [haiku, sonnet, opus]
 
     if opts.dry_run {
         return Ok(stats);
@@ -120,6 +121,7 @@ pub async fn run(
                 stats.failed += 1;
             }
             PurposeOutcome::Extracted {
+                tier,
                 purpose,
                 blocks,
                 edges,
@@ -135,6 +137,7 @@ pub async fn run(
                 for edge in &edges {
                     db.edge_upsert(edge)?;
                 }
+                tier_counts[tier as usize] += 1;
                 stats.processed += 1;
             }
         }
@@ -225,13 +228,22 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
 
     tracing::debug!(
         "[purpose] entity={} tier={} kind={} in_deg={} out_deg={} fallible={} panics={}",
-        entity.id, tier, entity.kind, in_deg, out_deg,
-        routing.is_fallible, routing.panic_call_count,
+        entity.id,
+        tier,
+        entity.kind,
+        in_deg,
+        out_deg,
+        routing.is_fallible,
+        routing.panic_call_count,
     );
 
     // Idempotency: skip if this exact model already produced an artifact.
     let model_name = llm.name();
-    if !full && db.purpose_get_for_model(corpus_id, &entity.id, model_name).is_ok_and(|r| r.is_some()) {
+    if !full
+        && db
+            .purpose_get_for_model(corpus_id, &entity.id, model_name)
+            .is_ok_and(|r| r.is_some())
+    {
         return PurposeOutcome::Skip;
     }
 
@@ -291,9 +303,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
                     description: block.description.clone(),
                     position: i as i64,
                 };
-                blocks.push(BlockData {
-                    entity_block: eb,
-                });
+                blocks.push(BlockData { entity_block: eb });
 
                 let edge = crate::types::Edge {
                     id: Uuid::new_v4().to_string(),
@@ -308,6 +318,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
             }
 
             PurposeOutcome::Extracted {
+                tier,
                 purpose,
                 blocks,
                 edges,

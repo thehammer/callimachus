@@ -536,7 +536,10 @@ mod tests {
         // After first successful call with rate-limit headers:
         // 20000/20 = 1000, clamped to 32.
         let stats = p.concurrency_stats().unwrap();
-        assert!(stats.requests_made >= 1, "should have counted at least 1 request");
+        assert!(
+            stats.requests_made >= 1,
+            "should have counted at least 1 request"
+        );
         // initial() should now reflect the header-driven width.
         assert_eq!(p.limiter.initial(), 32, "limiter should have sized to 32");
     }

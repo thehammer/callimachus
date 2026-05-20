@@ -22,9 +22,12 @@ const CONTRACT_KINDS: &[&str] = &["function", "method", "class", "interface", "m
 
 enum ContractOutcome {
     /// Store a default contract and count as processed.
-    DefaultContract { entity_id: String },
+    DefaultContract {
+        entity_id: String,
+    },
     /// Contract extracted from LLM.
     Extracted {
+        tier: ModelTier,
         contract: Box<EntityContract>,
         verified_by_edges: Vec<EdgeSpec>,
         discards_result_edges: Vec<EdgeSpec>,
@@ -58,7 +61,7 @@ pub async fn run(
 ) -> anyhow::Result<PassStats> {
     let mut stats = PassStats::default();
     let tier_config = opts.tier_config.clone();
-    let tier_counts = [0u64; 3];
+    let mut tier_counts = [0u64; 3];
 
     if opts.dry_run {
         return Ok(stats);
@@ -124,12 +127,12 @@ pub async fn run(
                 stats.skipped += 1;
             }
             ContractOutcome::DefaultContract { entity_id } => {
-                // Entity already got a default contract in the async phase (no location).
-                // The write happened there; just tally.
+                // Entity has no location or no chunk content — store a default contract now.
+                store_default_contract_direct(&db, &corpus.id, &entity_id)?;
                 stats.processed += 1;
-                let _ = entity_id;
             }
             ContractOutcome::Extracted {
+                tier,
                 contract,
                 verified_by_edges,
                 discards_result_edges,
@@ -179,6 +182,7 @@ pub async fn run(
                     }
                 }
 
+                tier_counts[tier as usize] += 1;
                 stats.processed += 1;
             }
             ContractOutcome::Failed {
@@ -283,13 +287,22 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
 
     tracing::debug!(
         "[contract] entity={} tier={} kind={} in_deg={} out_deg={} fallible={} panics={}",
-        entity.id, tier, entity.kind, in_deg, out_deg,
-        routing.is_fallible, routing.panic_call_count,
+        entity.id,
+        tier,
+        entity.kind,
+        in_deg,
+        out_deg,
+        routing.is_fallible,
+        routing.panic_call_count,
     );
 
     // Idempotency: skip if this exact model already produced an artifact.
     let model_name = llm.name();
-    if !full && db.contract_get_for_model(corpus_id, &entity.id, model_name).is_ok_and(|r| r.is_some()) {
+    if !full
+        && db
+            .contract_get_for_model(corpus_id, &entity.id, model_name)
+            .is_ok_and(|r| r.is_some())
+    {
         return ContractOutcome::Skip;
     }
 
@@ -374,6 +387,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
                 .collect();
 
             ContractOutcome::Extracted {
+                tier,
                 contract: Box::new(contract),
                 verified_by_edges,
                 discards_result_edges,

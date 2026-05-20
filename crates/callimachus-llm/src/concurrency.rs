@@ -64,11 +64,12 @@ impl Drop for LimiterPermit {
         self.inner.running.fetch_sub(1, Ordering::AcqRel);
 
         // If the limiter wants to shrink, absorb this slot instead of releasing it.
-        let drained = self.inner.pending_drain.fetch_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-            |v| if v > 0 { Some(v - 1) } else { None },
-        );
+        let drained =
+            self.inner
+                .pending_drain
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                    if v > 0 { Some(v - 1) } else { None }
+                });
         if drained.is_ok() {
             permit.forget();
             // Reflect the permanent capacity reduction.
@@ -165,9 +166,7 @@ impl AdaptiveLimiter {
         self.inner
             .peak_concurrency
             .fetch_max(now_running, Ordering::Relaxed);
-        self.inner
-            .requests_made
-            .fetch_add(1, Ordering::Relaxed);
+        self.inner.requests_made.fetch_add(1, Ordering::Relaxed);
         self.inner
             .concurrency_sum
             .fetch_add(now_running as u64, Ordering::Relaxed);
@@ -201,9 +200,7 @@ impl AdaptiveLimiter {
                 snap.tokens_limit,
                 target,
             );
-            self.inner
-                .initial_width
-                .store(target, Ordering::SeqCst);
+            self.inner.initial_width.store(target, Ordering::SeqCst);
             self.resize(current, target);
             self.inner.initialized.store(true, Ordering::SeqCst);
             return;
@@ -493,7 +490,10 @@ mod tests {
         let p4 = lim2.acquire().await;
         let result =
             tokio::time::timeout(std::time::Duration::from_millis(20), lim2.acquire()).await;
-        assert!(result.is_err(), "5th acquire should block after shrink to 4");
+        assert!(
+            result.is_err(),
+            "5th acquire should block after shrink to 4"
+        );
         drop((p1, p2, p3, p4));
     }
 

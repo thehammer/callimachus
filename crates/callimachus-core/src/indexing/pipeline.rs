@@ -659,10 +659,7 @@ mod tests {
             r1.total_entities, r2.total_entities,
             "entity counts should match"
         );
-        assert_eq!(
-            r1.total_edges, r2.total_edges,
-            "edge counts should match"
-        );
+        assert_eq!(r1.total_edges, r2.total_edges, "edge counts should match");
 
         // Run counts should be equal.
         assert_eq!(r1.runs.len(), r2.runs.len(), "run counts should match");
