@@ -14,6 +14,15 @@ pub struct PassStats {
     pub tokens_out: Option<u64>,
     pub cost_usd: Option<f64>,
     pub errors: Vec<ChunkError>,
+    /// Total LLM requests made during this pass.  `None` for non-LLM passes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests_made: Option<u64>,
+    /// Average concurrency observed across all LLM requests in this pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_concurrency: Option<f64>,
+    /// Peak concurrency observed during this pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_concurrency: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

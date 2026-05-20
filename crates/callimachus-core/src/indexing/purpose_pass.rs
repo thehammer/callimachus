@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use callimachus_llm::{LlmError, LlmProvider, model_tier};
+use futures::StreamExt;
 use uuid::Uuid;
 
 use crate::{
     adapter::SourceAdapter,
-    indexing::model_tier::{ModelTier, ModelTierRouter},
+    indexing::model_tier::{ModelTier, ModelTierRouter, TierConfig},
     storage::{StorageBackend, run_log::PassStats},
     types::{Corpus, Entity, EntityBlock, EntityPurpose},
 };
@@ -17,6 +18,27 @@ const MAX_RETRIES: u32 = 8;
 /// Kinds of entities for which we extract purpose.
 const PURPOSE_KINDS: &[&str] = &["function", "method", "class", "interface", "module"];
 
+// ─── Per-entity outcome ───────────────────────────────────────────────────────
+
+/// Result of processing one entity in the concurrent phase.
+enum PurposeOutcome {
+    Skip,
+    Failed(String),
+    Extracted {
+        tier: ModelTier,
+        purpose: EntityPurpose,
+        blocks: Vec<BlockData>,
+        edges: Vec<crate::types::Edge>,
+        block_entities: Vec<Entity>,
+    },
+}
+
+struct BlockData {
+    entity_block: EntityBlock,
+}
+
+// ─── Main pass ────────────────────────────────────────────────────────────────
+
 pub async fn run(
     db: Arc<dyn StorageBackend>,
     corpus: &Corpus,
@@ -27,19 +49,30 @@ pub async fn run(
     opts: &IndexOptions,
 ) -> anyhow::Result<PassStats> {
     let mut stats = PassStats::default();
-    let router = ModelTierRouter::new(&opts.tier_config);
+    // Keep tier_config for owned clone inside closures.
+    let tier_config = opts.tier_config.clone();
     let mut tier_counts = [0u64; 3]; // [haiku, sonnet, opus]
 
     if opts.dry_run {
         return Ok(stats);
     }
 
+    // Determine concurrency width.
+    let concurrency = opts
+        .concurrency
+        .or_else(|| {
+            llm_haiku
+                .concurrency_limiter()
+                .map(|l| l.initial() as usize)
+                .filter(|&n| n > 0)
+        })
+        .unwrap_or(4);
+
     let all_entities = db.entity_list(&corpus.id)?;
-    let candidates: Vec<&Entity> = all_entities
-        .iter()
+    let candidates: Vec<Entity> = all_entities
+        .into_iter()
         .filter(|e| PURPOSE_KINDS.contains(&e.kind.as_str()))
         .filter(|e| {
-            // Skip entities whose source file is unchanged per the manifest.
             opts.change_manifest
                 .as_ref()
                 .map(|m| {
@@ -53,159 +86,59 @@ pub async fn run(
         .collect();
     let total = candidates.len() as u64;
 
-    for (i, entity) in candidates.iter().enumerate() {
-        // Fetch content via first location (needed for routing and extraction).
-        let content = match entity.first_location.as_ref() {
-            Some(loc) => match db.chunk_get_by_uri(&loc.uri)? {
-                Some(chunk) => chunk.content,
-                None => {
-                    stats.skipped += 1;
-                    let completed = i as u64 + 1;
-                    if completed.is_multiple_of(25) {
-                        tracing::info!("[purpose] {}/{} entities", completed, total);
-                    }
-                    continue;
-                }
-            },
-            None => {
-                stats.skipped += 1;
-                let completed = i as u64 + 1;
-                if completed.is_multiple_of(25) {
-                    tracing::info!("[purpose] {}/{} entities", completed, total);
-                }
-                continue;
-            }
-        };
+    // ── Concurrent phase: read-only + LLM ────────────────────────────────────
 
-        // Compute routing inputs.
-        let in_deg = db.entity_in_degree(&corpus.id, &entity.id).unwrap_or(0);
-        let out_deg = db.entity_out_degree(&corpus.id, &entity.id).unwrap_or(0);
-        // Detect language from entity location for static analysis.
-        let language = entity
-            .first_location
-            .as_ref()
-            .map(|l| l.uri.as_str())
-            .map(detect_language_from_uri)
-            .unwrap_or("unknown");
-        let mut routing = adapter.static_routing_inputs(language, &content, &entity.canonical_name);
-        routing.kind = entity.kind.clone();
-        routing.in_degree = in_deg;
-        routing.out_degree = out_deg;
+    let ctx = Arc::new(PassContext {
+        db: Arc::clone(&db),
+        corpus_id: corpus.id.clone(),
+        adapter: Arc::clone(&adapter),
+        llm_haiku: Arc::clone(&llm_haiku),
+        llm_sonnet: Arc::clone(&llm_sonnet),
+        llm_opus: Arc::clone(&llm_opus),
+        tier_config,
+        full: opts.full,
+    });
 
-        let tier = router.route(&routing);
-        let llm: &dyn LlmProvider = match tier {
-            ModelTier::Haiku => llm_haiku.as_ref(),
-            ModelTier::Sonnet => llm_sonnet.as_ref(),
-            ModelTier::Opus => llm_opus.as_ref(),
-        };
-        tier_counts[tier as usize] += 1;
+    let outcomes: Vec<PurposeOutcome> = futures::stream::iter(candidates.iter())
+        .map(|entity| {
+            let ctx = Arc::clone(&ctx);
+            let entity = entity.clone();
+            async move { process_entity(&ctx, &entity).await }
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
 
-        tracing::debug!(
-            "[purpose] entity={} tier={} kind={} in_deg={} out_deg={} fallible={} panics={}",
-            entity.id,
-            tier,
-            entity.kind,
-            in_deg,
-            out_deg,
-            routing.is_fallible,
-            routing.panic_call_count
-        );
+    // ── Serial sink: DB writes + stats ────────────────────────────────────────
 
-        // Idempotent: skip only if this exact model has already produced an artifact.
-        // A different model (e.g. Sonnet after Haiku) will add a new row.
-        let model_name = llm.name();
-        if !opts.full
-            && db
-                .purpose_get_for_model(&corpus.id, &entity.id, model_name)?
-                .is_some()
-        {
-            stats.skipped += 1;
-            let completed = i as u64 + 1;
-            if completed.is_multiple_of(25) {
-                tracing::info!("[purpose] {}/{} entities", completed, total);
-            }
-            continue;
-        }
-
-        // Fetch existing summary text if available.
-        let summary_opt = db
-            .summary_get(
-                &corpus.id,
-                &crate::types::SummaryTargetKind::Entity,
-                &entity.id,
-            )
-            .ok()
-            .flatten()
-            .map(|s| s.text);
-
-        // Call adapter with retry.
-        match extract_with_retry(
-            adapter.as_ref(),
-            entity,
-            &content,
-            summary_opt.as_deref(),
-            llm,
-        )
-        .await
-        {
-            Ok(Some(extracted)) => {
-                let now = chrono::Utc::now().to_rfc3339();
-                let model = llm.name().to_string();
-                let tier = model_tier(&model).to_string();
-                let purpose = EntityPurpose {
-                    entity_id: entity.id.clone(),
-                    corpus_id: corpus.id.clone(),
-                    purpose: extracted.purpose,
-                    model,
-                    model_tier: tier,
-                    generated_at: now.clone(),
-                };
-                db.purpose_upsert(&purpose)?;
-
-                // Store block blurbs for complex functions.
-                for (i, block) in extracted.blocks.iter().enumerate() {
-                    let block_entity_id = format!("{}:block:{}", entity.id, i);
-                    // Insert a lightweight entity row for the block.
-                    let block_entity = Entity::new(
-                        block_entity_id.clone(),
-                        corpus.id.clone(),
-                        block.label.clone(),
-                        "block".to_string(),
-                    );
-                    db.entity_upsert(&block_entity)?;
-
-                    // Insert block record.
-                    let eb = EntityBlock {
-                        id: Uuid::new_v4().to_string(),
-                        entity_id: entity.id.clone(),
-                        corpus_id: corpus.id.clone(),
-                        label: block.label.clone(),
-                        description: block.description.clone(),
-                        position: i as i64,
-                    };
-                    db.block_upsert(&eb)?;
-
-                    // Emit `defines` edge: parent → block entity.
-                    let edge = crate::types::Edge {
-                        id: Uuid::new_v4().to_string(),
-                        corpus_id: corpus.id.clone(),
-                        from_entity_id: entity.id.clone(),
-                        to_entity_id: block_entity_id,
-                        kind: "defines".to_string(),
-                        location: crate::types::Location::new(&corpus.id, ""),
-                        confidence: 0.5,
-                    };
-                    db.edge_upsert(&edge)?;
-                }
-
-                stats.processed += 1;
-            }
-            Ok(None) => {
+    for (i, outcome) in outcomes.into_iter().enumerate() {
+        match outcome {
+            PurposeOutcome::Skip => {
                 stats.skipped += 1;
             }
-            Err(e) => {
-                tracing::warn!("purpose pass failed for entity {}: {e}", entity.id);
+            PurposeOutcome::Failed(msg) => {
+                tracing::warn!("purpose pass failed for entity {}/{total}: {msg}", i + 1);
                 stats.failed += 1;
+            }
+            PurposeOutcome::Extracted {
+                tier,
+                purpose,
+                blocks,
+                edges,
+                block_entities,
+            } => {
+                db.purpose_upsert(&purpose)?;
+                for be in &block_entities {
+                    db.entity_upsert(be)?;
+                }
+                for block in &blocks {
+                    db.block_upsert(&block.entity_block)?;
+                }
+                for edge in &edges {
+                    db.edge_upsert(edge)?;
+                }
+                tier_counts[tier as usize] += 1;
+                stats.processed += 1;
             }
         }
 
@@ -213,6 +146,21 @@ pub async fn run(
         if completed.is_multiple_of(25) {
             tracing::info!("[purpose] {}/{} entities", completed, total);
         }
+    }
+
+    // ── Populate concurrency stats into PassStats ─────────────────────────────
+    if let Some(limiter) = llm_haiku.concurrency_limiter() {
+        let cs = limiter.stats();
+        stats.requests_made = Some(cs.requests_made);
+        stats.avg_concurrency = Some(cs.avg_concurrency);
+        stats.peak_concurrency = Some(cs.peak_concurrency);
+        tracing::info!(
+            "[purpose] avg_concurrency={:.1} peak={} requests={}",
+            cs.avg_concurrency,
+            cs.peak_concurrency,
+            cs.requests_made,
+        );
+        limiter.reset();
     }
 
     tracing::info!(
@@ -224,6 +172,165 @@ pub async fn run(
 
     Ok(stats)
 }
+
+// ─── Per-entity async work (read-only + LLM) ─────────────────────────────────
+
+struct PassContext {
+    db: Arc<dyn StorageBackend>,
+    corpus_id: String,
+    adapter: Arc<dyn SourceAdapter>,
+    llm_haiku: Arc<dyn LlmProvider>,
+    llm_sonnet: Arc<dyn LlmProvider>,
+    llm_opus: Arc<dyn LlmProvider>,
+    tier_config: TierConfig,
+    full: bool,
+}
+
+async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
+    let db = &ctx.db;
+    let corpus_id = ctx.corpus_id.as_str();
+    let adapter = &ctx.adapter;
+    let llm_haiku = &ctx.llm_haiku;
+    let llm_sonnet = &ctx.llm_sonnet;
+    let llm_opus = &ctx.llm_opus;
+    let tier_config = &ctx.tier_config;
+    let full = ctx.full;
+    // Fetch content via first location.
+    let content = match entity.first_location.as_ref() {
+        Some(loc) => match db.chunk_get_by_uri(&loc.uri) {
+            Ok(Some(chunk)) => chunk.content,
+            _ => return PurposeOutcome::Skip,
+        },
+        None => return PurposeOutcome::Skip,
+    };
+
+    // Compute routing inputs.
+    let in_deg = db.entity_in_degree(corpus_id, &entity.id).unwrap_or(0);
+    let out_deg = db.entity_out_degree(corpus_id, &entity.id).unwrap_or(0);
+    let language = entity
+        .first_location
+        .as_ref()
+        .map(|l| l.uri.as_str())
+        .map(detect_language_from_uri)
+        .unwrap_or("unknown");
+    let mut routing = adapter.static_routing_inputs(language, &content, &entity.canonical_name);
+    routing.kind = entity.kind.clone();
+    routing.in_degree = in_deg;
+    routing.out_degree = out_deg;
+
+    let router = ModelTierRouter::new(tier_config);
+    let tier = router.route(&routing);
+    let llm: &dyn LlmProvider = match tier {
+        ModelTier::Haiku => llm_haiku.as_ref(),
+        ModelTier::Sonnet => llm_sonnet.as_ref(),
+        ModelTier::Opus => llm_opus.as_ref(),
+    };
+
+    tracing::debug!(
+        "[purpose] entity={} tier={} kind={} in_deg={} out_deg={} fallible={} panics={}",
+        entity.id,
+        tier,
+        entity.kind,
+        in_deg,
+        out_deg,
+        routing.is_fallible,
+        routing.panic_call_count,
+    );
+
+    // Idempotency: skip if this exact model already produced an artifact.
+    let model_name = llm.name();
+    if !full
+        && db
+            .purpose_get_for_model(corpus_id, &entity.id, model_name)
+            .is_ok_and(|r| r.is_some())
+    {
+        return PurposeOutcome::Skip;
+    }
+
+    // Fetch existing summary text if available.
+    let summary_opt = db
+        .summary_get(
+            corpus_id,
+            &crate::types::SummaryTargetKind::Entity,
+            &entity.id,
+        )
+        .ok()
+        .flatten()
+        .map(|s| s.text);
+
+    // Call adapter with retry.
+    match extract_with_retry(
+        adapter.as_ref(),
+        entity,
+        &content,
+        summary_opt.as_deref(),
+        llm,
+    )
+    .await
+    {
+        Ok(Some(extracted)) => {
+            let now = chrono::Utc::now().to_rfc3339();
+            let model = llm.name().to_string();
+            let tier_str = model_tier(&model).to_string();
+            let purpose = EntityPurpose {
+                entity_id: entity.id.clone(),
+                corpus_id: corpus_id.to_string(),
+                purpose: extracted.purpose,
+                model,
+                model_tier: tier_str,
+                generated_at: now.clone(),
+            };
+
+            let mut block_entities = Vec::new();
+            let mut blocks = Vec::new();
+            let mut edges = Vec::new();
+
+            for (i, block) in extracted.blocks.iter().enumerate() {
+                let block_entity_id = format!("{}:block:{}", entity.id, i);
+                let block_entity = Entity::new(
+                    block_entity_id.clone(),
+                    corpus_id.to_string(),
+                    block.label.clone(),
+                    "block".to_string(),
+                );
+                block_entities.push(block_entity);
+
+                let eb = EntityBlock {
+                    id: Uuid::new_v4().to_string(),
+                    entity_id: entity.id.clone(),
+                    corpus_id: corpus_id.to_string(),
+                    label: block.label.clone(),
+                    description: block.description.clone(),
+                    position: i as i64,
+                };
+                blocks.push(BlockData { entity_block: eb });
+
+                let edge = crate::types::Edge {
+                    id: Uuid::new_v4().to_string(),
+                    corpus_id: corpus_id.to_string(),
+                    from_entity_id: entity.id.clone(),
+                    to_entity_id: block_entity_id,
+                    kind: "defines".to_string(),
+                    location: crate::types::Location::new(corpus_id, ""),
+                    confidence: 0.5,
+                };
+                edges.push(edge);
+            }
+
+            PurposeOutcome::Extracted {
+                tier,
+                purpose,
+                blocks,
+                edges,
+                block_entities,
+            }
+        }
+        Ok(None) => PurposeOutcome::Skip,
+        Err(e) => PurposeOutcome::Failed(format!("{}: {e}", entity.id)),
+    }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 fn detect_language_from_uri(uri: &str) -> &'static str {
     let path = uri.split('#').next().unwrap_or(uri);

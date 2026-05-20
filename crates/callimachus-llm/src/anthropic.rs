@@ -4,6 +4,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    concurrency::{AdaptiveLimiter, ConcurrencyStats, RateLimitSnapshot},
     error::{LlmError, Result},
     pricing,
     provider::{CompletionRequest, CompletionResponse, LlmProvider, ProviderUsage},
@@ -21,6 +22,10 @@ pub struct AnthropicApiProvider {
     base_url: String,
     default_model: String,
     usage: Arc<Mutex<ProviderUsage>>,
+    /// Shared adaptive limiter — all tier variants created via `with_model`
+    /// share the same `Arc` so headers observed on any variant adapt the
+    /// same semaphore.
+    limiter: Arc<AdaptiveLimiter>,
 }
 
 impl AnthropicApiProvider {
@@ -40,16 +45,17 @@ impl AnthropicApiProvider {
                 .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string()),
             default_model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             usage: Arc::new(Mutex::new(ProviderUsage::default())),
+            limiter: Arc::new(AdaptiveLimiter::new_adaptive("anthropic")),
         }
     }
 
     /// Create a variant of this provider that uses `model` as its default.
     ///
     /// The returned provider **shares** the same `reqwest::Client` (connection
-    /// pool), `api_key`, `base_url`, and `Arc<Mutex<ProviderUsage>>` with the
-    /// parent.  Cost and token accounting therefore accumulates in one place
-    /// across all tier variants — callers can read `.usage()` on any one of
-    /// them to get the combined total.
+    /// pool), `api_key`, `base_url`, `Arc<Mutex<ProviderUsage>>`, and
+    /// `Arc<AdaptiveLimiter>` with the parent.  Cost, token accounting, and
+    /// concurrency adaptation therefore accumulate in one place across all
+    /// tier variants.
     ///
     /// `reqwest::Client` is cheap to clone: the clone shares the same
     /// connection pool internally.
@@ -60,6 +66,7 @@ impl AnthropicApiProvider {
             base_url: self.base_url.clone(),
             default_model: model.into(),
             usage: Arc::clone(&self.usage),
+            limiter: Arc::clone(&self.limiter),
         }
     }
 }
@@ -129,6 +136,11 @@ impl LlmProvider for AnthropicApiProvider {
             }],
         };
 
+        // Acquire a concurrency slot before making the HTTP request.
+        // The permit is dropped at the end of this method (or on any early
+        // return), including on 429/5xx, so retries never deadlock.
+        let _permit = self.limiter.acquire().await;
+
         let mut last_err = LlmError::Other("no attempts made".to_string());
 
         for attempt in 0..MAX_RETRIES {
@@ -146,6 +158,19 @@ impl LlmProvider for AnthropicApiProvider {
             let status = resp.status();
 
             if status.is_success() {
+                // Parse rate-limit headers and feed them to the adaptive limiter
+                // before consuming the response body.
+                let snap = parse_rate_limit_headers(resp.headers());
+                let output_tokens_hint = resp
+                    .headers()
+                    .get("anthropic-ratelimit-tokens-remaining")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                if let Some(snap) = snap {
+                    self.limiter.observe(snap, output_tokens_hint);
+                }
+
                 let api_resp: ApiResponse = resp
                     .json()
                     .await
@@ -254,11 +279,60 @@ impl LlmProvider for AnthropicApiProvider {
     /// Build a variant of this provider that defaults to `model`.
     ///
     /// The returned `Arc<dyn LlmProvider>` shares this provider's connection
-    /// pool and usage `Arc` — see [`AnthropicApiProvider::with_model`] for
-    /// details.
+    /// pool, usage `Arc`, and `AdaptiveLimiter` — see
+    /// [`AnthropicApiProvider::with_model`] for details.
     fn with_model_override(&self, model: &str) -> Option<Arc<dyn LlmProvider>> {
         Some(Arc::new(self.with_model(model)))
     }
+
+    fn concurrency_limiter(&self) -> Option<Arc<AdaptiveLimiter>> {
+        Some(Arc::clone(&self.limiter))
+    }
+
+    fn concurrency_stats(&self) -> Option<ConcurrencyStats> {
+        Some(self.limiter.stats())
+    }
+}
+
+// ─── Header parsing ───────────────────────────────────────────────────────────
+
+/// Parse Anthropic rate-limit headers from a response.
+///
+/// Returns `None` if the required `anthropic-ratelimit-requests-limit` header
+/// is absent or unparseable — callers treat `None` as "no header data".
+fn parse_rate_limit_headers(headers: &reqwest::header::HeaderMap) -> Option<RateLimitSnapshot> {
+    let get_u64 = |name: &str| -> Option<u64> {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok())
+    };
+    let get_u32 = |name: &str| -> Option<u32> {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok())
+    };
+
+    let requests_limit = get_u32("anthropic-ratelimit-requests-limit")?;
+    let requests_remaining = get_u32("anthropic-ratelimit-requests-remaining").unwrap_or(0);
+    let tokens_limit = get_u64("anthropic-ratelimit-tokens-limit").unwrap_or(0);
+    let tokens_remaining = get_u64("anthropic-ratelimit-tokens-remaining").unwrap_or(0);
+
+    // Parse the reset timestamp if present (RFC 3339 format).
+    let requests_reset = headers
+        .get("anthropic-ratelimit-requests-reset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+
+    Some(RateLimitSnapshot {
+        requests_limit,
+        requests_remaining,
+        tokens_limit,
+        tokens_remaining,
+        requests_reset,
+    })
 }
 
 #[cfg(test)]
@@ -435,5 +509,86 @@ mod tests {
             2,
             "usage should be shared across variants"
         );
+    }
+
+    #[tokio::test]
+    async fn rate_limit_headers_initialise_adaptive_limiter() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("anthropic-ratelimit-requests-limit", "20000")
+                    .insert_header("anthropic-ratelimit-requests-remaining", "18000")
+                    .insert_header("anthropic-ratelimit-tokens-limit", "1000000")
+                    .insert_header("anthropic-ratelimit-tokens-remaining", "900000")
+                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+            )
+            .mount(&server)
+            .await;
+
+        let p = provider_with_base_url(&server.uri());
+        // Before any call: limiter should start at width 1 (adaptive).
+        assert_eq!(p.limiter.initial(), 1);
+
+        p.complete(req("hi")).await.unwrap();
+
+        // After first successful call with rate-limit headers:
+        // 20000/20 = 1000, clamped to 32.
+        let stats = p.concurrency_stats().unwrap();
+        assert!(
+            stats.requests_made >= 1,
+            "should have counted at least 1 request"
+        );
+        // initial() should now reflect the header-driven width.
+        assert_eq!(p.limiter.initial(), 32, "limiter should have sized to 32");
+    }
+
+    #[tokio::test]
+    async fn missing_rate_limit_headers_keeps_width_at_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+            )
+            .mount(&server)
+            .await;
+
+        let p = provider_with_base_url(&server.uri());
+        p.complete(req("hi")).await.unwrap();
+
+        // No rate-limit headers → limiter stays uninitialised at width 1.
+        assert_eq!(p.limiter.initial(), 1);
+    }
+
+    #[tokio::test]
+    async fn with_model_shares_limiter_with_parent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("anthropic-ratelimit-requests-limit", "20000")
+                    .insert_header("anthropic-ratelimit-requests-remaining", "18000")
+                    .insert_header("anthropic-ratelimit-tokens-limit", "1000000")
+                    .insert_header("anthropic-ratelimit-tokens-remaining", "900000")
+                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+            )
+            .mount(&server)
+            .await;
+
+        let parent = provider_with_base_url(&server.uri());
+        let variant = parent.with_model("claude-haiku-4-5");
+
+        variant.complete(req("hi")).await.unwrap();
+
+        // parent.limiter and variant.limiter are the same Arc.
+        assert!(
+            Arc::ptr_eq(&parent.limiter, &variant.limiter),
+            "limiter Arc should be shared across model variants"
+        );
+        assert_eq!(parent.limiter.initial(), 32);
     }
 }
