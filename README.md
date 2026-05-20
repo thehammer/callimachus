@@ -350,4 +350,4 @@ codebase using the index it produces of itself:
 Callimachus is dual-licensed:
 
 - **Open source** — [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0). Free for personal use, open-source projects, and internal use.
-- **Commercial** — a separate license is available for proprietary products and hosted services. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) or contact hammer@carefeed.com.
+- **Commercial** — a separate license is available for proprietary products and hosted services. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) or [open an issue](https://github.com/thehammer/callimachus/issues).

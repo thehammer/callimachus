@@ -30,4 +30,4 @@ of their commercial license agreement.
 
 ## Contact
 
-To inquire about a commercial license, contact: hammer@carefeed.com
+To inquire about a commercial license, [open an issue](https://github.com/thehammer/callimachus/issues) on GitHub.
