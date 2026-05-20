@@ -269,6 +269,15 @@ impl AdaptiveLimiter {
         }
     }
 
+    /// Whether the first rate-limit header observation has been processed.
+    ///
+    /// Returns `false` on a freshly-constructed adaptive limiter and `true`
+    /// once [`observe`](Self::observe) has been called with a valid header set.
+    /// Fixed-width limiters are always considered initialised.
+    pub fn is_initialized(&self) -> bool {
+        self.inner.initialized.load(Ordering::Acquire)
+    }
+
     /// Width after the first header observation (`0` if not yet initialised).
     pub fn initial(&self) -> u32 {
         let v = self.inner.initial_width.load(Ordering::Relaxed);

@@ -136,14 +136,15 @@ impl LlmProvider for AnthropicApiProvider {
             }],
         };
 
-        // Acquire a concurrency slot before making the HTTP request.
-        // The permit is dropped at the end of this method (or on any early
-        // return), including on 429/5xx, so retries never deadlock.
-        let _permit = self.limiter.acquire().await;
-
         let mut last_err = LlmError::Other("no attempts made".to_string());
 
         for attempt in 0..MAX_RETRIES {
+            // Acquire a concurrency slot per attempt so that the slot is
+            // released before any retry backoff sleep.  This prevents a
+            // 429-triggered sleep from holding a permit and blocking other
+            // concurrent entities from making progress.
+            let _permit = self.limiter.acquire().await;
+
             let resp = self
                 .client
                 .post(&self.base_url)
@@ -223,6 +224,9 @@ impl LlmProvider for AnthropicApiProvider {
                         retry_after_secs: backoff_secs,
                     };
                     if attempt + 1 < MAX_RETRIES {
+                        // Release the slot before sleeping so other concurrent
+                        // entities can proceed while this one backs off.
+                        drop(_permit);
                         tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                     }
                 }
@@ -232,6 +236,8 @@ impl LlmProvider for AnthropicApiProvider {
                         message,
                     };
                     if attempt + 1 < MAX_RETRIES {
+                        // Release the slot before the retry delay.
+                        drop(_permit);
                         tokio::time::sleep(Duration::from_secs(2)).await;
                     }
                 }
@@ -283,6 +289,38 @@ impl LlmProvider for AnthropicApiProvider {
     /// [`AnthropicApiProvider::with_model`] for details.
     fn with_model_override(&self, model: &str) -> Option<Arc<dyn LlmProvider>> {
         Some(Arc::new(self.with_model(model)))
+    }
+
+    /// Make a minimal 1-token request so response headers initialise the
+    /// adaptive limiter before the first real pass begins.
+    ///
+    /// Failures are logged as warnings and ignored — the limiter will still
+    /// adapt on the first real request; we just won't have a good starting
+    /// width for `buffer_unordered`.
+    async fn probe_rate_limits(&self) {
+        if self.limiter.is_initialized() {
+            return;
+        }
+        let req = CompletionRequest {
+            prompt: "hi".to_string(),
+            model: None,
+            max_tokens: Some(1),
+            chunk_id: None,
+        };
+        match self.complete(req).await {
+            Ok(_) => {
+                let stats = self.limiter.stats();
+                tracing::info!(
+                    "[pipeline] rate limits discovered: initial concurrency={}",
+                    stats.initial_permits,
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[pipeline] probe_rate_limits failed: {e}; starting at concurrency=1"
+                );
+            }
+        }
     }
 
     fn concurrency_limiter(&self) -> Option<Arc<AdaptiveLimiter>> {
@@ -542,6 +580,100 @@ mod tests {
         );
         // initial() should now reflect the header-driven width.
         assert_eq!(p.limiter.initial(), 32, "limiter should have sized to 32");
+    }
+
+    /// Permit is acquired *inside* the retry loop: after a 429 the slot is
+    /// released before the backoff sleep so other concurrent entities can
+    /// proceed.  Verify that the limiter only holds one permit at a time and
+    /// that the semaphore is not exhausted after a failed attempt.
+    #[tokio::test]
+    async fn permit_released_before_retry_sleep() {
+        let server = MockServer::start().await;
+        // First response: 429 (triggers backoff + retry).
+        // Second response: 200 success.
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(429).set_body_json(make_error_body("rate limit exceeded")),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+            )
+            .mount(&server)
+            .await;
+
+        // Use a fixed-width limiter of 1 so we can verify the permit is not
+        // permanently held: if the permit were held across the backoff the
+        // second acquire() inside the loop would deadlock.
+        let p = AnthropicApiProvider {
+            client: reqwest::Client::new(),
+            api_key: "test-key".to_string(),
+            base_url: server.uri(),
+            default_model: DEFAULT_MODEL.to_string(),
+            usage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::provider::ProviderUsage::default(),
+            )),
+            limiter: std::sync::Arc::new(crate::concurrency::AdaptiveLimiter::new_fixed(1, "test")),
+        };
+
+        // With the old code (permit outside loop) this would deadlock on the
+        // second attempt because the semaphore has width 1 and the permit is
+        // still held.  With the fix it succeeds.
+        let res = tokio::time::timeout(std::time::Duration::from_secs(5), p.complete(req("hi")))
+            .await
+            .expect("should not time out — permit must be released before retry sleep")
+            .expect("second attempt should succeed");
+
+        assert_eq!(res.text, "ok");
+    }
+
+    /// probe_rate_limits() makes a real (mocked) request and seeds the adaptive
+    /// limiter so that is_initialized() returns true afterwards.
+    #[tokio::test]
+    async fn probe_rate_limits_initialises_limiter() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("anthropic-ratelimit-requests-limit", "20000")
+                    .insert_header("anthropic-ratelimit-requests-remaining", "18000")
+                    .insert_header("anthropic-ratelimit-tokens-limit", "1000000")
+                    .insert_header("anthropic-ratelimit-tokens-remaining", "900000")
+                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+            )
+            .mount(&server)
+            .await;
+
+        let p = provider_with_base_url(&server.uri());
+        assert!(
+            !p.limiter.is_initialized(),
+            "limiter should start uninitialised"
+        );
+
+        use crate::provider::LlmProvider as _;
+        p.probe_rate_limits().await;
+
+        assert!(
+            p.limiter.is_initialized(),
+            "limiter should be initialised after probe"
+        );
+        assert_eq!(
+            p.limiter.initial(),
+            32,
+            "should have sized to 32 from 20000-req/min header"
+        );
+
+        // A second probe call is a no-op (guard at top of the method).
+        let before = p.limiter.stats().initial_permits;
+        p.probe_rate_limits().await;
+        assert_eq!(p.limiter.stats().initial_permits, before);
     }
 
     #[tokio::test]

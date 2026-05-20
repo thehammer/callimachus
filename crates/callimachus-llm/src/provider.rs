@@ -87,6 +87,14 @@ pub trait LlmProvider: Send + Sync {
         None
     }
 
+    /// Probe the provider's rate limits so the adaptive limiter is initialised
+    /// before the first real pass begins.
+    ///
+    /// The default implementation is a no-op.  `AnthropicApiProvider` overrides
+    /// this to make a minimal 1-token request so the response headers can seed
+    /// the limiter's initial width before `buffer_unordered` is sized.
+    async fn probe_rate_limits(&self) {}
+
     /// Return the shared [`AdaptiveLimiter`] for this provider, if any.
     ///
     /// Only `AnthropicApiProvider` returns `Some`.  All other providers
@@ -127,6 +135,9 @@ impl LlmProvider for Box<dyn LlmProvider> {
     }
     fn with_model_override(&self, model: &str) -> Option<Arc<dyn LlmProvider>> {
         (**self).with_model_override(model)
+    }
+    async fn probe_rate_limits(&self) {
+        (**self).probe_rate_limits().await
     }
     fn concurrency_limiter(&self) -> Option<Arc<AdaptiveLimiter>> {
         (**self).concurrency_limiter()
