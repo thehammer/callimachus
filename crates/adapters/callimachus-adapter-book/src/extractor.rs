@@ -40,6 +40,8 @@ pub async fn extract(chunk: &Chunk, llm: &dyn LlmProvider) -> anyhow::Result<Ext
             model: None,
             max_tokens: Some(2048),
             chunk_id: Some(chunk.id.clone()),
+            kind: "book".to_string(),
+            pass: "semantic".to_string(),
         })
         .await
         .map_err(|e| anyhow::anyhow!("LLM error: {e}"))?;

@@ -58,15 +58,7 @@ pub async fn run(
     }
 
     // Determine concurrency width.
-    let concurrency = opts
-        .concurrency
-        .or_else(|| {
-            llm_haiku
-                .concurrency_limiter()
-                .map(|l| l.initial() as usize)
-                .filter(|&n| n > 0)
-        })
-        .unwrap_or(4);
+    let concurrency = opts.concurrency.unwrap_or(64);
 
     let all_entities = db.entity_list(&corpus.id)?;
     let candidates: Vec<Entity> = all_entities

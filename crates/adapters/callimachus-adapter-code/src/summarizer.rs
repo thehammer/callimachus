@@ -63,6 +63,8 @@ Return ONLY the summary text, no JSON, no preamble."#,
         model: Some("claude-haiku-4-5-20251001".to_string()),
         max_tokens: Some(200),
         chunk_id: Some(chunk.id.clone()),
+        kind: chunk.kind.clone(),
+        pass: "summarize".to_string(),
     };
 
     let response = llm.complete(req).await?;
@@ -114,6 +116,8 @@ Return ONLY the summary text, no JSON, no preamble."#,
         model: Some("claude-haiku-4-5-20251001".to_string()),
         max_tokens: Some(200),
         chunk_id: Some(chunk.id.clone()),
+        kind: "file".to_string(),
+        pass: "summarize".to_string(),
     };
 
     let response = llm.complete(req).await?;
@@ -158,6 +162,8 @@ Return ONLY the summary text, no JSON, no preamble."#,
         model: None,
         max_tokens: Some(400),
         chunk_id: None,
+        kind: "corpus".to_string(),
+        pass: "summarize".to_string(),
     };
 
     let response = llm.complete(req).await?;

@@ -175,18 +175,18 @@ impl IndexPipeline {
         // Build tier providers once for the whole run.
         let tiers = build_tier_providers(Arc::clone(&self.llm), &opts.tier_config);
 
-        // Probe rate limits so the adaptive limiter is initialised before the
-        // first LLM-heavy pass.  Without this, AdaptiveLimiter::initial()
-        // returns 1 (the adaptive start width) and buffer_unordered is sized
-        // to 1 for the entire pass — completely bypassing the adaptive logic.
+        // Probe rate limits so the token budget is seeded for each model family
+        // before the first LLM-heavy pass begins.  Each probe fires a 1-token
+        // request which seeds that family's budget from response headers.
+        // Failures are logged as warnings and ignored — the budget will seed on
+        // the first real request instead.
         //
-        // Probing with a 1-token request fires the existing observe() path and
-        // seeds the limiter with the correct discovered width.  Failures are
-        // logged and ignored — the limiter will adapt on the first real request.
-        if let Some(limiter) = tiers.sonnet.concurrency_limiter()
-            && !limiter.is_initialized()
-        {
+        // We probe only if any tier provider exposes a budget (i.e. it is an
+        // AnthropicApiProvider).  Non-budget providers are no-ops anyway.
+        if tiers.haiku.budget().is_some() {
+            tiers.haiku.probe_rate_limits().await;
             tiers.sonnet.probe_rate_limits().await;
+            tiers.opus.probe_rate_limits().await;
         }
 
         // Mark any runs that were interrupted mid-pass as failed so the pipeline

@@ -24,6 +24,8 @@ pub async fn summarize_section(
             model: None,
             max_tokens: Some(200),
             chunk_id: Some(chunk.id.clone()),
+            kind: "section".to_string(),
+            pass: "summarize".to_string(),
         })
         .await?;
 
@@ -56,6 +58,8 @@ pub async fn summarize_page(
             model: None,
             max_tokens: Some(300),
             chunk_id: None,
+            kind: "page".to_string(),
+            pass: "summarize".to_string(),
         })
         .await?;
 
@@ -92,6 +96,8 @@ pub async fn summarize_corpus(
             model: None,
             max_tokens: Some(400),
             chunk_id: None,
+            kind: "corpus".to_string(),
+            pass: "summarize".to_string(),
         })
         .await?;
 
