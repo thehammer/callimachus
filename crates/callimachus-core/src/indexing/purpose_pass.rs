@@ -91,25 +91,28 @@ pub async fn run(
         full: opts.full,
     });
 
-    let outcomes: Vec<PurposeOutcome> = futures::stream::iter(candidates.iter())
+    // ── Interleaved concurrent LLM + per-entity DB writes ────────────────────
+    //
+    // Each entity is persisted to the DB *as soon as* its LLM call returns,
+    // not after the entire pass completes. This bounds the work-loss window
+    // on interrupt to ~concurrency in-flight entities, instead of the whole
+    // pass.
+    let mut stream = futures::stream::iter(candidates.into_iter())
         .map(|entity| {
             let ctx = Arc::clone(&ctx);
-            let entity = entity.clone();
             async move { process_entity(&ctx, &entity).await }
         })
-        .buffer_unordered(concurrency)
-        .collect()
-        .await;
+        .buffer_unordered(concurrency);
 
-    // ── Serial sink: DB writes + stats ────────────────────────────────────────
-
-    for (i, outcome) in outcomes.into_iter().enumerate() {
+    let mut completed: u64 = 0;
+    while let Some(outcome) = stream.next().await {
+        completed += 1;
         match outcome {
             PurposeOutcome::Skip => {
                 stats.skipped += 1;
             }
             PurposeOutcome::Failed(msg) => {
-                tracing::warn!("purpose pass failed for entity {}/{total}: {msg}", i + 1);
+                tracing::warn!("purpose pass failed for entity {completed}/{total}: {msg}");
                 stats.failed += 1;
             }
             PurposeOutcome::Extracted {
@@ -134,9 +137,8 @@ pub async fn run(
             }
         }
 
-        let completed = i as u64 + 1;
         if completed.is_multiple_of(25) {
-            tracing::info!("[purpose] {}/{} entities", completed, total);
+            tracing::info!("[purpose] {completed}/{total} entities");
         }
     }
 
