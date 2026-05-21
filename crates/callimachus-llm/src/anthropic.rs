@@ -11,7 +11,7 @@ use crate::{
     provider::{CompletionRequest, CompletionResponse, LlmProvider, ProviderUsage},
 };
 
-const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
+const DEFAULT_MODEL: &str = "claude-haiku-4-5";
 const DEFAULT_MAX_TOKENS: u32 = 2000;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_RETRIES: u32 = 3;
@@ -430,7 +430,7 @@ mod tests {
             .and(header("x-api-key", "test-key"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(make_success_body("Hello!", "claude-sonnet-4-5")),
+                    .set_body_json(make_success_body("Hello!", "claude-haiku-4-5")),
             )
             .mount(&server)
             .await;
@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn name_and_parallel() {
         let p = AnthropicApiProvider::new("k".to_string(), None, None);
-        assert_eq!(p.name(), "claude-sonnet-4-5");
+        assert_eq!(p.name(), "claude-haiku-4-5");
         assert!(p.supports_parallel());
     }
 
@@ -542,7 +542,7 @@ mod tests {
             .and(path("/"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+                    .set_body_json(make_success_body("ok", "claude-haiku-4-5")),
             )
             .mount(&server)
             .await;
@@ -571,19 +571,19 @@ mod tests {
                     .insert_header("anthropic-ratelimit-requests-remaining", "18000")
                     .insert_header("anthropic-ratelimit-tokens-limit", "1000000")
                     .insert_header("anthropic-ratelimit-tokens-remaining", "900000")
-                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+                    .set_body_json(make_success_body("ok", "claude-haiku-4-5")),
             )
             .mount(&server)
             .await;
 
         let p = provider_with_base_url(&server.uri());
-        assert!(!p.budget.is_initialized(&ModelFamily::Sonnet));
+        assert!(!p.budget.is_initialized(&ModelFamily::Haiku));
 
         p.complete(req("hi")).await.unwrap();
 
         // After first successful call with rate-limit headers, budget should be seeded.
         assert!(
-            p.budget.is_initialized(&ModelFamily::Sonnet),
+            p.budget.is_initialized(&ModelFamily::Haiku),
             "budget should be initialised after first response with headers"
         );
     }
@@ -606,7 +606,7 @@ mod tests {
             .and(path("/"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+                    .set_body_json(make_success_body("ok", "claude-haiku-4-5")),
             )
             .mount(&server)
             .await;
@@ -643,14 +643,14 @@ mod tests {
                     .insert_header("anthropic-ratelimit-requests-remaining", "18000")
                     .insert_header("anthropic-ratelimit-tokens-limit", "1000000")
                     .insert_header("anthropic-ratelimit-tokens-remaining", "900000")
-                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+                    .set_body_json(make_success_body("ok", "claude-haiku-4-5")),
             )
             .mount(&server)
             .await;
 
         let p = provider_with_base_url(&server.uri());
         assert!(
-            !p.budget.is_initialized(&ModelFamily::Sonnet),
+            !p.budget.is_initialized(&ModelFamily::Haiku),
             "budget should start uninitialised"
         );
 
@@ -658,7 +658,7 @@ mod tests {
         p.probe_rate_limits().await;
 
         assert!(
-            p.budget.is_initialized(&ModelFamily::Sonnet),
+            p.budget.is_initialized(&ModelFamily::Haiku),
             "budget should be initialised after probe"
         );
 
@@ -673,7 +673,7 @@ mod tests {
             .and(path("/"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+                    .set_body_json(make_success_body("ok", "claude-haiku-4-5")),
             )
             .mount(&server)
             .await;
@@ -682,7 +682,7 @@ mod tests {
         p.complete(req("hi")).await.unwrap();
 
         // No rate-limit headers → budget stays uninitialised (passes through).
-        assert!(!p.budget.is_initialized(&ModelFamily::Sonnet));
+        assert!(!p.budget.is_initialized(&ModelFamily::Haiku));
     }
 
     #[tokio::test]
@@ -696,7 +696,7 @@ mod tests {
                     .insert_header("anthropic-ratelimit-requests-remaining", "18000")
                     .insert_header("anthropic-ratelimit-tokens-limit", "1000000")
                     .insert_header("anthropic-ratelimit-tokens-remaining", "900000")
-                    .set_body_json(make_success_body("ok", "claude-sonnet-4-5")),
+                    .set_body_json(make_success_body("ok", "claude-haiku-4-5")),
             )
             .mount(&server)
             .await;
