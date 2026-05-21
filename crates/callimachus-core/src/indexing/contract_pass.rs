@@ -106,7 +106,7 @@ pub async fn run(
     // Each entity is persisted to the DB *as soon as* its LLM call returns,
     // not after the entire pass completes. Bounds the work-loss window on
     // interrupt to ~concurrency in-flight entities, instead of the whole pass.
-    let mut stream = futures::stream::iter(candidates.into_iter())
+    let mut stream = futures::stream::iter(candidates)
         .map(|entity| {
             let ctx = Arc::clone(&ctx);
             async move { process_entity(&ctx, &entity).await }

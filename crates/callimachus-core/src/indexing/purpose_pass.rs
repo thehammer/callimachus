@@ -97,7 +97,7 @@ pub async fn run(
     // not after the entire pass completes. This bounds the work-loss window
     // on interrupt to ~concurrency in-flight entities, instead of the whole
     // pass.
-    let mut stream = futures::stream::iter(candidates.into_iter())
+    let mut stream = futures::stream::iter(candidates)
         .map(|entity| {
             let ctx = Arc::clone(&ctx);
             async move { process_entity(&ctx, &entity).await }

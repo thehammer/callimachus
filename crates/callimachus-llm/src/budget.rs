@@ -299,10 +299,10 @@ impl FamilyBudget {
         }
         // Hard freeze from a 429 — refuse admission until the window expires.
         // This flag is set by on_429 and is NOT cleared by Drop refunds, only by settle.
-        if let Some(frozen_until) = self.frozen_until {
-            if Instant::now() < frozen_until {
-                return false;
-            }
+        if let Some(frozen_until) = self.frozen_until
+            && Instant::now() < frozen_until
+        {
+            return false;
         }
         let eff_limit = self.effective_token_limit();
         // During cold start, enforce an inflight-debit hard cap.
