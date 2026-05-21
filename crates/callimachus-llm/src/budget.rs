@@ -250,6 +250,9 @@ struct FamilyBudget {
     cold_start_settled: u64,
     /// When this family's budget was first seen (for cold-start window).
     cold_start_start: Instant,
+    /// Hard freeze set by `on_429`; Drop refunds do NOT clear this.
+    /// Cleared only when a call successfully settles.
+    frozen_until: Option<Instant>,
 }
 
 impl FamilyBudget {
@@ -265,6 +268,7 @@ impl FamilyBudget {
             inflight_tokens_debit: 0,
             cold_start_settled: 0,
             cold_start_start: Instant::now(),
+            frozen_until: None,
         }
     }
 
@@ -293,6 +297,13 @@ impl FamilyBudget {
         if self.is_uninit() {
             return true;
         }
+        // Hard freeze from a 429 — refuse admission until the window expires.
+        // This flag is set by on_429 and is NOT cleared by Drop refunds, only by settle.
+        if let Some(frozen_until) = self.frozen_until {
+            if Instant::now() < frozen_until {
+                return false;
+            }
+        }
         let eff_limit = self.effective_token_limit();
         // During cold start, enforce an inflight-debit hard cap.
         if self.is_cold_start() && self.inflight_tokens_debit >= eff_limit {
@@ -304,11 +315,16 @@ impl FamilyBudget {
 
     fn time_until_reset(&self) -> Duration {
         let now = Instant::now();
-        if self.tokens_reset > now {
+        let token_wait = if self.tokens_reset > now {
             self.tokens_reset - now
         } else {
             Duration::from_millis(100)
-        }
+        };
+        let freeze_wait = self
+            .frozen_until
+            .map(|t| if t > now { t - now } else { Duration::ZERO })
+            .unwrap_or(Duration::ZERO);
+        token_wait.max(freeze_wait)
     }
 }
 
@@ -446,6 +462,8 @@ impl TokenBudget {
         fb.requests_remaining = 0;
         fb.tokens_reset = Instant::now() + retry_after;
         fb.requests_reset = Instant::now() + retry_after;
+        // Hard freeze — not cleared by Drop refunds, only by a successful settle.
+        fb.frozen_until = Some(Instant::now() + retry_after);
     }
 
     /// Label passed at construction (used in log messages).
@@ -531,6 +549,8 @@ impl BudgetReservation {
             }
 
             fb.cold_start_settled += 1;
+            // A successful call clears any hard freeze — we have confirmed capacity.
+            fb.frozen_until = None;
         }
         state.inflight_requests = state.inflight_requests.saturating_sub(1);
 
@@ -784,6 +804,55 @@ mod tests {
         assert!(
             blocked.is_err(),
             "reserve should time out while cold-start cap is saturated (inflight={small_estimate})"
+        );
+    }
+
+    // ── on_429_freeze_survives_concurrent_drop_refunds ──────────────────────
+    //
+    // Regression for the thundering-herd bug: N concurrent reservations all
+    // receive a 429 simultaneously.  After on_429() zeros tokens_remaining,
+    // all N Drops refund their estimates back in.  Without frozen_until the
+    // budget looks full again and admits the next wave immediately.
+
+    #[tokio::test]
+    async fn on_429_freeze_survives_concurrent_drop_refunds() {
+        let budget = TokenBudget::new("test");
+
+        // Seed with a known limit.
+        {
+            let r = budget.reserve(ModelFamily::Haiku, key(), "seed", 1).await;
+            r.settle(1, 1, tiny_snap(200_000, 200_000));
+        }
+
+        // Grab 5 concurrent reservations (simulating 5 inflight calls).
+        let mut reservations = Vec::new();
+        for _ in 0..5 {
+            let r = budget
+                .reserve(ModelFamily::Haiku, key(), "concurrent call", 500)
+                .await;
+            reservations.push(r);
+        }
+
+        // Simulate all 5 hitting a 429.
+        let retry = Duration::from_millis(500);
+        for r in &reservations {
+            budget.on_429(ModelFamily::Haiku, retry, &r.key);
+        }
+
+        // Drop all 5 reservations (refunds their estimates back into tokens_remaining).
+        drop(reservations);
+
+        // The budget should still be frozen — reserve must NOT admit immediately.
+        let budget_clone = budget.clone();
+        let blocked = tokio::time::timeout(
+            Duration::from_millis(50),
+            budget_clone.reserve(ModelFamily::Haiku, key(), "post-429 call", 100),
+        )
+        .await;
+
+        assert!(
+            blocked.is_err(),
+            "budget should remain frozen after concurrent Drop refunds"
         );
     }
 
