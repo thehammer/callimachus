@@ -39,6 +39,7 @@ impl std::fmt::Display for ModelTier {
 
 /// Thresholds that promote to Opus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct OpusThresholds {
     /// Minimum inbound-edge count (in-degree) for a fallible entity to escalate to Opus.
     pub min_in_degree_fallible: u32,
@@ -60,6 +61,7 @@ impl Default for OpusThresholds {
 
 /// Thresholds that promote to Sonnet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SonnetThresholds {
     /// Minimum inbound-edge count to escalate to Sonnet.
     pub min_in_degree: u32,
@@ -81,6 +83,7 @@ impl Default for SonnetThresholds {
 /// When `enabled = false` (the default), `ModelTierRouter::route` always
 /// returns `default` — effectively single-model mode, fully backward-compatible.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TierConfig {
     /// Gate: when false, every entity uses the `default` tier.
     pub enabled: bool,
