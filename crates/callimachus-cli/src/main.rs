@@ -329,7 +329,21 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let global_config = config::GlobalConfig::load().unwrap_or_default();
+    let global_config = match config::GlobalConfig::load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!(
+                "config file at {} failed to parse — falling back to defaults: {e:#}",
+                config::config_file_path().display()
+            );
+            tracing::warn!(
+                "this means api_key, provider, and model_tiers from your config will be IGNORED. \
+                 Auto-detect will pick a provider (ANTHROPIC_API_KEY env → Anthropic API; \
+                 else `claude` CLI on PATH → Claude Code subprocess)."
+            );
+            config::GlobalConfig::default()
+        }
+    };
     let db_path = config::resolve_pinakes_path(cli.pinakes, cli.db, &global_config);
 
     match cli.command {

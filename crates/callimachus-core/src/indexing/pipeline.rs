@@ -175,6 +175,43 @@ impl IndexPipeline {
         // Build tier providers once for the whole run.
         let tiers = build_tier_providers(Arc::clone(&self.llm), &opts.tier_config);
 
+        // ── Run-time visibility: log the resolved provider + tier + concurrency
+        // configuration so it's obvious from the log how this run is wired.
+        let uses_budget = tiers.haiku.budget().is_some();
+        let provider_kind = if uses_budget {
+            "Anthropic API"
+        } else {
+            "Claude Code CLI subprocess (no API key in config — auto-detected)"
+        };
+        tracing::info!(
+            "[pipeline] provider = {provider_kind}  base_model = {}",
+            self.llm.name()
+        );
+        if opts.tier_config.enabled {
+            tracing::info!(
+                "[pipeline] tier routing: ENABLED  haiku={}  sonnet={}  opus={}",
+                opts.tier_config.haiku_model,
+                opts.tier_config.sonnet_model,
+                opts.tier_config.opus_model
+            );
+        } else {
+            tracing::info!(
+                "[pipeline] tier routing: DISABLED  all entities → {}",
+                self.llm.name()
+            );
+        }
+        tracing::info!(
+            "[pipeline] concurrency cap (semaphore) = {}  budget admission = {}",
+            opts.concurrency
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "64 (default)".to_string()),
+            if uses_budget {
+                "ACTIVE (TokenBudget)"
+            } else {
+                "n/a (claude CLI path)"
+            }
+        );
+
         // Probe rate limits so the token budget is seeded for each model family
         // before the first LLM-heavy pass begins.  Each probe fires a 1-token
         // request which seeds that family's budget from response headers.
@@ -183,7 +220,7 @@ impl IndexPipeline {
         //
         // We probe only if any tier provider exposes a budget (i.e. it is an
         // AnthropicApiProvider).  Non-budget providers are no-ops anyway.
-        if tiers.haiku.budget().is_some() {
+        if uses_budget {
             tiers.haiku.probe_rate_limits().await;
             tiers.sonnet.probe_rate_limits().await;
             tiers.opus.probe_rate_limits().await;
@@ -226,6 +263,15 @@ impl IndexPipeline {
                         &opts_local,
                     )
                     .await?;
+                    // Persist the version anchor as soon as history succeeds.
+                    // Previously this only happened at end-of-pipeline, so any
+                    // pass failing later (or single-pass runs that include
+                    // History) lost the anchor entirely. Recording it here
+                    // means a successful history pass alone is enough to track
+                    // what the index is on — the downstream passes only refine
+                    // what's already a valid checkpoint.
+                    self.db
+                        .corpus_set_last_indexed_version(&corpus.id, &manifest.current_version)?;
                     history_version = Some(manifest.current_version.clone());
                     opts_local.change_manifest = Some(manifest);
                     stats

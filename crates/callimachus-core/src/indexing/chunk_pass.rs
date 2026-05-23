@@ -37,17 +37,29 @@ pub async fn run(
         }
     }
 
-    // Filter sources through the change manifest.  When all_dirty is true (first
-    // run, --full, or no History pass) every source is processed.
+    // Hold the manifest reference for both per-chunk filtering below and the
+    // commit-metadata lookups later in the loop.
+    //
+    // Note: we *do not* filter `sources` here against `manifest.is_dirty(&s.path)`,
+    // because `adapter.discover()` for code corpora returns a single source for
+    // the entire repository directory (e.g. `/Users/hammer/Code/admin-portal`),
+    // while the manifest's `dirty_paths` are at the per-file level
+    // (`app/Modules/Referrals/Foo.php`). Filtering at the source-directory
+    // granularity would always reject the whole repo and produce a no-op
+    // incremental run. Instead, we let the chunker walk the tree and filter at
+    // the chunk level using `is_dirty_for_chunk`, which compares the per-chunk
+    // location URI against the manifest's file-level paths.
     let manifest = opts.change_manifest.as_ref();
-    let sources: Vec<_> = sources
-        .into_iter()
-        .filter(|s| manifest.map(|m| m.is_dirty(&s.path)).unwrap_or(true))
-        .collect();
 
     let mut all_chunks = Vec::new();
     for source in &sources {
         let chunks = adapter.chunk(source).await?;
+        // Per-chunk dirty filter. When `all_dirty` is true (first run, --full,
+        // or no History pass) every chunk passes through.
+        let chunks: Vec<_> = chunks
+            .into_iter()
+            .filter(|c| manifest.map(|m| m.is_dirty_for_chunk(c)).unwrap_or(true))
+            .collect();
         // Compute a per-source SHA-256 for the source_hash column.  We use the
         // concatenated content of all chunks from this source as the "file hash"
         // (the actual file content is not directly available here; using chunk
