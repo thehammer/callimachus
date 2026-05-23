@@ -116,8 +116,24 @@ impl ChangeManifest {
     }
 
     /// Returns true if the given source path should be re-indexed.
+    ///
+    /// Tolerates a legacy `src/` prefix in `path` that the code adapter's
+    /// chunker historically prepends to chunk location URIs. Manifest paths
+    /// come directly from `adapter.changed_sources` (e.g. git diff) without
+    /// that prefix, so a chunk URI of `calli://corpus/src/app/Foo.php` would
+    /// normalise to `src/app/Foo.php` while the manifest stores
+    /// `app/Foo.php`. Stripping the prefix on lookup lets incremental runs
+    /// match correctly without rewriting every chunk URI in the DB.
     pub fn is_dirty(&self, path: &str) -> bool {
-        self.all_dirty || self.dirty_paths.contains(path)
+        if self.all_dirty || self.dirty_paths.contains(path) {
+            return true;
+        }
+        if let Some(stripped) = path.strip_prefix("src/")
+            && self.dirty_paths.contains(stripped)
+        {
+            return true;
+        }
+        false
     }
 
     /// Returns true if the chunk's underlying source file should be re-indexed.
@@ -132,11 +148,9 @@ impl ChangeManifest {
     ///
     /// For book/wiki chunks (no `#` fragment) step 3 is a no-op.
     pub fn is_dirty_for_chunk(&self, chunk: &Chunk) -> bool {
-        if self.all_dirty {
-            return true;
-        }
-        let path = file_path_from_uri(&chunk.location.uri);
-        self.dirty_paths.contains(path)
+        // Delegate to is_dirty so the legacy "src/" prefix strip is honoured
+        // here too — chunk URIs are the primary surface that carry the prefix.
+        self.is_dirty(file_path_from_uri(&chunk.location.uri))
     }
 
     /// Return the commit metadata for a source path, if any.

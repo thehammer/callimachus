@@ -263,6 +263,15 @@ impl IndexPipeline {
                         &opts_local,
                     )
                     .await?;
+                    // Persist the version anchor as soon as history succeeds.
+                    // Previously this only happened at end-of-pipeline, so any
+                    // pass failing later (or single-pass runs that include
+                    // History) lost the anchor entirely. Recording it here
+                    // means a successful history pass alone is enough to track
+                    // what the index is on — the downstream passes only refine
+                    // what's already a valid checkpoint.
+                    self.db
+                        .corpus_set_last_indexed_version(&corpus.id, &manifest.current_version)?;
                     history_version = Some(manifest.current_version.clone());
                     opts_local.change_manifest = Some(manifest);
                     stats
