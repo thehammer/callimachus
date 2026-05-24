@@ -16,4 +16,3 @@ pub struct EntityPurpose {
     #[serde(default)]
     pub derived_at_version: Option<String>,
 }
-
