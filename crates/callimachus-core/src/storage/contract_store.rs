@@ -1,21 +1,56 @@
 use crate::error::Result;
-use crate::storage::db::Database;
+use crate::storage::{db::Database, history};
 use crate::types::EntityContract;
 use rusqlite::params;
 
 pub fn upsert(db: &Database, c: &EntityContract) -> Result<()> {
+    let conn = db.conn();
+    let new_ver = c.derived_at_version.as_deref();
+
+    // Snapshot before overwrite.
+    if let Some(ver) = new_ver {
+        history::snapshot_if_version_changed_contract(
+            conn,
+            &c.entity_id,
+            &c.corpus_id,
+            &c.model,
+            Some(ver),
+            ver,
+        )?;
+    }
+
     let debt_json = serde_json::to_string(&c.debt_markers).unwrap_or_else(|_| "[]".into());
     let assumptions_json = serde_json::to_string(&c.assumptions).unwrap_or_else(|_| "[]".into());
     let risks_json = serde_json::to_string(&c.risks).unwrap_or_else(|_| "[]".into());
 
-    db.conn().execute(
-        "INSERT OR REPLACE INTO entity_contracts
+    conn.execute(
+        "INSERT INTO entity_contracts
          (entity_id, corpus_id,
           is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
           is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
           panic_call_count, debt_markers, assumptions, risks,
-          intent_gap, caller_notes, model, model_tier, generated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+          intent_gap, caller_notes, model, model_tier, generated_at, derived_at_version)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
+         ON CONFLICT(entity_id, model) DO UPDATE SET
+             is_public          = excluded.is_public,
+             is_must_use        = excluded.is_must_use,
+             is_deprecated      = excluded.is_deprecated,
+             is_fallible        = excluded.is_fallible,
+             is_nullable        = excluded.is_nullable,
+             is_mutating        = excluded.is_mutating,
+             is_diverging       = excluded.is_diverging,
+             has_panic_risk     = excluded.has_panic_risk,
+             has_unsafe         = excluded.has_unsafe,
+             is_incomplete      = excluded.is_incomplete,
+             panic_call_count   = excluded.panic_call_count,
+             debt_markers       = excluded.debt_markers,
+             assumptions        = excluded.assumptions,
+             risks              = excluded.risks,
+             intent_gap         = excluded.intent_gap,
+             caller_notes       = excluded.caller_notes,
+             model_tier         = excluded.model_tier,
+             generated_at       = excluded.generated_at,
+             derived_at_version = COALESCE(excluded.derived_at_version, entity_contracts.derived_at_version)",
         params![
             c.entity_id,
             c.corpus_id,
@@ -38,6 +73,7 @@ pub fn upsert(db: &Database, c: &EntityContract) -> Result<()> {
             c.model,
             c.model_tier,
             c.generated_at,
+            c.derived_at_version,
         ],
     )?;
     Ok(())
@@ -51,7 +87,7 @@ pub fn get_best(db: &Database, corpus_id: &str, entity_id: &str) -> Result<Optio
                 is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
                 is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
                 panic_call_count, debt_markers, assumptions, risks,
-                intent_gap, caller_notes, model, model_tier, generated_at
+                intent_gap, caller_notes, model, model_tier, generated_at, derived_at_version
          FROM entity_contracts
          WHERE corpus_id = ?1 AND entity_id = ?2
          ORDER BY CASE model_tier
@@ -82,7 +118,7 @@ pub fn get_for_model(
                 is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
                 is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
                 panic_call_count, debt_markers, assumptions, risks,
-                intent_gap, caller_notes, model, model_tier, generated_at
+                intent_gap, caller_notes, model, model_tier, generated_at, derived_at_version
          FROM entity_contracts
          WHERE corpus_id = ?1 AND entity_id = ?2 AND model = ?3",
     )?;
@@ -100,7 +136,7 @@ pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<EntityContract>> {
                 is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
                 is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
                 panic_call_count, debt_markers, assumptions, risks,
-                intent_gap, caller_notes, model, model_tier, generated_at
+                intent_gap, caller_notes, model, model_tier, generated_at, derived_at_version
          FROM entity_contracts WHERE corpus_id = ?1 ORDER BY entity_id ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_contract)?;
@@ -116,7 +152,7 @@ pub fn list_best_per_entity(db: &Database, corpus_id: &str) -> Result<Vec<Entity
                 is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
                 is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
                 panic_call_count, debt_markers, assumptions, risks,
-                intent_gap, caller_notes, model, model_tier, generated_at
+                intent_gap, caller_notes, model, model_tier, generated_at, derived_at_version
          FROM entity_contracts c1
          WHERE corpus_id = ?1
            AND generated_at = (
@@ -155,7 +191,7 @@ pub fn list_with_inconsistencies(db: &Database, corpus_id: &str) -> Result<Vec<E
                 is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
                 is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
                 panic_call_count, debt_markers, assumptions, risks,
-                intent_gap, caller_notes, model, model_tier, generated_at
+                intent_gap, caller_notes, model, model_tier, generated_at, derived_at_version
          FROM entity_contracts c1
          WHERE corpus_id = ?1
            AND (is_incomplete = 1
@@ -190,6 +226,12 @@ pub fn list_with_inconsistencies(db: &Database, corpus_id: &str) -> Result<Vec<E
 }
 
 fn row_to_contract(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntityContract> {
+    // Column order: entity_id(0), corpus_id(1), is_public(2), is_must_use(3),
+    //   is_deprecated(4), is_fallible(5), is_nullable(6), is_mutating(7),
+    //   is_diverging(8), has_panic_risk(9), has_unsafe(10), is_incomplete(11),
+    //   panic_call_count(12), debt_markers(13), assumptions(14), risks(15),
+    //   intent_gap(16), caller_notes(17), model(18), model_tier(19),
+    //   generated_at(20), derived_at_version(21)
     let debt_str: String = row.get(13)?;
     let assumptions_str: String = row.get(14)?;
     let risks_str: String = row.get(15)?;
@@ -220,5 +262,6 @@ fn row_to_contract(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntityContract> 
         model: row.get(18)?,
         model_tier: row.get(19)?,
         generated_at: row.get(20)?,
+        derived_at_version: row.get(21)?,
     })
 }

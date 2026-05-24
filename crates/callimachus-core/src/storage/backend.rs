@@ -18,6 +18,15 @@ use crate::types::{
     EntityContract, EntityPurpose, Location, MemberType, Summary, SummaryTargetKind, Theme,
 };
 
+/// Statistics returned by `cascade_delete_dirty_subtree`.
+#[derive(Debug, Default, Clone)]
+pub struct CascadeStats {
+    /// Number of chunk rows moved to `chunks_history` and deleted.
+    pub chunks_archived: u64,
+    /// Number of entity rows moved to `entities_history` and deleted.
+    pub entities_archived: u64,
+}
+
 /// A swappable storage backend. `SqliteBackend` is the default implementation.
 ///
 /// All methods are synchronous. The backend is responsible for its own concurrency
@@ -235,6 +244,83 @@ pub trait StorageBackend: Send + Sync {
 
     fn theme_upsert(&self, t: &Theme) -> Result<()>;
     fn theme_list(&self, corpus_id: &str) -> Result<Vec<Theme>>;
+
+    // ── History / Archive ─────────────────────────────────────────────────────
+    //
+    // Fine-grained archive methods (one per artifact type). Each copies the
+    // current head row(s) into the corresponding `*_history` table without
+    // deleting the head. Useful for tests and as building blocks for
+    // `cascade_delete_dirty_subtree`.
+
+    /// Archive a single entity row into `entities_history`.
+    /// Returns `true` if a history row was inserted.
+    fn archive_entity(
+        &self,
+        entity_id: &str,
+        corpus_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<bool>;
+    /// Archive all edges involving `entity_id` (both directions) into `edges_history`.
+    fn archive_edges_for_entity(&self, entity_id: &str, superseded_at_version: &str)
+    -> Result<u64>;
+    /// Archive all purpose rows for `entity_id` into `entity_purposes_history`.
+    fn archive_purposes_for_entity(
+        &self,
+        entity_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<u64>;
+    /// Archive all contract rows for `entity_id` into `entity_contracts_history`.
+    fn archive_contracts_for_entity(
+        &self,
+        entity_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<u64>;
+    /// Archive all block rows for `entity_id` into `entity_blocks_history`.
+    fn archive_blocks_for_entity(
+        &self,
+        entity_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<u64>;
+    /// Archive all summary rows for `target_id` within `corpus_id` into `summaries_history`.
+    fn archive_summaries_for_target(
+        &self,
+        corpus_id: &str,
+        target_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<u64>;
+    /// Archive a single chunk row into `chunks_history`.
+    fn archive_chunk(&self, chunk_id: &str, superseded_at_version: &str) -> Result<bool>;
+    /// Archive a single theme row into `themes_history`.
+    fn archive_theme(
+        &self,
+        theme_id: &str,
+        corpus_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<bool>;
+    /// Archive all theme rows for `corpus_id` into `themes_history`.
+    fn archive_themes_for_corpus(
+        &self,
+        corpus_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<u64>;
+
+    /// Transactionally archive then delete all artifacts (entities, edges,
+    /// purposes, contracts, blocks, summaries) associated with the given chunk
+    /// IDs, plus the chunks themselves.
+    ///
+    /// The SQLite implementation executes this inside a single write transaction
+    /// via `with_write_tx` for atomicity. On other backends it returns an error.
+    ///
+    /// `dirty_chunk_ids` — chunk IDs to sweep (typically produced by filtering
+    /// all corpus chunks against a `ChangeManifest`).
+    /// `superseded_at_version` — the incoming git SHA written to
+    /// `*_history.superseded_at_version` for every archived row.
+    fn cascade_delete_dirty_subtree(
+        &self,
+        corpus_id: &str,
+        dirty_chunk_ids: &[String],
+        superseded_at_version: &str,
+    ) -> Result<CascadeStats>;
 
     // ── Graph helpers ─────────────────────────────────────────────────────────
 

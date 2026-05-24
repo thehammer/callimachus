@@ -1,29 +1,49 @@
 use crate::error::Result;
-use crate::storage::db::Database;
+use crate::storage::{db::Database, history};
 use crate::types::summary::{Summary, SummaryTargetKind};
 use rusqlite::params;
 use std::str::FromStr;
 
 pub fn upsert(db: &Database, summary: &Summary) -> Result<()> {
-    db.conn().execute(
+    let conn = db.conn();
+    let new_ver = summary.derived_at_version.as_deref();
+    let target_kind_str = summary.target_kind.to_string();
+
+    // Snapshot before overwrite.
+    if let Some(ver) = new_ver {
+        history::snapshot_if_version_changed_summary(
+            conn,
+            &summary.corpus_id,
+            &target_kind_str,
+            &summary.target_id,
+            &summary.model,
+            Some(ver),
+            ver,
+        )?;
+    }
+
+    conn.execute(
         "INSERT INTO summaries
-         (id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         (id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at,
+          derived_at_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(corpus_id, target_kind, target_id, model) DO UPDATE SET
-             text         = excluded.text,
-             model_tier   = excluded.model_tier,
-             generated_at = excluded.generated_at,
-             depth        = excluded.depth",
+             text               = excluded.text,
+             model_tier         = excluded.model_tier,
+             generated_at       = excluded.generated_at,
+             depth              = excluded.depth,
+             derived_at_version = COALESCE(excluded.derived_at_version, summaries.derived_at_version)",
         params![
             summary.id,
             summary.corpus_id,
-            summary.target_kind.to_string(),
+            target_kind_str,
             summary.target_id,
             summary.depth,
             summary.text,
             summary.model,
             summary.model_tier,
             summary.generated_at,
+            summary.derived_at_version,
         ],
     )?;
     Ok(())
@@ -38,7 +58,8 @@ pub fn get_best(
     target_id: &str,
 ) -> Result<Option<Summary>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at
+        "SELECT id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at,
+                derived_at_version
          FROM summaries
          WHERE corpus_id = ?1 AND target_kind = ?2 AND target_id = ?3
          ORDER BY CASE model_tier
@@ -69,7 +90,8 @@ pub fn get_for_model(
     model: &str,
 ) -> Result<Option<Summary>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at
+        "SELECT id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at,
+                derived_at_version
          FROM summaries
          WHERE corpus_id = ?1 AND target_kind = ?2 AND target_id = ?3 AND model = ?4",
     )?;
@@ -85,7 +107,8 @@ pub fn get_for_model(
 
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Summary>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at
+        "SELECT id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at,
+                derived_at_version
          FROM summaries WHERE corpus_id = ?1 ORDER BY generated_at ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_summary)?;
@@ -104,6 +127,8 @@ pub fn delete_for_target(db: &Database, corpus_id: &str, target_id: &str) -> Res
 }
 
 fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<Summary> {
+    // Column order: id(0), corpus_id(1), target_kind(2), target_id(3), depth(4),
+    //               text(5), model(6), model_tier(7), generated_at(8), derived_at_version(9)
     let target_kind_str: String = row.get(2)?;
     let target_kind =
         SummaryTargetKind::from_str(&target_kind_str).unwrap_or(SummaryTargetKind::Chunk);
@@ -117,5 +142,6 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<Summary> {
         model: row.get(6)?,
         model_tier: row.get(7)?,
         generated_at: row.get(8)?,
+        derived_at_version: row.get(9)?,
     })
 }

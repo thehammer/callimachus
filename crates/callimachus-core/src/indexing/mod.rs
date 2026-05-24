@@ -1,4 +1,5 @@
 pub mod aliases_pass;
+pub mod cascade;
 pub mod change_detector;
 pub mod change_manifest;
 pub mod chunk_pass;

@@ -13,10 +13,14 @@ use crate::storage::edge_store::EdgeDirection;
 use crate::storage::embedding_store::StoredEmbedding;
 use crate::storage::fts::FtsResult;
 use crate::storage::run_log::{PassStats, RunRecord};
+use rusqlite::OptionalExtension;
+
 use crate::storage::{
-    backend::StorageBackend, block_store, chunk_store, collection_store, contract_store,
-    corpus_store, correction_store, db::Database, edge_store, embedding_store, entity_store, fts,
-    purpose_store, run_log, sqlite_graph, summary_store, theme_store,
+    backend::{CascadeStats, StorageBackend},
+    block_store, chunk_store, collection_store, contract_store, corpus_store, correction_store,
+    db::Database,
+    edge_store, embedding_store, entity_store, fts, history, purpose_store, run_log, sqlite_graph,
+    summary_store, theme_store,
 };
 use crate::types::pass::{Pass, RunStatus};
 use crate::types::{
@@ -26,7 +30,7 @@ use crate::types::{
 
 /// SQLite-backed storage. Thread-safe via `Arc<Mutex<Database>>`.
 pub struct SqliteBackend {
-    db: Arc<Mutex<Database>>,
+    pub(crate) db: Arc<Mutex<Database>>,
 }
 
 impl SqliteBackend {
@@ -42,6 +46,27 @@ impl SqliteBackend {
         Ok(Self {
             db: Arc::new(Mutex::new(Database::open_in_memory()?)),
         })
+    }
+
+    /// Test-only: acquire the database lock and return the guard for raw SQL assertions.
+    #[cfg(test)]
+    pub fn db_for_test(&self) -> std::sync::MutexGuard<'_, Database> {
+        self.db.lock().expect("database lock poisoned")
+    }
+
+    /// Execute a closure inside a write transaction.
+    ///
+    /// The transaction is committed when `f` returns `Ok`, rolled back on `Err`.
+    /// This acquires the database lock for the duration of the closure.
+    pub fn with_write_tx<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&rusqlite::Transaction<'_>) -> Result<R>,
+    {
+        let mut guard = self.db.lock().expect("database lock poisoned");
+        let tx = guard.conn_mut().transaction()?;
+        let result = f(&tx)?;
+        tx.commit()?;
+        Ok(result)
     }
 }
 
@@ -482,6 +507,197 @@ impl StorageBackend for SqliteBackend {
 
     fn theme_list(&self, corpus_id: &str) -> Result<Vec<Theme>> {
         theme_store::list(&db!(self), corpus_id)
+    }
+
+    // ── History / Archive ─────────────────────────────────────────────────────
+
+    fn archive_entity(
+        &self,
+        entity_id: &str,
+        corpus_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<bool> {
+        let guard = db!(self);
+        history::archive_entity(guard.conn(), entity_id, corpus_id, superseded_at_version)
+    }
+
+    fn archive_edges_for_entity(
+        &self,
+        entity_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<u64> {
+        let guard = db!(self);
+        history::archive_edges_for_entity(guard.conn(), entity_id, superseded_at_version)
+    }
+
+    fn archive_purposes_for_entity(
+        &self,
+        entity_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<u64> {
+        let guard = db!(self);
+        history::archive_purposes_for_entity(guard.conn(), entity_id, superseded_at_version)
+    }
+
+    fn archive_contracts_for_entity(
+        &self,
+        entity_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<u64> {
+        let guard = db!(self);
+        history::archive_contracts_for_entity(guard.conn(), entity_id, superseded_at_version)
+    }
+
+    fn archive_blocks_for_entity(
+        &self,
+        entity_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<u64> {
+        let guard = db!(self);
+        history::archive_blocks_for_entity(guard.conn(), entity_id, superseded_at_version)
+    }
+
+    fn archive_summaries_for_target(
+        &self,
+        corpus_id: &str,
+        target_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<u64> {
+        let guard = db!(self);
+        history::archive_summaries_for_target(
+            guard.conn(),
+            corpus_id,
+            target_id,
+            superseded_at_version,
+        )
+    }
+
+    fn archive_chunk(&self, chunk_id: &str, superseded_at_version: &str) -> Result<bool> {
+        let guard = db!(self);
+        history::archive_chunk(guard.conn(), chunk_id, superseded_at_version)
+    }
+
+    fn archive_theme(
+        &self,
+        theme_id: &str,
+        corpus_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<bool> {
+        let guard = db!(self);
+        history::archive_theme(guard.conn(), theme_id, corpus_id, superseded_at_version)
+    }
+
+    fn archive_themes_for_corpus(
+        &self,
+        corpus_id: &str,
+        superseded_at_version: &str,
+    ) -> Result<u64> {
+        let guard = db!(self);
+        let conn = guard.conn();
+        let now = chrono::Utc::now().to_rfc3339();
+        let rows = conn.execute(
+            "INSERT INTO themes_history
+               (id, corpus_id, title, statement, confidence,
+                model, model_tier, generated_at,
+                derived_at_version, superseded_at_version, superseded_at)
+             SELECT id, corpus_id, title, statement, confidence,
+                    model, model_tier, generated_at,
+                    derived_at_version, ?2, ?3
+             FROM themes WHERE corpus_id = ?1",
+            rusqlite::params![corpus_id, superseded_at_version, now],
+        )?;
+        Ok(rows as u64)
+    }
+
+    fn cascade_delete_dirty_subtree(
+        &self,
+        corpus_id: &str,
+        dirty_chunk_ids: &[String],
+        superseded_at_version: &str,
+    ) -> Result<CascadeStats> {
+        self.with_write_tx(|tx| {
+            let mut stats = CascadeStats::default();
+
+            for chunk_id in dirty_chunk_ids {
+                // Resolve the location URI for this chunk.
+                let location_uri: Option<String> = tx
+                    .query_row(
+                        "SELECT location_uri FROM chunks WHERE id = ?1",
+                        rusqlite::params![chunk_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+
+                if let Some(uri) = location_uri {
+                    // Find all entities whose first or last location is at this URI.
+                    let entity_ids: Vec<String> = {
+                        let mut stmt = tx.prepare(
+                            "SELECT id FROM entities
+                             WHERE corpus_id = ?1
+                               AND (first_location_uri = ?2 OR last_location_uri = ?2)",
+                        )?;
+                        let rows = stmt.query_map(rusqlite::params![corpus_id, uri], |r| {
+                            r.get::<_, String>(0)
+                        })?;
+                        rows.collect::<std::result::Result<Vec<_>, _>>()?
+                    };
+
+                    for entity_id in &entity_ids {
+                        // Archive before FK-cascade delete wipes the head rows.
+                        history::archive_edges_for_entity(tx, entity_id, superseded_at_version)?;
+                        history::archive_purposes_for_entity(tx, entity_id, superseded_at_version)?;
+                        history::archive_contracts_for_entity(
+                            tx,
+                            entity_id,
+                            superseded_at_version,
+                        )?;
+                        history::archive_blocks_for_entity(tx, entity_id, superseded_at_version)?;
+                        history::archive_summaries_for_target(
+                            tx,
+                            corpus_id,
+                            entity_id,
+                            superseded_at_version,
+                        )?;
+                        history::archive_entity(tx, entity_id, corpus_id, superseded_at_version)?;
+
+                        // Delete entity — FK ON DELETE CASCADE removes edges/purposes/contracts/blocks.
+                        tx.execute(
+                            "DELETE FROM entities WHERE id = ?1",
+                            rusqlite::params![entity_id],
+                        )?;
+                        // Delete summaries explicitly (no FK cascade from entities → summaries).
+                        tx.execute(
+                            "DELETE FROM summaries WHERE corpus_id = ?1 AND target_id = ?2",
+                            rusqlite::params![corpus_id, entity_id],
+                        )?;
+                        stats.entities_archived += 1;
+                    }
+                }
+
+                // Archive chunk summaries before deleting the chunk.
+                history::archive_summaries_for_target(
+                    tx,
+                    corpus_id,
+                    chunk_id,
+                    superseded_at_version,
+                )?;
+                history::archive_chunk(tx, chunk_id, superseded_at_version)?;
+
+                // Delete chunk — FK ON DELETE CASCADE removes embeddings.
+                tx.execute(
+                    "DELETE FROM chunks WHERE id = ?1",
+                    rusqlite::params![chunk_id],
+                )?;
+                // Delete summaries for chunk explicitly.
+                tx.execute(
+                    "DELETE FROM summaries WHERE corpus_id = ?1 AND target_id = ?2",
+                    rusqlite::params![corpus_id, chunk_id],
+                )?;
+                stats.chunks_archived += 1;
+            }
+
+            Ok(stats)
+        })
     }
 
     // ── Graph helpers ─────────────────────────────────────────────────────────

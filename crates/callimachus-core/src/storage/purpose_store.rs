@@ -1,20 +1,41 @@
 use crate::error::Result;
-use crate::storage::db::Database;
+use crate::storage::{db::Database, history};
 use crate::types::EntityPurpose;
 use rusqlite::params;
 
 pub fn upsert(db: &Database, p: &EntityPurpose) -> Result<()> {
-    db.conn().execute(
-        "INSERT OR REPLACE INTO entity_purposes
-         (entity_id, corpus_id, purpose, model, model_tier, generated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    let conn = db.conn();
+    let new_ver = p.derived_at_version.as_deref();
+
+    // Snapshot before overwrite.
+    if let Some(ver) = new_ver {
+        history::snapshot_if_version_changed_purpose(
+            conn,
+            &p.entity_id,
+            &p.corpus_id,
+            &p.model,
+            Some(ver),
+            ver,
+        )?;
+    }
+
+    conn.execute(
+        "INSERT INTO entity_purposes
+         (entity_id, corpus_id, purpose, model, model_tier, generated_at, derived_at_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(entity_id, model) DO UPDATE SET
+             purpose            = excluded.purpose,
+             model_tier         = excluded.model_tier,
+             generated_at       = excluded.generated_at,
+             derived_at_version = COALESCE(excluded.derived_at_version, entity_purposes.derived_at_version)",
         params![
             p.entity_id,
             p.corpus_id,
             p.purpose,
             p.model,
             p.model_tier,
-            p.generated_at
+            p.generated_at,
+            p.derived_at_version,
         ],
     )?;
     Ok(())
@@ -25,7 +46,7 @@ pub fn upsert(db: &Database, p: &EntityPurpose) -> Result<()> {
 /// `generated_at DESC`.
 pub fn get_best(db: &Database, corpus_id: &str, entity_id: &str) -> Result<Option<EntityPurpose>> {
     let mut stmt = db.conn().prepare(
-        "SELECT entity_id, corpus_id, purpose, model, model_tier, generated_at
+        "SELECT entity_id, corpus_id, purpose, model, model_tier, generated_at, derived_at_version
          FROM entity_purposes
          WHERE corpus_id = ?1 AND entity_id = ?2
          ORDER BY CASE model_tier
@@ -52,7 +73,7 @@ pub fn get_for_model(
     model: &str,
 ) -> Result<Option<EntityPurpose>> {
     let mut stmt = db.conn().prepare(
-        "SELECT entity_id, corpus_id, purpose, model, model_tier, generated_at
+        "SELECT entity_id, corpus_id, purpose, model, model_tier, generated_at, derived_at_version
          FROM entity_purposes
          WHERE corpus_id = ?1 AND entity_id = ?2 AND model = ?3",
     )?;
@@ -65,7 +86,7 @@ pub fn get_for_model(
 
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<EntityPurpose>> {
     let mut stmt = db.conn().prepare(
-        "SELECT entity_id, corpus_id, purpose, model, model_tier, generated_at
+        "SELECT entity_id, corpus_id, purpose, model, model_tier, generated_at, derived_at_version
          FROM entity_purposes WHERE corpus_id = ?1 ORDER BY entity_id ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_purpose)?;
@@ -89,5 +110,6 @@ fn row_to_purpose(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntityPurpose> {
         model: row.get(3)?,
         model_tier: row.get(4)?,
         generated_at: row.get(5)?,
+        derived_at_version: row.get(6)?,
     })
 }

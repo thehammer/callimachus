@@ -34,8 +34,8 @@ use crate::{
 };
 
 use super::{
-    aliases_pass, chunk_pass, contract_pass, embed_pass, history_pass, purpose_pass, semantic_pass,
-    structure_pass, summarize_pass, theme_pass,
+    aliases_pass, cascade, chunk_pass, contract_pass, embed_pass, history_pass, purpose_pass,
+    semantic_pass, structure_pass, summarize_pass, theme_pass,
 };
 
 /// Which passes the pipeline should execute (default: all except Embed).
@@ -264,16 +264,18 @@ impl IndexPipeline {
                     )
                     .await?;
                     // Persist the version anchor as soon as history succeeds.
-                    // Previously this only happened at end-of-pipeline, so any
-                    // pass failing later (or single-pass runs that include
-                    // History) lost the anchor entirely. Recording it here
-                    // means a successful history pass alone is enough to track
-                    // what the index is on — the downstream passes only refine
-                    // what's already a valid checkpoint.
                     self.db
                         .corpus_set_last_indexed_version(&corpus.id, &manifest.current_version)?;
                     history_version = Some(manifest.current_version.clone());
                     opts_local.change_manifest = Some(manifest);
+
+                    // Cascade-invalidate stale artifacts for dirty source files.
+                    // This must run before chunk/structure/semantic passes so they
+                    // start with a blank slate for the changed files.
+                    if let Some(m) = opts_local.change_manifest.as_ref() {
+                        cascade::run(Arc::clone(&self.db), corpus, m).await?;
+                    }
+
                     stats
                 }
                 Pass::Chunk => {

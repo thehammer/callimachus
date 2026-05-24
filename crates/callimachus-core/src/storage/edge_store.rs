@@ -10,10 +10,16 @@ pub fn upsert(db: &Database, edge: &Edge) -> Result<()> {
     // than causing a FK constraint violation.  INSERT OR IGNORE only suppresses
     // UNIQUE conflicts in SQLite — FK violations are always raised regardless of
     // the conflict algorithm.
+    //
+    // Edge upsert uses INSERT OR IGNORE (not ON CONFLICT DO UPDATE) so existing
+    // edge rows are never overwritten in-place. We therefore do NOT call a
+    // snapshot helper here — cascade.rs handles archiving edges before deletion.
+    // derived_at_version is stamped on new rows only.
     db.conn().execute(
         "INSERT OR IGNORE INTO edges
-         (id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+         (id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
+          derived_at_version)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
          WHERE EXISTS (SELECT 1 FROM entities WHERE id = ?3)
            AND EXISTS (SELECT 1 FROM entities WHERE id = ?4)",
         params![
@@ -24,6 +30,7 @@ pub fn upsert(db: &Database, edge: &Edge) -> Result<()> {
             edge.kind,
             edge.location.uri,
             edge.confidence as f64,
+            edge.derived_at_version,
         ],
     )?;
     Ok(())
@@ -45,7 +52,8 @@ pub fn get_for_entity(
     // Build two separate queries to avoid passing mismatched parameter counts.
     if let Some(kind_val) = kind {
         let sql = format!(
-            "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence
+            "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
+                    derived_at_version
              FROM edges WHERE ({from_clause} OR {to_clause}) AND kind = ?3
              LIMIT ?2"
         );
@@ -55,7 +63,8 @@ pub fn get_for_entity(
             .map_err(CalError::from)
     } else {
         let sql = format!(
-            "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence
+            "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
+                    derived_at_version
              FROM edges WHERE ({from_clause} OR {to_clause})
              LIMIT ?2"
         );
@@ -68,7 +77,8 @@ pub fn get_for_entity(
 
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Edge>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence
+        "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
+                derived_at_version
          FROM edges WHERE corpus_id = ?1 ORDER BY id ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_edge)?;
@@ -154,6 +164,8 @@ pub fn out_degree(db: &Database, corpus_id: &str, entity_id: &str) -> Result<u32
 }
 
 fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
+    // Column order: id(0), corpus_id(1), from_entity_id(2), to_entity_id(3),
+    //               kind(4), location_uri(5), confidence(6), derived_at_version(7)
     let uri: String = row.get(5)?;
     let location = Location::parse(&uri).unwrap_or_else(|_| Location {
         corpus_id: String::new(),
@@ -168,6 +180,7 @@ fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
         kind: row.get(4)?,
         location,
         confidence: row.get::<_, f64>(6)? as f32,
+        derived_at_version: row.get(7)?,
     })
 }
 

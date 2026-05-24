@@ -66,6 +66,18 @@ pub async fn run(
         return Ok(stats);
     }
 
+    // Stamp derived_at_version from the change manifest before writing.
+    let version = opts
+        .change_manifest
+        .as_ref()
+        .map(|m| m.current_version.clone());
+    for entity in &mut all_entities {
+        entity.derived_at_version = version.clone();
+    }
+    for edge in &mut all_edges {
+        edge.derived_at_version = version.clone();
+    }
+
     // Phase 1: write parent paths and all entities.
     for (chunk_id, parent) in &all_parent_paths {
         db.chunk_set_parent_path(chunk_id, parent)?;

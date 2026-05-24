@@ -90,6 +90,11 @@ pub async fn run(
 
     // ── Concurrent phase: read-only + LLM ────────────────────────────────────
 
+    let current_version = opts
+        .change_manifest
+        .as_ref()
+        .map(|m| m.current_version.clone());
+
     let ctx = Arc::new(PassContext {
         db: Arc::clone(&db),
         corpus_id: corpus.id.clone(),
@@ -99,6 +104,7 @@ pub async fn run(
         llm_opus: Arc::clone(&llm_opus),
         tier_config,
         full: opts.full,
+        current_version: current_version.clone(),
     });
 
     // ── Interleaved concurrent LLM + per-entity DB writes ────────────────────
@@ -146,6 +152,7 @@ pub async fn run(
                                 kind: spec.kind.clone(),
                                 location: crate::types::Location::new(&contract.corpus_id, ""),
                                 confidence: 0.5,
+                                derived_at_version: current_version.clone(),
                             };
                             db.edge_upsert(&edge)?;
                         }
@@ -169,6 +176,7 @@ pub async fn run(
                                     kind: spec.kind.clone(),
                                     location: crate::types::Location::new(&contract.corpus_id, ""),
                                     confidence: 0.5,
+                                    derived_at_version: current_version.clone(),
                                 };
                                 db.edge_upsert(&edge)?;
                             }
@@ -232,6 +240,7 @@ struct PassContext {
     llm_opus: Arc<dyn LlmProvider>,
     tier_config: TierConfig,
     full: bool,
+    current_version: Option<String>,
 }
 
 async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
@@ -357,6 +366,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
                 model,
                 model_tier: tier_str,
                 generated_at: now,
+                derived_at_version: ctx.current_version.clone(),
             };
 
             let verified_by_edges = extracted

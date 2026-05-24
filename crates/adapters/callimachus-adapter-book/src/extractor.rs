@@ -96,6 +96,7 @@ fn parse_extraction_response(text: &str, chunk: &Chunk) -> anyhow::Result<Extrac
                 last_location: Some(chunk.location.clone()),
                 appearance_count: 1,
                 confidence: 0.8,
+                derived_at_version: None,
             }
         })
         .collect();

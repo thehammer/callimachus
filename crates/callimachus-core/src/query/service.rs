@@ -1435,6 +1435,7 @@ mod tests {
             model: "unknown".into(),
             model_tier: "unknown".into(),
             generated_at: chrono::Utc::now().to_rfc3339(),
+            derived_at_version: None,
         };
         db.summary_upsert(&summary).unwrap();
 

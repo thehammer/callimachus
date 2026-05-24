@@ -46,6 +46,10 @@ pub async fn run(
     }
 
     let total = chunks.len() as u64;
+    let version: Option<String> = opts
+        .change_manifest
+        .as_ref()
+        .map(|m| m.current_version.clone());
 
     if llm.supports_parallel() {
         let concurrency = opts.concurrency.unwrap_or(5);
@@ -71,7 +75,7 @@ pub async fn run(
                 // Throttle to `concurrency` in-flight tasks.
                 while join_set.len() >= concurrency {
                     if let Some(res) = join_set.join_next().await {
-                        apply_join_result(res, &db, &mut stats, opts.dry_run)?;
+                        apply_join_result(res, &db, &mut stats, opts.dry_run, version.as_deref())?;
                         let n = completed.fetch_add(1, Ordering::Relaxed) + 1;
                         if (n as u64).is_multiple_of(25) {
                             tracing::info!("[semantic] {}/{} chunks", n, total);
@@ -99,7 +103,7 @@ pub async fn run(
 
             // Drain remaining tasks.
             while let Some(res) = join_set.join_next().await {
-                apply_join_result(res, &db, &mut stats, opts.dry_run)?;
+                apply_join_result(res, &db, &mut stats, opts.dry_run, version.as_deref())?;
                 let n = completed.fetch_add(1, Ordering::Relaxed) + 1;
                 if (n as u64).is_multiple_of(25) {
                     tracing::info!("[semantic] {}/{} chunks", n, total);
@@ -118,8 +122,14 @@ pub async fn run(
         // Sequential path (e.g. ClaudeCodeProvider).
         for (i, chunk) in chunks.iter().enumerate() {
             match extract_with_retry(adapter.as_ref(), chunk, llm.as_ref()).await {
-                Ok(Some(sem)) => {
+                Ok(Some(mut sem)) => {
                     if !opts.dry_run {
+                        for entity in &mut sem.entities {
+                            entity.derived_at_version = version.clone();
+                        }
+                        for edge in &mut sem.edges {
+                            edge.derived_at_version = version.clone();
+                        }
                         for entity in &sem.entities {
                             db.entity_upsert(entity)?;
                         }
@@ -206,10 +216,17 @@ fn apply_join_result(
     db: &Arc<dyn StorageBackend>,
     stats: &mut PassStats,
     dry_run: bool,
+    version: Option<&str>,
 ) -> anyhow::Result<()> {
     match join_result {
-        Ok((chunk_id, TaskOutcome::Ok(Some(sem)))) => {
+        Ok((chunk_id, TaskOutcome::Ok(Some(mut sem)))) => {
             if !dry_run {
+                for entity in &mut sem.entities {
+                    entity.derived_at_version = version.map(str::to_string);
+                }
+                for edge in &mut sem.edges {
+                    edge.derived_at_version = version.map(str::to_string);
+                }
                 for entity in &sem.entities {
                     db.entity_upsert(entity)?;
                 }

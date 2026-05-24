@@ -20,17 +20,19 @@ const PURPOSE_KINDS: &[&str] = &["function", "method", "class", "interface", "mo
 
 // ─── Per-entity outcome ───────────────────────────────────────────────────────
 
+struct ExtractedPurpose {
+    tier: ModelTier,
+    purpose: EntityPurpose,
+    blocks: Vec<BlockData>,
+    edges: Vec<crate::types::Edge>,
+    block_entities: Vec<Entity>,
+}
+
 /// Result of processing one entity in the concurrent phase.
 enum PurposeOutcome {
     Skip,
     Failed(String),
-    Extracted {
-        tier: ModelTier,
-        purpose: EntityPurpose,
-        blocks: Vec<BlockData>,
-        edges: Vec<crate::types::Edge>,
-        block_entities: Vec<Entity>,
-    },
+    Extracted(Box<ExtractedPurpose>),
 }
 
 struct BlockData {
@@ -80,6 +82,11 @@ pub async fn run(
 
     // ── Concurrent phase: read-only + LLM ────────────────────────────────────
 
+    let current_version = opts
+        .change_manifest
+        .as_ref()
+        .map(|m| m.current_version.clone());
+
     let ctx = Arc::new(PassContext {
         db: Arc::clone(&db),
         corpus_id: corpus.id.clone(),
@@ -89,6 +96,7 @@ pub async fn run(
         llm_opus: Arc::clone(&llm_opus),
         tier_config,
         full: opts.full,
+        current_version,
     });
 
     // ── Interleaved concurrent LLM + per-entity DB writes ────────────────────
@@ -115,24 +123,18 @@ pub async fn run(
                 tracing::warn!("purpose pass failed for entity {completed}/{total}: {msg}");
                 stats.failed += 1;
             }
-            PurposeOutcome::Extracted {
-                tier,
-                purpose,
-                blocks,
-                edges,
-                block_entities,
-            } => {
-                db.purpose_upsert(&purpose)?;
-                for be in &block_entities {
+            PurposeOutcome::Extracted(ext) => {
+                db.purpose_upsert(&ext.purpose)?;
+                for be in &ext.block_entities {
                     db.entity_upsert(be)?;
                 }
-                for block in &blocks {
+                for block in &ext.blocks {
                     db.block_upsert(&block.entity_block)?;
                 }
-                for edge in &edges {
+                for edge in &ext.edges {
                     db.edge_upsert(edge)?;
                 }
-                tier_counts[tier as usize] += 1;
+                tier_counts[ext.tier as usize] += 1;
                 stats.processed += 1;
             }
         }
@@ -178,6 +180,7 @@ struct PassContext {
     llm_opus: Arc<dyn LlmProvider>,
     tier_config: TierConfig,
     full: bool,
+    current_version: Option<String>,
 }
 
 async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
@@ -266,6 +269,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
             let now = chrono::Utc::now().to_rfc3339();
             let model = llm.name().to_string();
             let tier_str = model_tier(&model).to_string();
+            let version = ctx.current_version.clone();
             let purpose = EntityPurpose {
                 entity_id: entity.id.clone(),
                 corpus_id: corpus_id.to_string(),
@@ -273,6 +277,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
                 model,
                 model_tier: tier_str,
                 generated_at: now.clone(),
+                derived_at_version: version.clone(),
             };
 
             let mut block_entities = Vec::new();
@@ -296,6 +301,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
                     label: block.label.clone(),
                     description: block.description.clone(),
                     position: i as i64,
+                    derived_at_version: version.clone(),
                 };
                 blocks.push(BlockData { entity_block: eb });
 
@@ -307,17 +313,18 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
                     kind: "defines".to_string(),
                     location: crate::types::Location::new(corpus_id, ""),
                     confidence: 0.5,
+                    derived_at_version: version.clone(),
                 };
                 edges.push(edge);
             }
 
-            PurposeOutcome::Extracted {
+            PurposeOutcome::Extracted(Box::new(ExtractedPurpose {
                 tier,
                 purpose,
                 blocks,
                 edges,
                 block_entities,
-            }
+            }))
         }
         Ok(None) => PurposeOutcome::Skip,
         Err(e) => PurposeOutcome::Failed(format!("{}: {e}", entity.id)),

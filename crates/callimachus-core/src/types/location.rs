@@ -44,6 +44,12 @@ impl Location {
     }
 }
 
+impl Default for Location {
+    fn default() -> Self {
+        Self::new("", "")
+    }
+}
+
 impl std::fmt::Display for Location {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.uri)
