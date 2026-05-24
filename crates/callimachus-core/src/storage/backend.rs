@@ -11,6 +11,7 @@ use crate::error::Result;
 use crate::storage::edge_store::EdgeDirection;
 use crate::storage::embedding_store::StoredEmbedding;
 use crate::storage::fts::FtsResult;
+use crate::storage::pruning::PruneStats;
 use crate::storage::run_log::{PassStats, RunRecord};
 use crate::types::pass::RunStatus;
 use crate::types::{
@@ -449,6 +450,23 @@ pub trait StorageBackend: Send + Sync {
     fn entities_without_inbound_calls(&self, corpus_id: &str) -> Result<Vec<Entity>>;
     /// Entities with no inbound `verified_by` edges (no test coverage).
     fn entities_without_verified_by(&self, corpus_id: &str) -> Result<Vec<Entity>>;
+
+    // ── Pruning ───────────────────────────────────────────────────────────────
+
+    /// Delete history rows whose `superseded_at_version` is older than the
+    /// N-th most-recent supersession SHA (ordered by `MAX(superseded_at)` across
+    /// all 8 `*_history` tables).
+    ///
+    /// The unit of pruning is a **supersession SHA**, not an individual row.
+    /// All eight `*_history` tables are pruned atomically inside a single
+    /// transaction.  A forced failure rolls back all DELETEs.
+    ///
+    /// When `dry_run` is `true`, the counts are computed and returned but no
+    /// rows are deleted.
+    ///
+    /// **This operation is destructive and irreversible.**  Pruned history rows
+    /// cannot be recovered.
+    fn prune_history(&self, corpus_id: &str, keep: usize, dry_run: bool) -> Result<PruneStats>;
 
     // ── Schema ────────────────────────────────────────────────────────────────
 
