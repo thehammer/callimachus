@@ -33,6 +33,33 @@ use crate::{
     types::{Corpus, Pass, RunStatus},
 };
 
+// ── IndexMode ─────────────────────────────────────────────────────────────────
+
+/// Controls how artifact writes are routed during an indexing run.
+///
+/// In normal use the mode is `Head` and artifacts are written to the head
+/// tables as today.  The `HistoryBackfill` variant is set by
+/// [`walk_history_backward`](crate::indexing::history_walk::walk_history_backward)
+/// so that the pipeline runner skips head writes and the per-run storage
+/// wrapper (created by the walker) routes every upsert to `*_history` tables
+/// instead.
+///
+/// This field lives on [`IndexOptions`] so every pass can read it and any
+/// future mode-aware logic has an explicit signal.
+///
+/// The wrapper itself (see `storage::backfill::BackfillStorageWrapper`) is
+/// what actually enforces the routing — `IndexMode` is the declarative marker.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum IndexMode {
+    /// Default: writes go to head tables, snapshot helpers fire on version change.
+    #[default]
+    Head,
+    /// Backward backfill: the pipeline is running against a past commit.
+    /// A `BackfillStorageWrapper` wrapping the real backend is passed as `db`
+    /// to the pipeline, so upserts are automatically redirected to history tables.
+    HistoryBackfill,
+}
+
 use super::{
     aliases_pass, cascade, chunk_pass, contract_pass, embed_pass, history_pass, purpose_pass,
     semantic_pass, structure_pass, summarize_pass, theme_pass,
@@ -46,6 +73,12 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct IndexOptions {
     pub passes: Vec<Pass>,
+    /// Routing mode for artifact writes.  Defaults to [`IndexMode::Head`].
+    /// Set to [`IndexMode::HistoryBackfill`] by
+    /// [`walk_history_backward`](crate::indexing::history_walk::walk_history_backward)
+    /// so that the pipeline knows it is running against a historical snapshot.
+    /// The actual routing is enforced by the `BackfillStorageWrapper`.
+    pub mode: IndexMode,
     /// If set, chunk pass skips chunks until this chunk ID is first seen.
     pub from_chunk: Option<String>,
     /// Count but don't write anything.
@@ -71,6 +104,7 @@ pub struct IndexOptions {
 impl Default for IndexOptions {
     fn default() -> Self {
         Self {
+            mode: IndexMode::default(),
             passes: vec![
                 Pass::History,
                 Pass::Chunk,

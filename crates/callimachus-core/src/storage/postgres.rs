@@ -479,6 +479,118 @@ impl StorageBackend for PostgresBackend {
     fn schema_version(&self) -> Result<u64> {
         Err(unimplemented())
     }
+
+    // ── Backfill history writes ───────────────────────────────────────────────
+
+    fn chunk_history_insert(
+        &self,
+        _chunk: &Chunk,
+        _derived_at_version: &str,
+        _superseded_at_version: &str,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn chunk_history_update_source_hash(
+        &self,
+        _chunk_id: &str,
+        _derived_at_version: &str,
+        _source_hash: &str,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn chunk_history_update_version(
+        &self,
+        _chunk_id: &str,
+        _derived_at_version: &str,
+        _last_modified_at_version: &str,
+        _commit_message: Option<&str>,
+        _author: Option<&str>,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn entity_history_insert(
+        &self,
+        _entity: &Entity,
+        _derived_at_version: &str,
+        _superseded_at_version: &str,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn edge_history_insert(
+        &self,
+        _edge: &Edge,
+        _derived_at_version: &str,
+        _superseded_at_version: &str,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn summary_history_insert(
+        &self,
+        _summary: &Summary,
+        _derived_at_version: &str,
+        _superseded_at_version: &str,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn purpose_history_insert(
+        &self,
+        _purpose: &EntityPurpose,
+        _derived_at_version: &str,
+        _superseded_at_version: &str,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn contract_history_insert(
+        &self,
+        _contract: &EntityContract,
+        _derived_at_version: &str,
+        _superseded_at_version: &str,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn block_history_insert(
+        &self,
+        _block: &EntityBlock,
+        _derived_at_version: &str,
+        _superseded_at_version: &str,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn theme_history_insert(
+        &self,
+        _theme: &Theme,
+        _derived_at_version: &str,
+        _superseded_at_version: &str,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+
+    // ── Backfill seeding helpers ──────────────────────────────────────────────
+
+    fn entity_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+        Err(unimplemented())
+    }
+    fn chunk_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+        Err(unimplemented())
+    }
+    fn edge_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+        Err(unimplemented())
+    }
+    fn summary_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+        Err(unimplemented())
+    }
+    fn purpose_head_versions(&self, _corpus_id: &str) -> Result<Vec<((String, String), String)>> {
+        Err(unimplemented())
+    }
+    fn contract_head_versions(&self, _corpus_id: &str) -> Result<Vec<((String, String), String)>> {
+        Err(unimplemented())
+    }
+    fn block_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+        Err(unimplemented())
+    }
+    fn theme_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+        Err(unimplemented())
+    }
 }
 
 #[cfg(test)]

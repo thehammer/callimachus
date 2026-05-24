@@ -245,6 +245,127 @@ pub trait StorageBackend: Send + Sync {
     fn theme_upsert(&self, t: &Theme) -> Result<()>;
     fn theme_list(&self, corpus_id: &str) -> Result<Vec<Theme>>;
 
+    // ── Backfill history writes ───────────────────────────────────────────────
+    //
+    // Direct-write helpers for the backward backfill walker.  Unlike the
+    // archive/snapshot helpers below, these INSERT from caller-supplied data
+    // (not from existing head rows) and do NOT touch head tables.  They are
+    // called exclusively by `BackfillStorageWrapper`.
+
+    /// Write a chunk row directly into `chunks_history`.
+    /// `derived_at_version` and `superseded_at_version` must be non-empty.
+    fn chunk_history_insert(
+        &self,
+        chunk: &Chunk,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()>;
+
+    /// Update `source_hash` on a `chunks_history` row identified by
+    /// `(chunk_id, derived_at_version)`. Used by the backfill wrapper when
+    /// `chunk_set_source_hash` is called after `chunk_upsert`.
+    fn chunk_history_update_source_hash(
+        &self,
+        chunk_id: &str,
+        derived_at_version: &str,
+        source_hash: &str,
+    ) -> Result<()>;
+
+    /// Update version fields on a `chunks_history` row identified by
+    /// `(chunk_id, derived_at_version)`. Used by the backfill wrapper when
+    /// `chunk_set_history` is called after `chunk_upsert`.
+    fn chunk_history_update_version(
+        &self,
+        chunk_id: &str,
+        derived_at_version: &str,
+        last_modified_at_version: &str,
+        commit_message: Option<&str>,
+        author: Option<&str>,
+    ) -> Result<()>;
+
+    /// Write an entity row directly into `entities_history`.
+    fn entity_history_insert(
+        &self,
+        entity: &Entity,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()>;
+
+    /// Write an edge row directly into `edges_history`.
+    /// No FK guard is applied (history tables have no FK constraints).
+    fn edge_history_insert(
+        &self,
+        edge: &Edge,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()>;
+
+    /// Write a summary row directly into `summaries_history`.
+    fn summary_history_insert(
+        &self,
+        summary: &Summary,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()>;
+
+    /// Write a purpose row directly into `entity_purposes_history`.
+    fn purpose_history_insert(
+        &self,
+        purpose: &EntityPurpose,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()>;
+
+    /// Write a contract row directly into `entity_contracts_history`.
+    fn contract_history_insert(
+        &self,
+        contract: &EntityContract,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()>;
+
+    /// Write a block row directly into `entity_blocks_history`.
+    fn block_history_insert(
+        &self,
+        block: &EntityBlock,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()>;
+
+    /// Write a theme row directly into `themes_history`.
+    fn theme_history_insert(
+        &self,
+        theme: &Theme,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()>;
+
+    // ── Backfill seeding helpers ──────────────────────────────────────────────
+    //
+    // These return (artifact_key, derived_at_version) for all head-table rows
+    // in a corpus. Used by `BackfillSupersession::seeded_from` to pre-populate
+    // the supersession maps before the backward walk begins.
+
+    /// `(entity_id, derived_at_version)` for every entity in `corpus_id`.
+    fn entity_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+    /// `(chunk_id, derived_at_version)` for every chunk in `corpus_id`.
+    /// Uses `last_modified_at_version` as the chunk's version anchor.
+    fn chunk_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+    /// `(edge_id, derived_at_version)` for every edge in `corpus_id`.
+    fn edge_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+    /// `(target_id, derived_at_version)` for every summary in `corpus_id`.
+    fn summary_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+    /// `((entity_id, model), derived_at_version)` for every purpose in `corpus_id`.
+    fn purpose_head_versions(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>>;
+    /// `((entity_id, model), derived_at_version)` for every contract in `corpus_id`.
+    fn contract_head_versions(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>>;
+    /// `(entity_id, derived_at_version)` for every block in `corpus_id`
+    /// (one entry per entity; multiple blocks under the same entity share the
+    ///  entity-level version).
+    fn block_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+    /// `(theme_id, derived_at_version)` for every theme in `corpus_id`.
+    fn theme_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+
     // ── History / Archive ─────────────────────────────────────────────────────
     //
     // Fine-grained archive methods (one per artifact type). Each copies the

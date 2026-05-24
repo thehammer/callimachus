@@ -56,6 +56,7 @@ pub async fn run(
         concurrency,
         tier_config: config.model_tiers.clone(),
         change_manifest: None,
+        ..IndexOptions::default()
     };
 
     let dry_label = if dry_run { " [dry-run]" } else { "" };

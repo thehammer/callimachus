@@ -2,6 +2,7 @@ pub mod collection;
 pub mod corpus;
 pub mod correct;
 pub mod export;
+pub mod history;
 pub mod index;
 pub mod ingest;
 pub mod inspect;
