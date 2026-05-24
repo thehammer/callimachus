@@ -12,6 +12,10 @@ pub struct Edge {
     pub kind: String,
     pub location: Location,
     pub confidence: f32,
+    /// The manifest `current_version` at which this edge was last written.
+    /// `None` for rows that pre-date migration 012.
+    #[serde(default)]
+    pub derived_at_version: Option<String>,
 }
 
 impl Edge {
@@ -31,6 +35,20 @@ impl Edge {
             kind,
             location,
             confidence: 0.5,
+            derived_at_version: None,
         }
+    }
+}
+
+impl Default for Edge {
+    fn default() -> Self {
+        Self::new(
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            Location::default(),
+        )
     }
 }

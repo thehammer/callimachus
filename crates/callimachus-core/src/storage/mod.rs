@@ -10,6 +10,7 @@ pub mod edge_store;
 pub mod embedding_store;
 pub mod entity_store;
 pub mod fts;
+pub(crate) mod history;
 pub mod postgres;
 pub mod purpose_store;
 pub mod run_log;

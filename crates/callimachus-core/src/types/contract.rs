@@ -29,4 +29,8 @@ pub struct EntityContract {
     /// Coarse quality tier: "opus" > "sonnet" > "haiku" > "unknown".
     pub model_tier: String,
     pub generated_at: String,
+    /// The manifest `current_version` at which this contract was last written.
+    /// `None` for rows that pre-date migration 012.
+    #[serde(default)]
+    pub derived_at_version: Option<String>,
 }

@@ -11,7 +11,7 @@
 
 use crate::corrections::types::{Correction, CorrectionKind};
 use crate::error::{CalError, Result};
-use crate::storage::backend::StorageBackend;
+use crate::storage::backend::{CascadeStats, StorageBackend};
 use crate::storage::edge_store::EdgeDirection;
 use crate::storage::embedding_store::StoredEmbedding;
 use crate::storage::fts::FtsResult;
@@ -389,6 +389,79 @@ impl StorageBackend for PostgresBackend {
         Err(unimplemented())
     }
     fn theme_list(&self, _corpus_id: &str) -> Result<Vec<Theme>> {
+        Err(unimplemented())
+    }
+
+    // ── History / Archive ─────────────────────────────────────────────────────
+
+    fn archive_entity(
+        &self,
+        _entity_id: &str,
+        _corpus_id: &str,
+        _superseded_at_version: &str,
+    ) -> Result<bool> {
+        Err(unimplemented())
+    }
+    fn archive_edges_for_entity(
+        &self,
+        _entity_id: &str,
+        _superseded_at_version: &str,
+    ) -> Result<u64> {
+        Err(unimplemented())
+    }
+    fn archive_purposes_for_entity(
+        &self,
+        _entity_id: &str,
+        _superseded_at_version: &str,
+    ) -> Result<u64> {
+        Err(unimplemented())
+    }
+    fn archive_contracts_for_entity(
+        &self,
+        _entity_id: &str,
+        _superseded_at_version: &str,
+    ) -> Result<u64> {
+        Err(unimplemented())
+    }
+    fn archive_blocks_for_entity(
+        &self,
+        _entity_id: &str,
+        _superseded_at_version: &str,
+    ) -> Result<u64> {
+        Err(unimplemented())
+    }
+    fn archive_summaries_for_target(
+        &self,
+        _corpus_id: &str,
+        _target_id: &str,
+        _superseded_at_version: &str,
+    ) -> Result<u64> {
+        Err(unimplemented())
+    }
+    fn archive_chunk(&self, _chunk_id: &str, _superseded_at_version: &str) -> Result<bool> {
+        Err(unimplemented())
+    }
+    fn archive_theme(
+        &self,
+        _theme_id: &str,
+        _corpus_id: &str,
+        _superseded_at_version: &str,
+    ) -> Result<bool> {
+        Err(unimplemented())
+    }
+    fn archive_themes_for_corpus(
+        &self,
+        _corpus_id: &str,
+        _superseded_at_version: &str,
+    ) -> Result<u64> {
+        Err(unimplemented())
+    }
+    fn cascade_delete_dirty_subtree(
+        &self,
+        _corpus_id: &str,
+        _dirty_chunk_ids: &[String],
+        _superseded_at_version: &str,
+    ) -> Result<CascadeStats> {
         Err(unimplemented())
     }
 

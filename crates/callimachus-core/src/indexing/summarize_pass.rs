@@ -129,8 +129,18 @@ pub async fn run(
             match adapter.summarize(&context_chunk, llm, level_kind).await {
                 Ok(Some(text)) => {
                     if !opts.dry_run {
-                        let summary =
-                            make_summary(corpus, chunk.id.clone(), level_kind, text, &llm_arc);
+                        let version = opts
+                            .change_manifest
+                            .as_ref()
+                            .map(|m| m.current_version.as_str());
+                        let summary = make_summary(
+                            corpus,
+                            chunk.id.clone(),
+                            level_kind,
+                            text,
+                            &llm_arc,
+                            version,
+                        );
                         db.summary_upsert(&summary)?;
                     }
                     stats.processed += 1;
@@ -239,6 +249,10 @@ pub async fn run(
             if !opts.dry_run {
                 let model = corpus_llm.name().to_string();
                 let tier = model_tier(&model).to_string();
+                let derived_at_version = opts
+                    .change_manifest
+                    .as_ref()
+                    .map(|m| m.current_version.clone());
                 let summary = Summary {
                     id: Uuid::new_v4().to_string(),
                     corpus_id: corpus.id.clone(),
@@ -249,6 +263,7 @@ pub async fn run(
                     model,
                     model_tier: tier,
                     generated_at: chrono::Utc::now().to_rfc3339(),
+                    derived_at_version,
                 };
                 db.summary_upsert(&summary)?;
             }
@@ -278,6 +293,7 @@ fn make_summary(
     depth: &str,
     text: String,
     llm: &Arc<dyn LlmProvider>,
+    derived_at_version: Option<&str>,
 ) -> Summary {
     let model = llm.name().to_string();
     let tier = model_tier(&model).to_string();
@@ -291,5 +307,6 @@ fn make_summary(
         model,
         model_tier: tier,
         generated_at: chrono::Utc::now().to_rfc3339(),
+        derived_at_version: derived_at_version.map(str::to_string),
     }
 }

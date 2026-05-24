@@ -56,18 +56,23 @@ pub async fn run(
     {
         Ok(Some(extracted)) => {
             let now = chrono::Utc::now().to_rfc3339();
+            let version = opts
+                .change_manifest
+                .as_ref()
+                .map(|m| m.current_version.clone());
 
             for et in &extracted.themes {
                 let slug = slugify(&et.title);
                 let theme_id = format!("{}:theme:{}", corpus.id, slug);
 
                 // Insert a theme entity row (kind=theme) so FK is satisfied.
-                let theme_entity = Entity::new(
+                let mut theme_entity = Entity::new(
                     theme_id.clone(),
                     corpus.id.clone(),
                     et.title.clone(),
                     "theme".to_string(),
                 );
+                theme_entity.derived_at_version = version.clone();
                 db.entity_upsert(&theme_entity)?;
 
                 // Insert theme record.
@@ -82,6 +87,7 @@ pub async fn run(
                     model,
                     model_tier: tier,
                     generated_at: now.clone(),
+                    derived_at_version: version.clone(),
                 };
                 db.theme_upsert(&theme)?;
 
@@ -96,6 +102,7 @@ pub async fn run(
                             kind: "upheld_by".to_string(),
                             location: crate::types::Location::new(&corpus.id, ""),
                             confidence: 0.5,
+                            derived_at_version: version.clone(),
                         };
                         db.edge_upsert(&edge)?;
                     }
@@ -112,6 +119,7 @@ pub async fn run(
                             kind: "violated_by".to_string(),
                             location: crate::types::Location::new(&corpus.id, ""),
                             confidence: 0.5,
+                            derived_at_version: version.clone(),
                         };
                         db.edge_upsert(&edge)?;
                     }

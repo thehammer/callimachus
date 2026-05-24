@@ -226,6 +226,7 @@ mod tests {
             last_location: None,
             appearance_count: count,
             confidence,
+            derived_at_version: None,
         };
         db.entity_upsert(&e).unwrap();
         e
