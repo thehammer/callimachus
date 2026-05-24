@@ -33,6 +33,7 @@ use crate::storage::backend::{CascadeStats, StorageBackend};
 use crate::storage::edge_store::EdgeDirection;
 use crate::storage::embedding_store::StoredEmbedding;
 use crate::storage::fts::FtsResult;
+use crate::storage::pruning::PruneStats;
 use crate::storage::run_log::{PassStats, RunRecord};
 use crate::types::pass::RunStatus;
 use crate::types::{
@@ -1142,5 +1143,14 @@ impl StorageBackend for BackfillStorageWrapper {
 
     fn theme_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
         self.inner.theme_head_versions(corpus_id)
+    }
+
+    // ── Pruning ───────────────────────────────────────────────────────────────
+    //
+    // Pruning is not meaningful during a backfill walk (the wrapper runs against
+    // history tables, not head tables).  Delegate to the inner backend.
+
+    fn prune_history(&self, corpus_id: &str, keep: usize, dry_run: bool) -> Result<PruneStats> {
+        self.inner.prune_history(corpus_id, keep, dry_run)
     }
 }

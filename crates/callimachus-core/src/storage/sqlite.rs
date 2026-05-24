@@ -19,8 +19,9 @@ use crate::storage::{
     backend::{CascadeStats, StorageBackend},
     block_store, chunk_store, collection_store, contract_store, corpus_store, correction_store,
     db::Database,
-    edge_store, embedding_store, entity_store, fts, history, purpose_store, run_log, sqlite_graph,
-    summary_store, theme_store,
+    edge_store, embedding_store, entity_store, fts, history,
+    pruning::PruneStats,
+    purpose_store, run_log, sqlite_graph, summary_store, theme_store,
 };
 use crate::types::pass::{Pass, RunStatus};
 use crate::types::{
@@ -1142,6 +1143,166 @@ impl StorageBackend for SqliteBackend {
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(crate::error::CalError::from)
+    }
+
+    // ── Pruning ───────────────────────────────────────────────────────────────
+
+    fn prune_history(&self, corpus_id: &str, keep: usize, dry_run: bool) -> Result<PruneStats> {
+        self.with_write_tx(|tx| {
+            // Step 1: Collect the ordered list of distinct supersession SHAs for
+            // this corpus by taking MAX(superseded_at) per SHA across all 8 history
+            // tables, then ordering ascending by that timestamp.
+            let ordered_shas: Vec<String> = {
+                let mut stmt = tx.prepare(
+                    "WITH all_events AS (
+                         SELECT superseded_at_version AS sha, MAX(superseded_at) AS ts
+                           FROM entities_history
+                          WHERE corpus_id = ?1
+                          GROUP BY superseded_at_version
+                         UNION ALL
+                         SELECT superseded_at_version, MAX(superseded_at)
+                           FROM edges_history
+                          WHERE corpus_id = ?1
+                          GROUP BY superseded_at_version
+                         UNION ALL
+                         SELECT superseded_at_version, MAX(superseded_at)
+                           FROM entity_purposes_history
+                          WHERE corpus_id = ?1
+                          GROUP BY superseded_at_version
+                         UNION ALL
+                         SELECT superseded_at_version, MAX(superseded_at)
+                           FROM entity_contracts_history
+                          WHERE corpus_id = ?1
+                          GROUP BY superseded_at_version
+                         UNION ALL
+                         SELECT superseded_at_version, MAX(superseded_at)
+                           FROM entity_blocks_history
+                          WHERE corpus_id = ?1
+                          GROUP BY superseded_at_version
+                         UNION ALL
+                         SELECT superseded_at_version, MAX(superseded_at)
+                           FROM summaries_history
+                          WHERE corpus_id = ?1
+                          GROUP BY superseded_at_version
+                         UNION ALL
+                         SELECT superseded_at_version, MAX(superseded_at)
+                           FROM chunks_history
+                          WHERE corpus_id = ?1
+                          GROUP BY superseded_at_version
+                         UNION ALL
+                         SELECT superseded_at_version, MAX(superseded_at)
+                           FROM themes_history
+                          WHERE corpus_id = ?1
+                          GROUP BY superseded_at_version
+                     )
+                     SELECT sha, MAX(ts) AS ts
+                       FROM all_events
+                       GROUP BY sha
+                       ORDER BY ts ASC",
+                )?;
+                let rows =
+                    stmt.query_map(rusqlite::params![corpus_id], |r| r.get::<_, String>(0))?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
+
+            let total = ordered_shas.len();
+
+            // Step 2: If we have <= keep SHAs, nothing to prune.
+            if total <= keep {
+                return Ok(PruneStats {
+                    supersession_shas_kept: total,
+                    supersession_shas_pruned: 0,
+                    ..Default::default()
+                });
+            }
+
+            // Step 3: Partition — oldest (prune) vs newest (keep).
+            let prune_count = total - keep;
+            let prune_set: Vec<String> = ordered_shas.into_iter().take(prune_count).collect();
+
+            // Step 4: For each history table, count then optionally delete.
+            // We chunk the IN clause to ≤500 parameters for SQLite compatibility.
+            const CHUNK_SIZE: usize = 500;
+
+            // Table name paired with a fn pointer that accumulates counts into PruneStats.
+            type Acc = fn(&mut PruneStats, usize);
+            let tables: &[(&str, Acc)] = &[
+                ("entities_history", |s, n| {
+                    s.rows_pruned_entities_history += n
+                }),
+                ("edges_history", |s, n| s.rows_pruned_edges_history += n),
+                ("entity_purposes_history", |s, n| {
+                    s.rows_pruned_entity_purposes_history += n
+                }),
+                ("entity_contracts_history", |s, n| {
+                    s.rows_pruned_entity_contracts_history += n
+                }),
+                ("entity_blocks_history", |s, n| {
+                    s.rows_pruned_entity_blocks_history += n
+                }),
+                ("summaries_history", |s, n| {
+                    s.rows_pruned_summaries_history += n
+                }),
+                ("chunks_history", |s, n| s.rows_pruned_chunks_history += n),
+                ("themes_history", |s, n| s.rows_pruned_themes_history += n),
+            ];
+
+            let mut stats = PruneStats {
+                supersession_shas_kept: keep,
+                supersession_shas_pruned: prune_set.len(),
+                ..Default::default()
+            };
+
+            for (table, accumulate) in tables {
+                let mut table_count: usize = 0;
+
+                for chunk in prune_set.chunks(CHUNK_SIZE) {
+                    // Build the IN (?, ?, …) placeholder list for this chunk.
+                    let placeholders: String = chunk
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| format!("?{}", i + 2))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+
+                    // COUNT query — runs regardless of dry_run.
+                    let count_sql = format!(
+                        "SELECT COUNT(*) FROM {table} \
+                         WHERE corpus_id = ?1 \
+                           AND superseded_at_version IN ({placeholders})"
+                    );
+                    let count: usize = {
+                        let mut stmt = tx.prepare(&count_sql)?;
+                        let params_iter =
+                            std::iter::once(&corpus_id as &dyn rusqlite::types::ToSql)
+                                .chain(chunk.iter().map(|s| s as &dyn rusqlite::types::ToSql));
+                        stmt.query_row(rusqlite::params_from_iter(params_iter), |r| r.get(0))?
+                    };
+                    table_count += count;
+
+                    // DELETE — only in real mode.
+                    if !dry_run {
+                        let delete_sql = format!(
+                            "DELETE FROM {table} \
+                             WHERE corpus_id = ?1 \
+                               AND superseded_at_version IN ({placeholders})"
+                        );
+                        let mut stmt = tx.prepare(&delete_sql)?;
+                        let params_iter =
+                            std::iter::once(&corpus_id as &dyn rusqlite::types::ToSql)
+                                .chain(chunk.iter().map(|s| s as &dyn rusqlite::types::ToSql));
+                        stmt.execute(rusqlite::params_from_iter(params_iter))?;
+                    }
+                }
+
+                accumulate(&mut stats, table_count);
+            }
+
+            // Step 5: Commit (handled by with_write_tx on Ok) or rollback on Err.
+            // In dry-run mode the transaction wraps the SELECTs; it will be rolled
+            // back if we return Ok without deleting — which is fine for read consistency.
+            Ok(stats)
+        })
     }
 }
 

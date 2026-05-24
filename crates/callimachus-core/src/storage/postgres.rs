@@ -15,6 +15,7 @@ use crate::storage::backend::{CascadeStats, StorageBackend};
 use crate::storage::edge_store::EdgeDirection;
 use crate::storage::embedding_store::StoredEmbedding;
 use crate::storage::fts::FtsResult;
+use crate::storage::pruning::PruneStats;
 use crate::storage::run_log::{PassStats, RunRecord};
 use crate::types::pass::RunStatus;
 use crate::types::{
@@ -472,6 +473,12 @@ impl StorageBackend for PostgresBackend {
     }
     fn entities_without_verified_by(&self, _corpus_id: &str) -> Result<Vec<Entity>> {
         Err(unimplemented())
+    }
+
+    // ── Pruning ───────────────────────────────────────────────────────────────
+
+    fn prune_history(&self, _corpus_id: &str, _keep: usize, _dry_run: bool) -> Result<PruneStats> {
+        unimplemented!("postgres backend does not yet support history pruning")
     }
 
     // ── Schema ────────────────────────────────────────────────────────────────

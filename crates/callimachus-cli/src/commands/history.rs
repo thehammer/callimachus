@@ -1,6 +1,6 @@
 //! `calli history` — history-table management commands.
 //!
-//! Currently exposes a single sub-command:
+//! Currently exposes two sub-commands:
 //!
 //! * `calli history backfill <corpus_id> --from <sha>` — walk the
 //!   first-parent git ancestry backward from HEAD's parent down to `<sha>` and
@@ -10,6 +10,10 @@
 //!   resolves `--back N` to `HEAD~N` along the first-parent chain and then
 //!   performs the same backward backfill.  `--from` and `--back` are mutually
 //!   exclusive; exactly one is required.
+//! * `calli history prune <corpus_id> --keep N [--dry-run]` — delete all
+//!   history rows whose `superseded_at_version` is older than the N-th
+//!   most-recent supersession SHA.  **This operation is destructive and
+//!   irreversible.**  Use `--dry-run` to preview what would be deleted.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -20,7 +24,7 @@ use callimachus_core::{
         IndexOptions, IndexPipeline,
         history_walk::{WalkOptions, resolve_back_n_sha, walk_history_backward},
     },
-    storage::StorageBackend,
+    storage::{PruneStats, StorageBackend},
     types::Pass,
 };
 use callimachus_llm::build_provider;
@@ -68,6 +72,31 @@ pub enum HistoryCommand {
         /// Fixed concurrency for LLM-heavy passes.
         #[arg(long)]
         concurrency: Option<usize>,
+    },
+
+    /// Prune history rows older than the N most-recent supersession SHAs.
+    ///
+    /// Deletes all rows in every `*_history` table whose
+    /// `superseded_at_version` is older than the N-th most-recent supersession
+    /// SHA (ordered by `MAX(superseded_at)` across all eight history tables).
+    /// All eight tables are pruned atomically inside a single transaction; a
+    /// forced failure rolls back every DELETE.
+    ///
+    /// **This operation is destructive and irreversible.**  Pruned history rows
+    /// cannot be recovered.  Use `--dry-run` to preview what would be deleted
+    /// before committing to an actual prune.
+    Prune {
+        /// Corpus ID to prune.
+        corpus_id: String,
+
+        /// Number of most-recent supersession SHAs to retain.
+        /// Must be ≥ 1.  `--keep 0` is rejected at parse time.
+        #[arg(long, required = true, value_parser = clap::value_parser!(u32).range(1..))]
+        keep: u32,
+
+        /// Preview what would be deleted without modifying the database.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
     },
 }
 
@@ -140,6 +169,68 @@ pub async fn run(
             }
             Ok(())
         }
+
+        HistoryCommand::Prune {
+            corpus_id,
+            keep,
+            dry_run,
+        } => {
+            // Validate that the corpus exists before running any SQL.
+            db.corpus_require(&corpus_id)?;
+
+            let stats: PruneStats = db.prune_history(&corpus_id, keep as usize, dry_run)?;
+
+            let heading_verb = if dry_run { "Would prune" } else { "Pruned" };
+            let row_verb = if dry_run {
+                "Rows that would be removed from"
+            } else {
+                "Rows removed from"
+            };
+
+            println!("{heading_verb} history for corpus '{corpus_id}':");
+            println!(
+                "  Supersession SHAs kept:    {}",
+                stats.supersession_shas_kept
+            );
+            println!(
+                "  Supersession SHAs pruned:  {}",
+                stats.supersession_shas_pruned
+            );
+            println!(
+                "  {row_verb} entities_history:          {}",
+                stats.rows_pruned_entities_history
+            );
+            println!(
+                "  {row_verb} edges_history:             {}",
+                stats.rows_pruned_edges_history
+            );
+            println!(
+                "  {row_verb} entity_purposes_history:   {}",
+                stats.rows_pruned_entity_purposes_history
+            );
+            println!(
+                "  {row_verb} entity_contracts_history:  {}",
+                stats.rows_pruned_entity_contracts_history
+            );
+            println!(
+                "  {row_verb} entity_blocks_history:     {}",
+                stats.rows_pruned_entity_blocks_history
+            );
+            println!(
+                "  {row_verb} summaries_history:         {}",
+                stats.rows_pruned_summaries_history
+            );
+            println!(
+                "  {row_verb} chunks_history:            {}",
+                stats.rows_pruned_chunks_history
+            );
+            println!(
+                "  {row_verb} themes_history:            {}",
+                stats.rows_pruned_themes_history
+            );
+
+            Ok(())
+        }
     }
 }
 
@@ -174,6 +265,13 @@ mod tests {
             from: Option<String>,
             #[arg(long, conflicts_with = "from")]
             back: Option<u32>,
+        },
+        Prune {
+            corpus_id: String,
+            #[arg(long, required = true, value_parser = clap::value_parser!(u32).range(1..))]
+            keep: u32,
+            #[arg(long, default_value_t = false)]
+            dry_run: bool,
         },
     }
 
@@ -215,11 +313,15 @@ mod tests {
             result.is_ok(),
             "expected parse success with --back 10 alone"
         );
-        let Command::History {
-            sub: HistoryCmd::Backfill { back, from, .. },
-        } = result.unwrap().command;
-        assert_eq!(back, Some(10));
-        assert_eq!(from, None);
+        match result.unwrap().command {
+            Command::History {
+                sub: HistoryCmd::Backfill { back, from, .. },
+            } => {
+                assert_eq!(back, Some(10));
+                assert_eq!(from, None);
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
     }
 
     #[test]
@@ -234,10 +336,83 @@ mod tests {
             "deadbeef",
         ]);
         assert!(result.is_ok(), "expected parse success with --from alone");
-        let Command::History {
-            sub: HistoryCmd::Backfill { from, back, .. },
-        } = result.unwrap().command;
-        assert_eq!(from.as_deref(), Some("deadbeef"));
-        assert_eq!(back, None);
+        match result.unwrap().command {
+            Command::History {
+                sub: HistoryCmd::Backfill { from, back, .. },
+            } => {
+                assert_eq!(from.as_deref(), Some("deadbeef"));
+                assert_eq!(back, None);
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+    }
+
+    // ── Prune parse tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn prune_requires_keep() {
+        // No --keep → parse error.
+        let result = Cli::try_parse_from(["calli", "history", "prune", "my-corpus"]);
+        assert!(
+            result.is_err(),
+            "expected parse error when --keep is not supplied"
+        );
+    }
+
+    #[test]
+    fn prune_rejects_keep_zero() {
+        // --keep 0 → rejected by value_parser range guard.
+        let result = Cli::try_parse_from(["calli", "history", "prune", "my-corpus", "--keep", "0"]);
+        assert!(
+            result.is_err(),
+            "expected parse error when --keep 0 is supplied"
+        );
+    }
+
+    #[test]
+    fn prune_accepts_keep_alone() {
+        // --keep 10 without --dry-run → valid; dry_run defaults to false.
+        let result =
+            Cli::try_parse_from(["calli", "history", "prune", "my-corpus", "--keep", "10"]);
+        assert!(
+            result.is_ok(),
+            "expected parse success with --keep 10 alone"
+        );
+        match result.unwrap().command {
+            Command::History {
+                sub: HistoryCmd::Prune { keep, dry_run, .. },
+            } => {
+                assert_eq!(keep, 10);
+                assert!(!dry_run);
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prune_accepts_dry_run() {
+        // --keep 10 --dry-run → valid; dry_run is true.
+        let result = Cli::try_parse_from([
+            "calli",
+            "history",
+            "prune",
+            "my-corpus",
+            "--keep",
+            "10",
+            "--dry-run",
+        ]);
+        assert!(
+            result.is_ok(),
+            "expected parse success with --keep 10 --dry-run"
+        );
+        match result.unwrap().command {
+            Command::History {
+                sub: HistoryCmd::Prune { keep, dry_run, .. },
+            } => {
+                assert_eq!(keep, 10);
+                assert!(dry_run);
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
     }
 }
