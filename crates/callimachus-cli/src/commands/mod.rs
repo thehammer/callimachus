@@ -3,6 +3,7 @@ pub mod corpus;
 pub mod correct;
 pub mod export;
 pub mod index;
+pub mod ingest;
 pub mod inspect;
 pub mod link;
 pub mod mcp;

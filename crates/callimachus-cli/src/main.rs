@@ -137,6 +137,42 @@ enum Command {
         sub: ConfigCommand,
     },
 
+    /// Register a corpus and index it in one step.
+    ///
+    /// Equivalent to `calli corpus add <kind> <name> <path>` followed by
+    /// `calli index <id>`, but also supports forward history walking via
+    /// `--with-history`.
+    Ingest {
+        /// Adapter kind: book, code, wiki.
+        kind: String,
+        /// Human-readable name for this corpus.
+        name: String,
+        /// Path to the source material (must already exist).
+        path: String,
+        /// Walk first-parent git history from --from (or repo root) forward
+        /// to HEAD, indexing each commit.  Requires the source to be a git
+        /// repository.
+        #[arg(long)]
+        with_history: bool,
+        /// Starting commit SHA (full or short).  Requires --with-history.
+        /// Must be on HEAD's first-parent ancestry.  When omitted the walk
+        /// starts from the first commit on HEAD's first-parent chain.
+        #[arg(long, requires = "with_history")]
+        from: Option<String>,
+        /// Skip the cost-estimation confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+        /// LLM provider override (anthropic, claude-code, dry-run).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Fixed concurrency for LLM-heavy passes.
+        #[arg(long)]
+        concurrency: Option<usize>,
+        /// Count but don't write anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Show pipeline version status for all corpora.
     Status,
 
@@ -467,6 +503,34 @@ async fn main() -> Result<()> {
             commands::serve::run(&host, port, &db_path, &global_config).await
         }
         Command::Config { sub } => run_config(&sub, &global_config),
+
+        Command::Ingest {
+            kind,
+            name,
+            path,
+            with_history,
+            from,
+            yes,
+            provider,
+            concurrency,
+            dry_run,
+        } => {
+            let db = open_db(&db_path)?;
+            commands::ingest::run(
+                kind,
+                name,
+                path,
+                with_history,
+                from,
+                yes,
+                dry_run,
+                concurrency,
+                provider,
+                db,
+                &global_config,
+            )
+            .await
+        }
 
         Command::Status => {
             let db = open_db(&db_path)?;
