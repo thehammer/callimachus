@@ -240,7 +240,7 @@ impl IndexPipeline {
         // Pass::History runs.  If passes don't include History, synthesise an
         // all-dirty manifest so downstream passes process everything.
         let mut opts_local = opts.clone();
-        if !opts_local.passes.contains(&Pass::History) {
+        if !opts_local.passes.contains(&Pass::History) && opts_local.change_manifest.is_none() {
             opts_local.change_manifest = Some(ChangeManifest::all_dirty("synthetic"));
         }
 

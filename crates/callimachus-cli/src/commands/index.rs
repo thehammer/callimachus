@@ -94,7 +94,7 @@ pub async fn run(
     Ok(())
 }
 
-fn build_adapter(corpus: &Corpus) -> Result<Arc<dyn SourceAdapter>> {
+pub fn build_adapter(corpus: &Corpus) -> Result<Arc<dyn SourceAdapter>> {
     match corpus.kind.as_str() {
         "book" => Ok(Arc::new(BookAdapter::new())),
         "code" => Ok(Arc::new(CodeAdapter::new())),

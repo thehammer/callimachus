@@ -609,6 +609,7 @@ mod tests {
     use crate::storage::{Database, SqliteBackend, StorageBackend};
     use crate::types::Entity;
 
+    #[allow(dead_code)]
     fn open() -> (SqliteBackend, Database) {
         let db_backend = SqliteBackend::open_in_memory().unwrap();
         let db_raw = Database::open_in_memory().unwrap();
