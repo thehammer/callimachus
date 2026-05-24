@@ -172,6 +172,13 @@ enum Command {
         /// Count but don't write anything.
         #[arg(long)]
         dry_run: bool,
+        /// Comma-separated list of passes to run.  Use `default` to expand to the
+        /// standard eight-pass list (history,chunk,structure,semantic,aliases,
+        /// summarize,purpose,contract).  Combine like `--passes "default,theme"` to
+        /// layer extra passes on top.  Order is ignored; duplicates are removed.
+        /// When omitted, the default eight-pass list runs.
+        #[arg(long)]
+        passes: Option<String>,
     },
 
     /// Show pipeline version status for all corpora.
@@ -521,6 +528,7 @@ async fn main() -> Result<()> {
             provider,
             concurrency,
             dry_run,
+            passes,
         } => {
             let db = open_db(&db_path)?;
             commands::ingest::run(
@@ -532,6 +540,7 @@ async fn main() -> Result<()> {
                 yes,
                 dry_run,
                 concurrency,
+                passes,
                 provider,
                 db,
                 &global_config,

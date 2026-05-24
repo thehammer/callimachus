@@ -20,6 +20,8 @@ pub mod watcher;
 pub use change_detector::{ChangeSet, ChangeStrategy};
 pub use change_manifest::{ChangeKind, ChangeManifest, ChangedSource};
 pub use history_walk::{WalkOptions, WalkStats, walk_history_backward, walk_history_forward};
-pub use pipeline::{IndexMode, IndexOptions, IndexPipeline, IndexResult};
+pub use pipeline::{
+    IndexMode, IndexOptions, IndexPipeline, IndexResult, validate_pass_prerequisites,
+};
 pub use reindex_pass::ReindexStats;
 pub use watcher::{CorpusWatcher, WatcherConfig};
