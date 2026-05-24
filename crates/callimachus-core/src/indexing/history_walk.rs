@@ -352,6 +352,45 @@ pub async fn walk_history_backward(
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
+/// Resolve `--back N` to an `Oid` by walking HEAD's first-parent ancestry
+/// N steps backward.
+///
+/// - `--back 1` resolves to HEAD's first parent (HEAD~1).
+/// - `--back 2` resolves to HEAD~2, and so on.
+/// - If `N` exceeds the available first-parent history, the function clamps to
+///   the root commit and logs a single INFO line.
+/// - Returns `Err` if `n == 0`.
+pub fn resolve_back_n_sha(repo: &Repository, n: u32) -> Result<Oid> {
+    if n == 0 {
+        anyhow::bail!("--back must be >= 1");
+    }
+
+    let head = repo.head()?.peel_to_commit()?;
+
+    // Step 1: move to HEAD's first parent (HEAD~1).
+    let mut current = match head.parent(0) {
+        Ok(p) => p,
+        Err(_) => {
+            // HEAD itself is the root commit — clamp here.
+            tracing::info!("--back N exceeded available history; clamping to root commit");
+            return Ok(head.id());
+        }
+    };
+
+    // Walk n-1 more steps along first-parent.
+    for _ in 1..n {
+        match current.parent(0) {
+            Ok(p) => current = p,
+            Err(_) => {
+                tracing::info!("--back N exceeded available history; clamping to root commit");
+                return Ok(current.id());
+            }
+        }
+    }
+
+    Ok(current.id())
+}
+
 /// Resolve the starting commit OID for the walk.
 ///
 /// - `None` → walk to the root of HEAD's first-parent chain.
@@ -1537,6 +1576,51 @@ mod tests {
         assert!(
             err.contains("has not been ingested"),
             "expected 'has not been ingested' in error, got: {err}"
+        );
+    }
+
+    // ── Unit tests for resolve_back_n_sha ─────────────────────────────────────
+
+    #[test]
+    fn resolve_back_n_walks_first_parent() {
+        // 5 linear commits: oids[0] (root) … oids[4] (HEAD).
+        let (_td, repo, oids) = build_linear_repo(&[
+            ("a.txt", "a"),
+            ("b.txt", "b"),
+            ("c.txt", "c"),
+            ("d.txt", "d"),
+            ("e.txt", "e"),
+        ]);
+        // --back 3 should return HEAD~3 = oids[1].
+        let result = resolve_back_n_sha(&repo, 3).unwrap();
+        assert_eq!(result, oids[1], "--back 3 should equal HEAD~3 (oids[1])");
+    }
+
+    #[test]
+    fn resolve_back_n_clamps_to_root() {
+        // 5 linear commits: oids[0] (root) … oids[4] (HEAD).
+        let (_td, repo, oids) = build_linear_repo(&[
+            ("a.txt", "a"),
+            ("b.txt", "b"),
+            ("c.txt", "c"),
+            ("d.txt", "d"),
+            ("e.txt", "e"),
+        ]);
+        // N larger than available history should clamp to the root commit.
+        let result = resolve_back_n_sha(&repo, 100).unwrap();
+        assert_eq!(
+            result, oids[0],
+            "--back 100 should clamp to root commit (oids[0])"
+        );
+    }
+
+    #[test]
+    fn resolve_back_n_zero_is_error() {
+        let (_td, repo, _oids) = build_linear_repo(&[("a.txt", "a"), ("b.txt", "b")]);
+        let err = resolve_back_n_sha(&repo, 0).unwrap_err().to_string();
+        assert!(
+            err.contains("--back must be >= 1"),
+            "expected '--back must be >= 1' in error, got: {err}"
         );
     }
 
