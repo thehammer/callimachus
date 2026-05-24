@@ -552,7 +552,7 @@ impl StorageBackend for BackfillStorageWrapper {
 
     fn entity_top(&self, corpus_id: &str, limit: usize) -> Result<Vec<Entity>> {
         let mut entities = self.entity_list(corpus_id)?;
-        entities.sort_by(|a, b| b.appearance_count.cmp(&a.appearance_count));
+        entities.sort_by_key(|b| std::cmp::Reverse(b.appearance_count));
         entities.truncate(limit);
         Ok(entities)
     }
