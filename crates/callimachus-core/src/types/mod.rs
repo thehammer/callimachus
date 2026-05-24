@@ -21,7 +21,7 @@ pub use corpus::{Corpus, CorpusStatus};
 pub use edge::Edge;
 pub use entity::Entity;
 pub use location::Location;
-pub use pass::{Pass, RunStatus};
+pub use pass::{Pass, RunStatus, parse_passes_list};
 pub use purpose::EntityPurpose;
 pub use result::{CostMetadata, ToolError, ToolResult, ToolSuccess};
 pub use scope::Scope;

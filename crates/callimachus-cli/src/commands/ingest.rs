@@ -11,9 +11,10 @@ use callimachus_core::{
     indexing::{
         IndexOptions, IndexPipeline,
         history_walk::{WalkOptions, walk_history_forward},
+        validate_pass_prerequisites,
     },
     storage::StorageBackend,
-    types::{Corpus, Pass},
+    types::{Corpus, Pass, parse_passes_list},
 };
 use callimachus_llm::build_provider;
 
@@ -32,6 +33,7 @@ pub async fn run(
     yes: bool,
     dry_run: bool,
     concurrency: Option<usize>,
+    passes: Option<String>,
     provider_override: Option<String>,
     db: Arc<dyn StorageBackend>,
     config: &GlobalConfig,
@@ -50,8 +52,11 @@ pub async fn run(
         .map_err(|e| anyhow::anyhow!("failed to build LLM provider: {e}"))?;
     let adapter = build_adapter(&corpus)?;
 
-    let opts = IndexOptions {
-        passes: vec![
+    // Resolve the pass list: user-supplied --passes overrides the default.
+    // Default: History, Chunk, Structure, Semantic, Aliases, Summarize, Purpose, Contract.
+    let pass_list: Vec<Pass> = match passes {
+        Some(ref s) => parse_passes_list(s).map_err(|e| anyhow::anyhow!("{e}"))?,
+        None => vec![
             Pass::History,
             Pass::Chunk,
             Pass::Structure,
@@ -61,6 +66,13 @@ pub async fn run(
             Pass::Purpose,
             Pass::Contract,
         ],
+    };
+
+    // Validate prerequisites against current head state before running anything.
+    validate_pass_prerequisites(db.as_ref(), &corpus.id, &pass_list)?;
+
+    let opts = IndexOptions {
+        passes: pass_list,
         dry_run,
         concurrency,
         tier_config: config.model_tiers.clone(),
@@ -198,6 +210,8 @@ mod tests {
             from: Option<String>,
             #[arg(long)]
             yes: bool,
+            #[arg(long)]
+            passes: Option<String>,
         },
     }
 
@@ -235,5 +249,49 @@ mod tests {
             result.is_ok(),
             "--with-history --yes should parse cleanly, got: {result:?}"
         );
+    }
+
+    #[test]
+    fn passes_default_theme_parses_ok() {
+        let result = Cli::try_parse_from([
+            "calli",
+            "ingest",
+            "code",
+            "name",
+            "/tmp/repo",
+            "--passes",
+            "default,theme",
+        ]);
+        assert!(
+            result.is_ok(),
+            "--passes \"default,theme\" should parse cleanly, got: {result:?}"
+        );
+        match result.unwrap().command {
+            Command::Ingest { passes, .. } => {
+                assert_eq!(passes.as_deref(), Some("default,theme"));
+            }
+        }
+    }
+
+    #[test]
+    fn passes_theme_only_parses_ok() {
+        let result = Cli::try_parse_from([
+            "calli",
+            "ingest",
+            "code",
+            "name",
+            "/tmp/repo",
+            "--passes",
+            "theme",
+        ]);
+        assert!(
+            result.is_ok(),
+            "--passes \"theme\" should parse cleanly, got: {result:?}"
+        );
+        match result.unwrap().command {
+            Command::Ingest { passes, .. } => {
+                assert_eq!(passes.as_deref(), Some("theme"));
+            }
+        }
     }
 }

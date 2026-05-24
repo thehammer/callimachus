@@ -23,9 +23,10 @@ use callimachus_core::{
     indexing::{
         IndexOptions, IndexPipeline,
         history_walk::{WalkOptions, resolve_back_n_sha, walk_history_backward},
+        validate_pass_prerequisites,
     },
     storage::{PruneStats, StorageBackend},
-    types::Pass,
+    types::{Pass, parse_passes_list},
 };
 use callimachus_llm::build_provider;
 use clap::Subcommand;
@@ -72,6 +73,15 @@ pub enum HistoryCommand {
         /// Fixed concurrency for LLM-heavy passes.
         #[arg(long)]
         concurrency: Option<usize>,
+
+        /// Comma-separated list of passes to run per iteration.  Use `default`
+        /// to expand to the standard seven-pass backfill list
+        /// (chunk,structure,semantic,aliases,summarize,purpose,contract).
+        /// Combine like `--passes "default,theme"` to layer extra passes on top.
+        /// Order is ignored; duplicates are removed.
+        /// When omitted, the default seven-pass list runs.
+        #[arg(long)]
+        passes: Option<String>,
     },
 
     /// Prune history rows older than the N most-recent supersession SHAs.
@@ -113,6 +123,7 @@ pub async fn run(
             back,
             provider,
             concurrency,
+            passes,
         } => {
             let corpus = db.corpus_require(&corpus_id)?;
 
@@ -127,13 +138,12 @@ pub async fn run(
                 _ => unreachable!("clap enforces exactly one of --from / --back"),
             };
 
-            let provider_config = resolve_provider(provider, config)?;
-            let llm = build_provider(provider_config)
-                .map_err(|e| anyhow::anyhow!("failed to build LLM provider: {e}"))?;
-            let adapter = build_adapter(&corpus)?;
-
-            let opts = IndexOptions {
-                passes: vec![
+            // Resolve the pass list: user-supplied --passes overrides the default.
+            // Default for backfill: Chunk, Structure, Semantic, Aliases, Summarize,
+            // Purpose, Contract (no Pass::History — the walker builds its own manifest).
+            let pass_list: Vec<Pass> = match passes {
+                Some(ref s) => parse_passes_list(s).map_err(|e| anyhow::anyhow!("{e}"))?,
+                None => vec![
                     Pass::Chunk,
                     Pass::Structure,
                     Pass::Semantic,
@@ -142,6 +152,18 @@ pub async fn run(
                     Pass::Purpose,
                     Pass::Contract,
                 ],
+            };
+
+            // Validate prerequisites against current head state.
+            validate_pass_prerequisites(db.as_ref(), &corpus.id, &pass_list)?;
+
+            let provider_config = resolve_provider(provider, config)?;
+            let llm = build_provider(provider_config)
+                .map_err(|e| anyhow::anyhow!("failed to build LLM provider: {e}"))?;
+            let adapter = build_adapter(&corpus)?;
+
+            let opts = IndexOptions {
+                passes: pass_list,
                 concurrency,
                 tier_config: config.model_tiers.clone(),
                 ..IndexOptions::default()
@@ -265,6 +287,8 @@ mod tests {
             from: Option<String>,
             #[arg(long, conflicts_with = "from")]
             back: Option<u32>,
+            #[arg(long)]
+            passes: Option<String>,
         },
         Prune {
             corpus_id: String,
@@ -411,6 +435,76 @@ mod tests {
             } => {
                 assert_eq!(keep, 10);
                 assert!(dry_run);
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+    }
+
+    // ── passes flag tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn backfill_accepts_passes_default_theme() {
+        let result = Cli::try_parse_from([
+            "calli",
+            "history",
+            "backfill",
+            "my-corpus",
+            "--back",
+            "5",
+            "--passes",
+            "default,theme",
+        ]);
+        assert!(
+            result.is_ok(),
+            "expected parse success with --passes \"default,theme\", got: {result:?}"
+        );
+        match result.unwrap().command {
+            Command::History {
+                sub: HistoryCmd::Backfill { passes, .. },
+            } => {
+                assert_eq!(passes.as_deref(), Some("default,theme"));
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backfill_accepts_passes_theme_only() {
+        let result = Cli::try_parse_from([
+            "calli",
+            "history",
+            "backfill",
+            "my-corpus",
+            "--back",
+            "3",
+            "--passes",
+            "theme",
+        ]);
+        assert!(
+            result.is_ok(),
+            "expected parse success with --passes \"theme\", got: {result:?}"
+        );
+        match result.unwrap().command {
+            Command::History {
+                sub: HistoryCmd::Backfill { passes, .. },
+            } => {
+                assert_eq!(passes.as_deref(), Some("theme"));
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backfill_passes_omitted_is_none() {
+        // Without --passes the field should be None (default behaviour preserved).
+        let result =
+            Cli::try_parse_from(["calli", "history", "backfill", "my-corpus", "--back", "1"]);
+        assert!(result.is_ok(), "expected parse success, got: {result:?}");
+        match result.unwrap().command {
+            Command::History {
+                sub: HistoryCmd::Backfill { passes, .. },
+            } => {
+                assert!(passes.is_none(), "passes should be None when not supplied");
             }
             other => panic!("unexpected command variant: {other:?}"),
         }

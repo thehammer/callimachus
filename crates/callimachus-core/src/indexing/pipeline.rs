@@ -115,6 +115,8 @@ impl Default for IndexOptions {
                 Pass::Purpose,
                 Pass::Contract,
                 // Pass::Theme is opt-in; not included by default.
+                // NOTE: keep in sync with DEFAULT_PASSES in types/pass.rs
+                //       (used by parse_passes_list for the "default" token).
             ],
             from_chunk: None,
             dry_run: false,
@@ -125,6 +127,67 @@ impl Default for IndexOptions {
             change_manifest: None,
         }
     }
+}
+
+/// Validate that each pass in `passes` has its inputs available in head
+/// tables for `corpus_id`. Returns the first violation as an error.
+///
+/// Rules (derived from current head-table state, NOT history mirrors):
+/// * `chunk`, `history`, `theme`, `embed` — no prerequisite checks.
+/// * `structure`, `summarize` — require `chunk_count > 0` (unless
+///   `Pass::Chunk` is also in `passes`, in which case it will provide chunks).
+/// * `semantic`, `aliases`, `purpose`, `contract` — require
+///   `entity_count > 0` (unless `Pass::Structure` or `Pass::Semantic` is also
+///   in `passes`, in which case it will produce entities).
+///
+/// The function does NOT auto-add missing prerequisites; it errors with a
+/// message naming the missing prerequisite pass.
+pub fn validate_pass_prerequisites(
+    db: &dyn StorageBackend,
+    corpus_id: &str,
+    passes: &[Pass],
+) -> anyhow::Result<()> {
+    let has_chunk_pass = passes.contains(&Pass::Chunk);
+    let has_entity_producer = passes
+        .iter()
+        .any(|p| matches!(p, Pass::Structure | Pass::Semantic));
+
+    // structure and summarize require chunks to exist in head, unless
+    // Chunk is also being run in this invocation (it will produce them).
+    if !has_chunk_pass {
+        for pass in passes {
+            if matches!(pass, Pass::Structure | Pass::Summarize) {
+                if db.chunk_count(corpus_id)? == 0 {
+                    anyhow::bail!(
+                        "pass '{pass}' requires chunks in head; \
+                         run 'chunk' first or include it in --passes"
+                    );
+                }
+                break; // chunk_count is corpus-wide; no need to check again
+            }
+        }
+    }
+
+    // semantic, aliases, purpose, and contract require entities to exist in
+    // head, unless Structure or Semantic is also being run in this invocation.
+    if !has_entity_producer {
+        for pass in passes {
+            if matches!(
+                pass,
+                Pass::Semantic | Pass::Aliases | Pass::Purpose | Pass::Contract
+            ) {
+                if db.entity_count(corpus_id)? == 0 {
+                    anyhow::bail!(
+                        "pass '{pass}' requires entities in head; \
+                         run 'structure' first or include it in --passes"
+                    );
+                }
+                break; // entity_count is corpus-wide; no need to check again
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Three provider variants, one per tier.
@@ -454,7 +517,7 @@ mod tests {
         types::{Chunk, Corpus, Entity, Location},
     };
 
-    use super::{IndexOptions, IndexPipeline};
+    use super::{IndexOptions, IndexPipeline, validate_pass_prerequisites};
 
     /// Minimal in-memory adapter that produces two chunks from a text string.
     struct FakeAdapter;
@@ -795,5 +858,51 @@ mod tests {
         for run in &result.runs {
             assert_eq!(run.status, "completed");
         }
+    }
+
+    // ── validate_pass_prerequisites ───────────────────────────────────────────
+
+    /// `purpose` against an empty corpus (no entities) → error.
+    #[test]
+    fn purpose_without_entities_errors() {
+        let (db, corpus) = setup();
+        let passes = vec![crate::types::Pass::Purpose];
+        let err = validate_pass_prerequisites(db.as_ref(), &corpus.id, &passes).unwrap_err();
+        assert!(
+            err.to_string().contains("purpose"),
+            "error should mention pass name; got: {err}"
+        );
+        assert!(
+            err.to_string().contains("entities"),
+            "error should mention 'entities'; got: {err}"
+        );
+    }
+
+    /// `purpose` against a corpus that already has entities → ok.
+    #[test]
+    fn purpose_with_entities_ok() {
+        let (db, corpus) = setup();
+        // Insert an entity directly so entity_count > 0 without needing LLM.
+        let entity = crate::types::Entity::new(
+            "ent-1".to_string(),
+            corpus.id.clone(),
+            "TestEntity".to_string(),
+            "function".to_string(),
+        );
+        db.entity_upsert(&entity).unwrap();
+
+        // Now validate purpose — entity_count > 0 so it should pass.
+        let passes = vec![crate::types::Pass::Purpose];
+        validate_pass_prerequisites(db.as_ref(), &corpus.id, &passes)
+            .expect("purpose should be valid when entities exist");
+    }
+
+    /// `chunk` has no prerequisites — validation always passes.
+    #[test]
+    fn chunk_no_prerequisites() {
+        let (db, corpus) = setup();
+        let passes = vec![crate::types::Pass::Chunk];
+        validate_pass_prerequisites(db.as_ref(), &corpus.id, &passes)
+            .expect("chunk has no prerequisites; should always pass");
     }
 }
