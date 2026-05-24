@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use commands::collection::CollectionSubcommand;
 use commands::corpus::CorpusCommand;
 use commands::correct::{CorrectSubcommand, EntityLinkArgs};
+use commands::history::HistoryCommand;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -195,6 +196,12 @@ enum Command {
     Pinakes {
         #[command(subcommand)]
         sub: PinakesSubcommand,
+    },
+
+    /// Manage history tables (backfill older commits).
+    History {
+        #[command(subcommand)]
+        sub: HistoryCommand,
     },
 }
 
@@ -558,6 +565,11 @@ async fn main() -> Result<()> {
                 commands::pinakes::run_info(&resolved)
             }
         },
+
+        Command::History { sub } => {
+            let db = open_db(&db_path)?;
+            commands::history::run(sub, db, &global_config).await
+        }
     }
 }
 

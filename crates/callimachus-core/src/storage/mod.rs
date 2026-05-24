@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod backfill;
 pub mod block_store;
 pub mod chunk_store;
 pub mod collection_store;
@@ -20,6 +21,7 @@ pub mod summary_store;
 pub mod theme_store;
 
 pub use backend::StorageBackend;
+pub use backfill::{BackfillStorageWrapper, BackfillSupersession};
 pub use db::Database;
 pub use edge_store::EdgeDirection;
 pub use postgres::PostgresBackend;

@@ -719,6 +719,430 @@ impl StorageBackend for SqliteBackend {
             .pragma_query_value(None, "user_version", |row| row.get(0))?;
         Ok(v as u64)
     }
+
+    // ── Backfill history writes ───────────────────────────────────────────────
+
+    fn chunk_history_insert(
+        &self,
+        chunk: &Chunk,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()> {
+        let guard = db!(self);
+        let now = chrono::Utc::now().to_rfc3339();
+        guard.conn().execute(
+            "INSERT OR IGNORE INTO chunks_history
+             (id, corpus_id, parent_path, kind, location_uri, content,
+              byte_length, created_at, semantic_processed, source_hash,
+              introduced_at_version, last_modified_at_version,
+              last_modified_commit_message, last_modified_author,
+              superseded_at_version, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10,?11,NULL,NULL,?12,?13)",
+            rusqlite::params![
+                chunk.id,
+                chunk.corpus_id,
+                chunk.parent_path,
+                chunk.kind,
+                chunk.location.uri,
+                chunk.content,
+                chunk.byte_length as i64,
+                chunk.created_at,
+                chunk.source_hash,
+                derived_at_version,
+                derived_at_version,
+                superseded_at_version,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn chunk_history_update_source_hash(
+        &self,
+        chunk_id: &str,
+        derived_at_version: &str,
+        source_hash: &str,
+    ) -> Result<()> {
+        let guard = db!(self);
+        guard.conn().execute(
+            "UPDATE chunks_history SET source_hash = ?1
+             WHERE id = ?2 AND introduced_at_version = ?3",
+            rusqlite::params![source_hash, chunk_id, derived_at_version],
+        )?;
+        Ok(())
+    }
+
+    fn chunk_history_update_version(
+        &self,
+        chunk_id: &str,
+        derived_at_version: &str,
+        last_modified_at_version: &str,
+        commit_message: Option<&str>,
+        author: Option<&str>,
+    ) -> Result<()> {
+        let guard = db!(self);
+        guard.conn().execute(
+            "UPDATE chunks_history
+             SET last_modified_at_version = ?1,
+                 last_modified_commit_message = COALESCE(?2, last_modified_commit_message),
+                 last_modified_author = COALESCE(?3, last_modified_author),
+                 introduced_at_version = COALESCE(introduced_at_version, ?1)
+             WHERE id = ?4 AND introduced_at_version = ?5",
+            rusqlite::params![
+                last_modified_at_version,
+                commit_message,
+                author,
+                chunk_id,
+                derived_at_version,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn entity_history_insert(
+        &self,
+        entity: &Entity,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()> {
+        let guard = db!(self);
+        let now = chrono::Utc::now().to_rfc3339();
+        let aliases_json = serde_json::to_string(&entity.aliases)?;
+        let first_uri = entity.first_location.as_ref().map(|l| &l.uri);
+        let last_uri = entity.last_location.as_ref().map(|l| &l.uri);
+        guard.conn().execute(
+            "INSERT OR IGNORE INTO entities_history
+             (id, corpus_id, canonical_name, kind, aliases, description,
+              first_location_uri, last_location_uri, appearance_count, confidence,
+              derived_at_version, superseded_at_version, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            rusqlite::params![
+                entity.id,
+                entity.corpus_id,
+                entity.canonical_name,
+                entity.kind,
+                aliases_json,
+                entity.description,
+                first_uri,
+                last_uri,
+                entity.appearance_count as i64,
+                entity.confidence as f64,
+                derived_at_version,
+                superseded_at_version,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn edge_history_insert(
+        &self,
+        edge: &Edge,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()> {
+        let guard = db!(self);
+        let now = chrono::Utc::now().to_rfc3339();
+        // No FK guard: history tables have no foreign key constraints.
+        guard.conn().execute(
+            "INSERT OR IGNORE INTO edges_history
+             (id, corpus_id, from_entity_id, to_entity_id, kind,
+              location_uri, confidence, derived_at_version,
+              superseded_at_version, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            rusqlite::params![
+                edge.id,
+                edge.corpus_id,
+                edge.from_entity_id,
+                edge.to_entity_id,
+                edge.kind,
+                edge.location.uri,
+                edge.confidence as f64,
+                derived_at_version,
+                superseded_at_version,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn summary_history_insert(
+        &self,
+        summary: &Summary,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()> {
+        let guard = db!(self);
+        let now = chrono::Utc::now().to_rfc3339();
+        let target_kind_str = summary.target_kind.to_string();
+        guard.conn().execute(
+            "INSERT OR IGNORE INTO summaries_history
+             (id, corpus_id, target_kind, target_id, depth, text,
+              model, model_tier, generated_at,
+              derived_at_version, superseded_at_version, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            rusqlite::params![
+                summary.id,
+                summary.corpus_id,
+                target_kind_str,
+                summary.target_id,
+                summary.depth,
+                summary.text,
+                summary.model,
+                summary.model_tier,
+                summary.generated_at,
+                derived_at_version,
+                superseded_at_version,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn purpose_history_insert(
+        &self,
+        purpose: &EntityPurpose,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()> {
+        let guard = db!(self);
+        let now = chrono::Utc::now().to_rfc3339();
+        guard.conn().execute(
+            "INSERT OR IGNORE INTO entity_purposes_history
+             (entity_id, corpus_id, purpose, model, model_tier, generated_at,
+              derived_at_version, superseded_at_version, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            rusqlite::params![
+                purpose.entity_id,
+                purpose.corpus_id,
+                purpose.purpose,
+                purpose.model,
+                purpose.model_tier,
+                purpose.generated_at,
+                derived_at_version,
+                superseded_at_version,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn contract_history_insert(
+        &self,
+        contract: &EntityContract,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()> {
+        let guard = db!(self);
+        let now = chrono::Utc::now().to_rfc3339();
+        let debt_json =
+            serde_json::to_string(&contract.debt_markers).unwrap_or_else(|_| "[]".into());
+        let assumptions_json =
+            serde_json::to_string(&contract.assumptions).unwrap_or_else(|_| "[]".into());
+        let risks_json = serde_json::to_string(&contract.risks).unwrap_or_else(|_| "[]".into());
+        guard.conn().execute(
+            "INSERT OR IGNORE INTO entity_contracts_history
+             (entity_id, corpus_id,
+              is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
+              is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
+              panic_call_count, debt_markers, assumptions, risks,
+              intent_gap, caller_notes, model, model_tier, generated_at,
+              derived_at_version, superseded_at_version, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)",
+            rusqlite::params![
+                contract.entity_id,
+                contract.corpus_id,
+                contract.is_public as i64,
+                contract.is_must_use as i64,
+                contract.is_deprecated as i64,
+                contract.is_fallible as i64,
+                contract.is_nullable as i64,
+                contract.is_mutating as i64,
+                contract.is_diverging as i64,
+                contract.has_panic_risk as i64,
+                contract.has_unsafe as i64,
+                contract.is_incomplete as i64,
+                contract.panic_call_count,
+                debt_json,
+                assumptions_json,
+                risks_json,
+                contract.intent_gap,
+                contract.caller_notes,
+                contract.model,
+                contract.model_tier,
+                contract.generated_at,
+                derived_at_version,
+                superseded_at_version,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn block_history_insert(
+        &self,
+        block: &EntityBlock,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()> {
+        let guard = db!(self);
+        let now = chrono::Utc::now().to_rfc3339();
+        guard.conn().execute(
+            "INSERT OR IGNORE INTO entity_blocks_history
+             (id, entity_id, corpus_id, label, description, position,
+              derived_at_version, superseded_at_version, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            rusqlite::params![
+                block.id,
+                block.entity_id,
+                block.corpus_id,
+                block.label,
+                block.description,
+                block.position,
+                derived_at_version,
+                superseded_at_version,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn theme_history_insert(
+        &self,
+        theme: &Theme,
+        derived_at_version: &str,
+        superseded_at_version: &str,
+    ) -> Result<()> {
+        let guard = db!(self);
+        let now = chrono::Utc::now().to_rfc3339();
+        guard.conn().execute(
+            "INSERT OR IGNORE INTO themes_history
+             (id, corpus_id, title, statement, confidence,
+              model, model_tier, generated_at,
+              derived_at_version, superseded_at_version, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            rusqlite::params![
+                theme.id,
+                theme.corpus_id,
+                theme.title,
+                theme.statement,
+                theme.confidence as f64,
+                theme.model,
+                theme.model_tier,
+                theme.generated_at,
+                derived_at_version,
+                superseded_at_version,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    // ── Backfill seeding helpers ──────────────────────────────────────────────
+
+    fn entity_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        let guard = db!(self);
+        let mut stmt = guard.conn().prepare(
+            "SELECT id, COALESCE(derived_at_version, '') FROM entities WHERE corpus_id = ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::error::CalError::from)
+    }
+
+    fn chunk_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        let guard = db!(self);
+        let mut stmt = guard.conn().prepare(
+            "SELECT id, COALESCE(last_modified_at_version, '') FROM chunks WHERE corpus_id = ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::error::CalError::from)
+    }
+
+    fn edge_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        let guard = db!(self);
+        let mut stmt = guard.conn().prepare(
+            "SELECT id, COALESCE(derived_at_version, '') FROM edges WHERE corpus_id = ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::error::CalError::from)
+    }
+
+    fn summary_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        let guard = db!(self);
+        let mut stmt = guard.conn().prepare(
+            "SELECT target_id, COALESCE(derived_at_version, '') FROM summaries WHERE corpus_id = ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::error::CalError::from)
+    }
+
+    fn purpose_head_versions(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>> {
+        let guard = db!(self);
+        let mut stmt = guard.conn().prepare(
+            "SELECT entity_id, model, COALESCE(derived_at_version, '') FROM entity_purposes WHERE corpus_id = ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
+            Ok((
+                (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::error::CalError::from)
+    }
+
+    fn contract_head_versions(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>> {
+        let guard = db!(self);
+        let mut stmt = guard.conn().prepare(
+            "SELECT entity_id, model, COALESCE(derived_at_version, '') FROM entity_contracts WHERE corpus_id = ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
+            Ok((
+                (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::error::CalError::from)
+    }
+
+    fn block_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        let guard = db!(self);
+        // Return one entry per entity_id (max derived_at_version across blocks).
+        let mut stmt = guard.conn().prepare(
+            "SELECT entity_id, COALESCE(MAX(derived_at_version), '')
+             FROM entity_blocks WHERE corpus_id = ?1 GROUP BY entity_id",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::error::CalError::from)
+    }
+
+    fn theme_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        let guard = db!(self);
+        let mut stmt = guard.conn().prepare(
+            "SELECT id, COALESCE(derived_at_version, '') FROM themes WHERE corpus_id = ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::error::CalError::from)
+    }
 }
 
 #[cfg(test)]
