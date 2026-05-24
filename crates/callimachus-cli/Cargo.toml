@@ -21,6 +21,7 @@ callimachus-adapter-code = { path = "../adapters/callimachus-adapter-code" }
 callimachus-adapter-wiki = { path = "../adapters/callimachus-adapter-wiki" }
 anyhow.workspace = true
 clap.workspace = true
+git2 = { version = "0.19", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

@@ -6,14 +6,19 @@
 //!   first-parent git ancestry backward from HEAD's parent down to `<sha>` and
 //!   populate the `*_history` tables for each older snapshot without touching
 //!   the head tables.
+//! * `calli history backfill <corpus_id> --back N` — convenience form that
+//!   resolves `--back N` to `HEAD~N` along the first-parent chain and then
+//!   performs the same backward backfill.  `--from` and `--back` are mutually
+//!   exclusive; exactly one is required.
 
+use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use callimachus_core::{
     indexing::{
         IndexOptions, IndexPipeline,
-        history_walk::{WalkOptions, walk_history_backward},
+        history_walk::{WalkOptions, resolve_back_n_sha, walk_history_backward},
     },
     storage::StorageBackend,
     types::Pass,
@@ -30,20 +35,31 @@ pub enum HistoryCommand {
     /// Populate `*_history` tables for commits older than HEAD.
     ///
     /// Walks the first-parent git ancestry backward from HEAD's parent down to
-    /// `--from <sha>`, running the indexing pipeline against each commit's
-    /// tree and writing all artifacts to `*_history` tables.  The head tables
-    /// and `last_indexed_version` are never modified.
+    /// the commit identified by `--from <sha>` or `--back N`, running the
+    /// indexing pipeline against each commit's tree and writing all artifacts
+    /// to `*_history` tables.  The head tables and `last_indexed_version` are
+    /// never modified.
     ///
     /// Requires the corpus to have been previously ingested (`calli ingest …`).
+    ///
+    /// Exactly one of `--from` or `--back` is required; they are mutually
+    /// exclusive.
     Backfill {
         /// Corpus ID to backfill.
         corpus_id: String,
 
         /// Starting (oldest) commit SHA (full or short).
         /// Must be on HEAD's first-parent ancestry.
-        /// This flag is required — there is no default.
-        #[arg(long, required = true)]
-        from: String,
+        /// Mutually exclusive with --back.
+        #[arg(long, required_unless_present = "back", conflicts_with = "back")]
+        from: Option<String>,
+
+        /// Number of first-parent steps to walk backward from HEAD.
+        /// `--back 1` starts from HEAD's parent; `--back N` from HEAD~N.
+        /// If N exceeds the available history, the walk is clamped to the root
+        /// commit.  Mutually exclusive with --from.
+        #[arg(long, conflicts_with = "from")]
+        back: Option<u32>,
 
         /// LLM provider override (anthropic, claude-code, dry-run).
         #[arg(long)]
@@ -65,10 +81,22 @@ pub async fn run(
         HistoryCommand::Backfill {
             corpus_id,
             from,
+            back,
             provider,
             concurrency,
         } => {
             let corpus = db.corpus_require(&corpus_id)?;
+
+            // Resolve the starting SHA from whichever flag was supplied.
+            let from_sha = match (from, back) {
+                (Some(sha), None) => sha,
+                (None, Some(n)) => {
+                    let repo = git2::Repository::open(Path::new(&corpus.source))
+                        .with_context(|| format!("opening git repo at {}", corpus.source))?;
+                    resolve_back_n_sha(&repo, n)?.to_string()
+                }
+                _ => unreachable!("clap enforces exactly one of --from / --back"),
+            };
 
             let provider_config = resolve_provider(provider, config)?;
             let llm = build_provider(provider_config)
@@ -98,7 +126,7 @@ pub async fn run(
             };
 
             let walk_opts = WalkOptions {
-                from_sha: Some(from),
+                from_sha: Some(from_sha),
                 skip_confirm: true, // backfill doesn't prompt; cost is user's responsibility
             };
 
@@ -112,5 +140,104 @@ pub async fn run(
             }
             Ok(())
         }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    /// Minimal re-declaration of the CLI structure for parse-time tests, so
+    /// this module does not depend on `main.rs` internals.
+    #[derive(Debug, clap::Parser)]
+    #[command(name = "calli")]
+    struct Cli {
+        #[command(subcommand)]
+        command: Command,
+    }
+
+    #[derive(Debug, clap::Subcommand)]
+    enum Command {
+        History {
+            #[command(subcommand)]
+            sub: HistoryCmd,
+        },
+    }
+
+    #[derive(Debug, clap::Subcommand)]
+    enum HistoryCmd {
+        Backfill {
+            corpus_id: String,
+            #[arg(long, required_unless_present = "back", conflicts_with = "back")]
+            from: Option<String>,
+            #[arg(long, conflicts_with = "from")]
+            back: Option<u32>,
+        },
+    }
+
+    #[test]
+    fn backfill_requires_from_or_back() {
+        // No --from and no --back → parse error.
+        let result = Cli::try_parse_from(["calli", "history", "backfill", "my-corpus"]);
+        assert!(
+            result.is_err(),
+            "expected parse error when neither --from nor --back is supplied"
+        );
+    }
+
+    #[test]
+    fn backfill_rejects_from_and_back_together() {
+        // Both flags supplied → conflict error.
+        let result = Cli::try_parse_from([
+            "calli",
+            "history",
+            "backfill",
+            "my-corpus",
+            "--from",
+            "abc1234",
+            "--back",
+            "5",
+        ]);
+        assert!(
+            result.is_err(),
+            "expected parse error when both --from and --back are supplied"
+        );
+    }
+
+    #[test]
+    fn backfill_accepts_back_alone() {
+        // Only --back → valid.
+        let result =
+            Cli::try_parse_from(["calli", "history", "backfill", "my-corpus", "--back", "10"]);
+        assert!(
+            result.is_ok(),
+            "expected parse success with --back 10 alone"
+        );
+        let Command::History {
+            sub: HistoryCmd::Backfill { back, from, .. },
+        } = result.unwrap().command;
+        assert_eq!(back, Some(10));
+        assert_eq!(from, None);
+    }
+
+    #[test]
+    fn backfill_accepts_from_alone() {
+        // Only --from → valid (existing behaviour preserved).
+        let result = Cli::try_parse_from([
+            "calli",
+            "history",
+            "backfill",
+            "my-corpus",
+            "--from",
+            "deadbeef",
+        ]);
+        assert!(result.is_ok(), "expected parse success with --from alone");
+        let Command::History {
+            sub: HistoryCmd::Backfill { from, back, .. },
+        } = result.unwrap().command;
+        assert_eq!(from.as_deref(), Some("deadbeef"));
+        assert_eq!(back, None);
     }
 }
