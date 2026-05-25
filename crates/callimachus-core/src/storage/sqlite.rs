@@ -239,6 +239,50 @@ impl StorageBackend for SqliteBackend {
         entity_store::list_taxonomy(&db!(self))
     }
 
+    fn entity_list_at_version(&self, corpus_id: &str, version: &str) -> Result<Vec<Entity>> {
+        let guard = db!(self);
+        let conn = guard.conn();
+        // entities_history lacks abstract_kind; substitute '' so row_to_entity's
+        // column offsets stay consistent with the head-table query.
+        let mut stmt = conn.prepare(
+            "SELECT id, corpus_id, canonical_name, kind, abstract_kind,
+                    aliases, description,
+                    first_location_uri, last_location_uri,
+                    appearance_count, confidence, derived_at_version
+             FROM entities
+             WHERE corpus_id = ?1 AND derived_at_version = ?2
+             UNION ALL
+             SELECT id, corpus_id, canonical_name, kind, '' AS abstract_kind,
+                    aliases, description,
+                    first_location_uri, last_location_uri,
+                    appearance_count, confidence, derived_at_version
+             FROM entities_history
+             WHERE corpus_id = ?1 AND derived_at_version = ?2",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![corpus_id, version],
+            entity_store::row_to_entity,
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::error::CalError::from)
+    }
+
+    fn entity_count_at_version(&self, corpus_id: &str, version: &str) -> Result<u64> {
+        let guard = db!(self);
+        let n: i64 = guard.conn().query_row(
+            "SELECT COUNT(*) FROM (
+               SELECT id FROM entities
+                 WHERE corpus_id = ?1 AND derived_at_version = ?2
+               UNION ALL
+               SELECT id FROM entities_history
+                 WHERE corpus_id = ?1 AND derived_at_version = ?2
+             )",
+            rusqlite::params![corpus_id, version],
+            |r| r.get(0),
+        )?;
+        Ok(n as u64)
+    }
+
     // ── Edge ──────────────────────────────────────────────────────────────────
 
     fn edge_upsert(&self, edge: &Edge) -> Result<()> {

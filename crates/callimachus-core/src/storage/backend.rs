@@ -105,6 +105,19 @@ pub trait StorageBackend: Send + Sync {
     /// Returns all rows from kind_taxonomy as (concrete_kind, corpus_kind, abstract_kind).
     fn kind_taxonomy_list(&self) -> Result<Vec<(String, String, String)>>;
 
+    /// List entities whose `derived_at_version` equals `version`, from both the
+    /// head `entities` table and `entities_history`. Used by [`VirtualHead`] to
+    /// present the entity state as it was at a specific commit during backfill.
+    ///
+    /// [`VirtualHead`]: crate::storage::VirtualHead
+    fn entity_list_at_version(&self, corpus_id: &str, version: &str) -> Result<Vec<Entity>>;
+
+    /// Count entities whose `derived_at_version` equals `version`, from both the
+    /// head `entities` table and `entities_history`. Used by [`VirtualHead`].
+    ///
+    /// [`VirtualHead`]: crate::storage::VirtualHead
+    fn entity_count_at_version(&self, corpus_id: &str, version: &str) -> Result<u64>;
+
     // ── Edge ──────────────────────────────────────────────────────────────────
 
     fn edge_upsert(&self, edge: &Edge) -> Result<()>;
