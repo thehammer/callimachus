@@ -1145,6 +1145,16 @@ impl StorageBackend for BackfillStorageWrapper {
         self.inner.theme_head_versions(corpus_id)
     }
 
+    // ── VirtualHead read helpers (delegate to real inner db) ──────────────────
+
+    fn entity_list_at_version(&self, corpus_id: &str, version: &str) -> Result<Vec<Entity>> {
+        self.inner.entity_list_at_version(corpus_id, version)
+    }
+
+    fn entity_count_at_version(&self, corpus_id: &str, version: &str) -> Result<u64> {
+        self.inner.entity_count_at_version(corpus_id, version)
+    }
+
     // ── Pruning ───────────────────────────────────────────────────────────────
     //
     // Pruning is not meaningful during a backfill walk (the wrapper runs against

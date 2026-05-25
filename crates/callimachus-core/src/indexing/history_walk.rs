@@ -35,9 +35,9 @@ use crate::{
     indexing::{
         cascade,
         change_manifest::ChangeManifest,
-        pipeline::{IndexMode, IndexOptions, IndexPipeline, IndexResult},
+        pipeline::{IndexMode, IndexOptions, IndexPipeline, IndexResult, ReadView},
     },
-    storage::{BackfillStorageWrapper, BackfillSupersession},
+    storage::{BackfillStorageWrapper, BackfillSupersession, VirtualHead},
     types::Corpus,
 };
 
@@ -328,6 +328,14 @@ pub async fn walk_history_backward(
             .retain(|p| *p != crate::types::Pass::History);
         commit_opts.change_manifest = Some(manifest);
         commit_opts.mode = IndexMode::HistoryBackfill;
+
+        // Attach a VirtualHead so that entity-reading passes (e.g. theme pass)
+        // see the historical entity state for this commit rather than HEAD.
+        // The real `pipeline.db` (not the wrapper) is used here so that reads
+        // go to the actual SQLite tables, including `entities_history`.
+        let virtual_head =
+            VirtualHead::new(Arc::clone(&pipeline.db), corpus.id.clone(), version.clone());
+        commit_opts.read_view = Some(Arc::new(ReadView::Virtual(virtual_head)));
 
         // Run the pipeline.  The wrapper ensures all writes go to *_history;
         // corpus_set_last_indexed_version is a NO-OP on the wrapper.

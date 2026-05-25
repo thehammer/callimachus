@@ -28,9 +28,10 @@ use callimachus_llm::LlmProvider;
 
 use crate::{
     adapter::SourceAdapter,
+    error::Result,
     indexing::{change_manifest::ChangeManifest, model_tier::TierConfig},
-    storage::{StorageBackend, run_log},
-    types::{Corpus, Pass, RunStatus},
+    storage::{StorageBackend, VirtualHead, run_log},
+    types::{Corpus, Entity, Pass, RunStatus},
 };
 
 // ── IndexMode ─────────────────────────────────────────────────────────────────
@@ -58,6 +59,44 @@ pub enum IndexMode {
     /// A `BackfillStorageWrapper` wrapping the real backend is passed as `db`
     /// to the pipeline, so upserts are automatically redirected to history tables.
     HistoryBackfill,
+}
+
+// ── ReadView ──────────────────────────────────────────────────────────────────
+
+/// Alternate entity-read layer for historical backfill.
+///
+/// When [`IndexOptions::read_view`] is `Some`, passes that query entities
+/// should read through this layer rather than the live head tables.
+///
+/// The `Virtual` variant wraps a [`VirtualHead`] that filters `*_history` and
+/// head tables to rows with `derived_at_version = target_sha`.
+#[derive(Debug)]
+pub enum ReadView {
+    /// Read entities as they were at `target_sha`.
+    Virtual(VirtualHead),
+}
+
+impl ReadView {
+    /// List entities at the target version.
+    pub fn entity_list(&self) -> Result<Vec<Entity>> {
+        match self {
+            ReadView::Virtual(vh) => vh.entity_list(),
+        }
+    }
+
+    /// Count entities at the target version.
+    pub fn entity_count(&self) -> Result<u64> {
+        match self {
+            ReadView::Virtual(vh) => vh.entity_count(),
+        }
+    }
+
+    /// Find entities by name fragment at the target version.
+    pub fn entity_find_by_name(&self, name: &str) -> Result<Vec<Entity>> {
+        match self {
+            ReadView::Virtual(vh) => vh.entity_find_by_name(name),
+        }
+    }
 }
 
 use super::{
@@ -99,6 +138,14 @@ pub struct IndexOptions {
     /// Set by the orchestrator after Pass::History runs; callers constructing
     /// IndexOptions for a subset of passes may leave this None.
     pub change_manifest: Option<ChangeManifest>,
+    /// Historical read layer for entity queries.  Set by
+    /// [`walk_history_backward`](crate::indexing::history_walk::walk_history_backward)
+    /// to a [`ReadView::Virtual`] backed by the target commit SHA.
+    ///
+    /// When `Some`, passes that read entities (theme pass) should query through
+    /// this layer instead of the live head tables.  When `None` (the default),
+    /// passes read from the head tables as normal.
+    pub read_view: Option<Arc<ReadView>>,
 }
 
 impl Default for IndexOptions {
@@ -125,6 +172,7 @@ impl Default for IndexOptions {
             no_git_filter: false,
             tier_config: TierConfig::default(),
             change_manifest: None,
+            read_view: None,
         }
     }
 }

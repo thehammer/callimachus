@@ -178,6 +178,12 @@ impl StorageBackend for PostgresBackend {
     fn kind_taxonomy_list(&self) -> Result<Vec<(String, String, String)>> {
         Err(unimplemented())
     }
+    fn entity_list_at_version(&self, _corpus_id: &str, _version: &str) -> Result<Vec<Entity>> {
+        Err(unimplemented())
+    }
+    fn entity_count_at_version(&self, _corpus_id: &str, _version: &str) -> Result<u64> {
+        Err(unimplemented())
+    }
 
     fn edge_upsert(&self, _edge: &Edge) -> Result<()> {
         Err(unimplemented())

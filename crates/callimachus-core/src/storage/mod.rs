@@ -20,6 +20,7 @@ pub mod sqlite;
 pub mod sqlite_graph;
 pub mod summary_store;
 pub mod theme_store;
+pub mod virtual_head;
 
 pub use backend::StorageBackend;
 pub use backfill::{BackfillStorageWrapper, BackfillSupersession};
@@ -28,3 +29,4 @@ pub use edge_store::EdgeDirection;
 pub use postgres::PostgresBackend;
 pub use pruning::PruneStats;
 pub use sqlite::SqliteBackend;
+pub use virtual_head::VirtualHead;

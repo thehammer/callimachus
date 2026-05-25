@@ -42,13 +42,23 @@ pub async fn run(
     }
 
     // Pre-condition: need enough entities to infer themes.
-    let entity_count = db.entity_count(&corpus.id)?;
+    // When a ReadView is attached (HistoryBackfill mode), read from there so
+    // the count reflects the historical state at the target commit SHA.
+    let entity_count = if let Some(rv) = opts.read_view.as_ref() {
+        rv.entity_count()?
+    } else {
+        db.entity_count(&corpus.id)?
+    };
     if entity_count < MIN_ENTITIES_FOR_THEMES {
         stats.skipped += 1;
         return Ok(stats);
     }
 
-    let all_entities: Vec<Entity> = db.entity_list(&corpus.id)?;
+    let all_entities: Vec<Entity> = if let Some(rv) = opts.read_view.as_ref() {
+        rv.entity_list()?
+    } else {
+        db.entity_list(&corpus.id)?
+    };
 
     match adapter
         .extract_themes(corpus, &all_entities, llm.as_ref())
@@ -93,7 +103,12 @@ pub async fn run(
 
                 // Resolve upheld_by entity names → edges.
                 for name in &et.upheld_by_entity_names {
-                    for entity in db.entity_find_by_name(&corpus.id, name)?.iter() {
+                    let matched = if let Some(rv) = opts.read_view.as_ref() {
+                        rv.entity_find_by_name(name)?
+                    } else {
+                        db.entity_find_by_name(&corpus.id, name)?
+                    };
+                    for entity in matched.iter() {
                         let edge = Edge {
                             id: Uuid::new_v4().to_string(),
                             corpus_id: corpus.id.clone(),
@@ -110,7 +125,12 @@ pub async fn run(
 
                 // Resolve violated_by entity names → edges.
                 for name in &et.violated_by_entity_names {
-                    for entity in db.entity_find_by_name(&corpus.id, name)?.iter() {
+                    let matched = if let Some(rv) = opts.read_view.as_ref() {
+                        rv.entity_find_by_name(name)?
+                    } else {
+                        db.entity_find_by_name(&corpus.id, name)?
+                    };
+                    for entity in matched.iter() {
                         let edge = Edge {
                             id: Uuid::new_v4().to_string(),
                             corpus_id: corpus.id.clone(),
