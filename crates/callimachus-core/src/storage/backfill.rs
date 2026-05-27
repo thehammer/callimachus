@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::corrections::types::{Correction, CorrectionKind};
 use crate::error::{CalError, Result};
-use crate::storage::backend::{CascadeStats, StorageBackend};
+use crate::storage::backend::{CascadeStats, CopyStats, StorageBackend};
 use crate::storage::edge_store::EdgeDirection;
 use crate::storage::embedding_store::StoredEmbedding;
 use crate::storage::fts::FtsResult;
@@ -984,6 +984,30 @@ impl StorageBackend for BackfillStorageWrapper {
         _superseded_at_version: &str,
     ) -> Result<CascadeStats> {
         Ok(CascadeStats::default()) // NO-OP: no head rows to cascade
+    }
+
+    /// Delegate to the inner backend, which writes the copied rows into
+    /// `*_history`. The wrapper never touches head tables, and the copy targets
+    /// history directly, so a straight delegation is correct. The backward
+    /// walker passes `superseded_at_version` (the next-newer commit) explicitly
+    /// and records the copied entities into the supersession map afterward.
+    fn copy_unchanged_artifacts(
+        &self,
+        corpus_id: &str,
+        from_version: &str,
+        to_version: &str,
+        superseded_at_version: &str,
+        entity_ids: &[String],
+        dirty_paths: &[String],
+    ) -> Result<CopyStats> {
+        self.inner.copy_unchanged_artifacts(
+            corpus_id,
+            from_version,
+            to_version,
+            superseded_at_version,
+            entity_ids,
+            dirty_paths,
+        )
     }
 
     // ── Graph helpers ─────────────────────────────────────────────────────────
