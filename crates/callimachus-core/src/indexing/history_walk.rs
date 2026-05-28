@@ -140,13 +140,15 @@ pub async fn walk_history_forward(
         let (manifest, dirty_paths) = match &neighbour {
             None => (ChangeManifest::all_dirty(version.clone()), Vec::new()),
             Some(neighbour) => {
-                let changed = pipeline.adapter.changed_sources(
-                    &corpus.source,
-                    Some(neighbour),
-                    &version,
-                )?;
+                let changed =
+                    pipeline
+                        .adapter
+                        .changed_sources(&corpus.source, Some(neighbour), &version)?;
                 let dirty_paths: Vec<String> = changed.iter().map(|c| c.path.clone()).collect();
-                (ChangeManifest::from_changed(version.clone(), changed), dirty_paths)
+                (
+                    ChangeManifest::from_changed(version.clone(), changed),
+                    dirty_paths,
+                )
             }
         };
 
@@ -1893,7 +1895,7 @@ mod tests {
             let from = match from_version {
                 Some(f) => f,
                 None => {
-                    return crate::adapter::default_changed_sources(source_path, None, to_version)
+                    return crate::adapter::default_changed_sources(source_path, None, to_version);
                 }
             };
             if from == to_version {
@@ -1904,7 +1906,11 @@ mod tests {
                     .and_then(|s| git2::Oid::from_str(s).ok())
             };
             let (Some(fo), Some(to)) = (parse(from), parse(to_version)) else {
-                return crate::adapter::default_changed_sources(source_path, Some(from), to_version);
+                return crate::adapter::default_changed_sources(
+                    source_path,
+                    Some(from),
+                    to_version,
+                );
             };
             let repo = git2::Repository::open(source_path)?;
             let ft = repo.find_commit(fo)?.tree()?;
@@ -1978,14 +1984,7 @@ mod tests {
         let tree1 = repo.find_tree(tree1_oid).unwrap();
         let c0c = repo.find_commit(c0).unwrap();
         let c1 = repo
-            .commit(
-                Some("HEAD"),
-                &sig,
-                &sig,
-                "C1: add b.txt",
-                &tree1,
-                &[&c0c],
-            )
+            .commit(Some("HEAD"), &sig, &sig, "C1: add b.txt", &tree1, &[&c0c])
             .unwrap();
 
         // C2: modify a.txt (b.txt unchanged)
@@ -2102,14 +2101,7 @@ mod tests {
         let tree1 = repo.find_tree(tree1_oid).unwrap();
         let c0c = repo.find_commit(c0).unwrap();
         let _c1 = repo
-            .commit(
-                Some("HEAD"),
-                &sig,
-                &sig,
-                "C1: modify a",
-                &tree1,
-                &[&c0c],
-            )
+            .commit(Some("HEAD"), &sig, &sig, "C1: modify a", &tree1, &[&c0c])
             .unwrap();
 
         let repo_path = td.path().to_string_lossy().into_owned();
@@ -2229,23 +2221,13 @@ mod tests {
         let tree1 = repo.find_tree(tree1_oid).unwrap();
         let c0c = repo.find_commit(c0).unwrap();
         let c1 = repo
-            .commit(
-                Some("HEAD"),
-                &sig,
-                &sig,
-                "C1: rename a→b",
-                &tree1,
-                &[&c0c],
-            )
+            .commit(Some("HEAD"), &sig, &sig, "C1: rename a→b", &tree1, &[&c0c])
             .unwrap();
 
         let repo_path = td.path().to_string_lossy().into_owned();
 
         // Helper: run a forward + backward walk into a fresh DB and return the db.
-        async fn run_walks(
-            repo_path: &str,
-            c0: git2::Oid,
-        ) -> Arc<SqliteBackend> {
+        async fn run_walks(repo_path: &str, c0: git2::Oid) -> Arc<SqliteBackend> {
             let corpus_id = "rename-test";
             let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
             let corpus = Corpus::new(
@@ -2407,11 +2389,7 @@ mod tests {
         let mut parent: Option<Oid> = None;
 
         // Helper: commit current index state.
-        let commit = |repo: &Repository,
-                      sig: &Signature,
-                      msg: &str,
-                      parent: Option<Oid>|
-         -> Oid {
+        let commit = |repo: &Repository, sig: &Signature, msg: &str, parent: Option<Oid>| -> Oid {
             let mut idx = repo.index().unwrap();
             idx.write().unwrap();
             let tree_oid = idx.write_tree().unwrap();
@@ -2638,7 +2616,10 @@ mod tests {
 
         type ChunkRow = (String, String); // (chunk_id, content)
 
-        let chunks_at_version = |db: &Arc<SqliteBackend>, corpus_id: &str, sha: &str| -> std::collections::BTreeSet<ChunkRow> {
+        let chunks_at_version = |db: &Arc<SqliteBackend>,
+                                 corpus_id: &str,
+                                 sha: &str|
+         -> std::collections::BTreeSet<ChunkRow> {
             let v = format!("git:{sha}");
             let g = db.db_for_test();
             let conn = g.conn();
@@ -2667,12 +2648,14 @@ mod tests {
             let set_c = chunks_at_version(&db_c, "conv-mid", &sha);
 
             assert_eq!(
-                set_a, set_b,
+                set_a,
+                set_b,
                 "chunk sets for SHA {} differ between (a) forward-only and (b) forward+backward",
                 &sha[..8]
             );
             assert_eq!(
-                set_a, set_c,
+                set_a,
+                set_c,
                 "chunk sets for SHA {} differ between (a) forward-only and (c) middle-out",
                 &sha[..8]
             );

@@ -1912,7 +1912,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(purpose_h >= 1, "entity_purposes_history should have a row at {v2}");
+        assert!(
+            purpose_h >= 1,
+            "entity_purposes_history should have a row at {v2}"
+        );
 
         let contract_h: i64 = conn
             .query_row(
@@ -1921,7 +1924,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(contract_h >= 1, "entity_contracts_history should have a row at {v2}");
+        assert!(
+            contract_h >= 1,
+            "entity_contracts_history should have a row at {v2}"
+        );
 
         let block_h: i64 = conn
             .query_row(
@@ -1930,7 +1936,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(block_h >= 1, "entity_blocks_history should have a row at {v2}");
+        assert!(
+            block_h >= 1,
+            "entity_blocks_history should have a row at {v2}"
+        );
 
         let chunk_h: i64 = conn
             .query_row(
@@ -1939,7 +1948,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(chunk_h >= 1, "chunks_history should have a row with introduced_at_version={v2}");
+        assert!(
+            chunk_h >= 1,
+            "chunks_history should have a row with introduced_at_version={v2}"
+        );
 
         let summary_h: i64 = conn
             .query_row(
@@ -1948,7 +1960,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(summary_h >= 1, "summaries_history should have a row at {v2}");
+        assert!(
+            summary_h >= 1,
+            "summaries_history should have a row at {v2}"
+        );
 
         // Verify superseded_at_version is set to v2 as supplied.
         let entity_superseded: String = conn
@@ -1958,7 +1973,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(entity_superseded, v2, "entities_history superseded_at_version should be {v2}");
+        assert_eq!(
+            entity_superseded, v2,
+            "entities_history superseded_at_version should be {v2}"
+        );
 
         // Assert head tables are unchanged: entity A still in entities at v1.
         let entity_head: i64 = conn
@@ -1968,7 +1986,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(entity_head, 1, "head entities table should still have entity A at {v1}");
+        assert_eq!(
+            entity_head, 1,
+            "head entities table should still have entity A at {v1}"
+        );
 
         let _ = chunk_id;
     }
@@ -2062,7 +2083,10 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert!(entity_h >= 1, "entities_history should have a row at {to_v}");
+            assert!(
+                entity_h >= 1,
+                "entities_history should have a row at {to_v}"
+            );
 
             let chunk_h: i64 = conn
                 .query_row(
@@ -2071,7 +2095,10 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert!(chunk_h >= 1, "chunks_history should have a row with introduced_at_version={to_v}");
+            assert!(
+                chunk_h >= 1,
+                "chunks_history should have a row with introduced_at_version={to_v}"
+            );
         }
 
         // Assert head tables byte-for-byte unchanged.
