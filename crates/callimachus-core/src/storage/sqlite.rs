@@ -969,7 +969,21 @@ impl StorageBackend for SqliteBackend {
             // Read candidate chunks at `from` from head ∪ history, filter dirty
             // paths in Rust (URI→path extraction is awkward in SQL), then insert
             // re-stamped rows guarded by a natural-key NOT EXISTS check.
-            let candidates: Vec<(String, String, Option<String>, String, String, String, i64, String, Option<String>)> = {
+            //
+            // Row shape: (id, corpus_id, parent_path, kind, location_uri,
+            //             content, byte_length, created_at, source_hash).
+            type ChunkCopyRow = (
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+                String,
+                i64,
+                String,
+                Option<String>,
+            );
+            let candidates: Vec<ChunkCopyRow> = {
                 let mut stmt = tx.prepare(
                     "SELECT id, corpus_id, parent_path, kind, location_uri, content,
                             byte_length, created_at, source_hash
