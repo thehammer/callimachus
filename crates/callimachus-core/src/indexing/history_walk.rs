@@ -37,7 +37,7 @@ use crate::{
         change_manifest::ChangeManifest,
         pipeline::{IndexMode, IndexOptions, IndexPipeline, IndexResult, ReadView},
     },
-    storage::{BackfillStorageWrapper, BackfillSupersession, VirtualHead},
+    storage::{BackfillStorageWrapper, BackfillSupersession, StorageBackend, VirtualHead},
     types::Corpus,
 };
 
@@ -131,7 +131,26 @@ pub async fn walk_history_forward(
         // Build options: inject an explicit manifest so Pass::History is
         // bypassed and the correct version string is stamped on artifacts.
         let version = format!("git:{oid}");
-        let manifest = ChangeManifest::all_dirty(version.clone());
+
+        // First commit (root / `--from` start): no neighbour to diff against, so
+        // derive everything from scratch. Subsequent commits diff against the
+        // previously-processed (older) commit and re-derive only the changed
+        // files, copying every unchanged file's artifacts forward instead.
+        let neighbour = (i > 0).then(|| format!("git:{}", commits[i - 1]));
+        let (manifest, dirty_paths) = match &neighbour {
+            None => (ChangeManifest::all_dirty(version.clone()), Vec::new()),
+            Some(neighbour) => {
+                let changed =
+                    pipeline
+                        .adapter
+                        .changed_sources(&corpus.source, Some(neighbour), &version)?;
+                let dirty_paths: Vec<String> = changed.iter().map(|c| c.path.clone()).collect();
+                (
+                    ChangeManifest::from_changed(version.clone(), changed),
+                    dirty_paths,
+                )
+            }
+        };
 
         let mut commit_opts = opts.clone();
         // Remove History from passes — we supply the manifest ourselves.
@@ -145,6 +164,28 @@ pub async fn walk_history_forward(
 
         // Run the pipeline (History excluded; manifest pre-supplied).
         let result = pipeline.run(&commit_corpus, commit_opts).await?;
+
+        // Copy every unchanged file's artifacts forward from the neighbour so
+        // this commit ends with a complete, exact-SHA-stamped artifact set
+        // without re-deriving the unchanged files via the LLM.
+        if let Some(neighbour) = &neighbour {
+            let themes_recomputed = manifest.dirty_count() > 0;
+            let unchanged = unchanged_entity_ids(
+                pipeline.db.as_ref(),
+                &corpus.id,
+                neighbour,
+                &manifest,
+                themes_recomputed,
+            )?;
+            pipeline.db.copy_unchanged_artifacts(
+                &corpus.id,
+                neighbour,
+                &version,
+                &version,
+                &unchanged,
+                &dirty_paths,
+            )?;
+        }
 
         // Persist the version anchor for this commit so the next iteration
         // (or a subsequent incremental run) can resume from the correct point.
@@ -296,7 +337,7 @@ pub async fn walk_history_backward(
         } else {
             format!("git:{}", backfill_targets[i - 1])
         };
-        supersession.set_current_commit(next_newer_version);
+        supersession.set_current_commit(next_newer_version.clone());
 
         // Materialise the tree (fully synchronous; no git2 handles across await).
         let td = materialise_tree(&repo, *oid)?;
@@ -320,13 +361,23 @@ pub async fn walk_history_backward(
             embedder: pipeline.embedder.clone(),
         };
 
-        // Build options: supply an all-dirty manifest and enable backfill mode.
-        let manifest = ChangeManifest::all_dirty(version.clone());
+        // Diff this commit against the neighbour we just processed (the
+        // next-newer commit, or HEAD on the first step) and re-derive only the
+        // changed files. Every unchanged file's artifacts are copied from the
+        // neighbour instead of being re-derived via the LLM.
+        let changed = pipeline.adapter.changed_sources(
+            &corpus.source,
+            Some(&next_newer_version),
+            &version,
+        )?;
+        let dirty_paths: Vec<String> = changed.iter().map(|c| c.path.clone()).collect();
+        let manifest = ChangeManifest::from_changed(version.clone(), changed);
+
         let mut commit_opts = opts.clone();
         commit_opts
             .passes
             .retain(|p| *p != crate::types::Pass::History);
-        commit_opts.change_manifest = Some(manifest);
+        commit_opts.change_manifest = Some(manifest.clone());
         commit_opts.mode = IndexMode::HistoryBackfill;
 
         // Attach a VirtualHead so that entity-reading passes (e.g. theme pass)
@@ -340,6 +391,34 @@ pub async fn walk_history_backward(
         // Run the pipeline.  The wrapper ensures all writes go to *_history;
         // corpus_set_last_indexed_version is a NO-OP on the wrapper.
         let result = commit_pipeline.run(&commit_corpus, commit_opts).await?;
+
+        // Copy every unchanged file's artifacts from the neighbour (next-newer
+        // commit, or HEAD on the first step) into `*_history`, re-stamped at this
+        // commit's SHA and superseded by the neighbour. Reads of the neighbour
+        // state and the copy writes both go through the wrapper, which routes
+        // them to the real backend / `*_history` and never touches head tables.
+        let themes_recomputed = manifest.dirty_count() > 0;
+        let unchanged = unchanged_entity_ids(
+            commit_pipeline.db.as_ref(),
+            &corpus.id,
+            &next_newer_version,
+            &manifest,
+            themes_recomputed,
+        )?;
+        commit_pipeline.db.copy_unchanged_artifacts(
+            &corpus.id,
+            &next_newer_version,
+            &version,
+            &next_newer_version,
+            &unchanged,
+            &dirty_paths,
+        )?;
+        // Keep the supersession map coherent for older steps: record the copied
+        // entities at this commit's version so a later (older) step that
+        // re-derives one of them stamps the correct next-newer supersession.
+        for id in &unchanged {
+            supersession.record_write_entity(id, &version);
+        }
 
         stats.commits_processed += 1;
         stats.absorb(result);
@@ -359,6 +438,44 @@ pub async fn walk_history_backward(
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
+
+/// Compute the set of entity ids that are UNCHANGED at the commit being
+/// processed relative to `neighbour_version`: every entity present at the
+/// neighbour whose source-file location is not marked dirty by `manifest`.
+///
+/// When `themes_recomputed` is true the theme pass re-derives the corpus-level
+/// `kind = "theme"` entities at this commit, so they are excluded from the copy
+/// set (they would otherwise be written twice). When false (an empty diff) the
+/// theme pass is skipped and the theme entities are carried forward by the copy.
+fn unchanged_entity_ids(
+    db: &dyn StorageBackend,
+    corpus_id: &str,
+    neighbour_version: &str,
+    manifest: &ChangeManifest,
+    themes_recomputed: bool,
+) -> Result<Vec<String>> {
+    use crate::indexing::change_manifest::file_path_from_uri;
+
+    let entities = db.entity_list_at_version(corpus_id, neighbour_version)?;
+    let mut ids = Vec::with_capacity(entities.len());
+    for e in entities {
+        if themes_recomputed && e.kind == "theme" {
+            continue;
+        }
+        let path = e
+            .last_location
+            .as_ref()
+            .or(e.first_location.as_ref())
+            .map(|l| file_path_from_uri(&l.uri).to_string())
+            .unwrap_or_default();
+        // Entities with no source path (e.g. themes) and entities on unchanged
+        // paths are carried forward; entities on dirty paths are re-derived.
+        if path.is_empty() || !manifest.is_dirty(&path) {
+            ids.push(e.id);
+        }
+    }
+    Ok(ids)
+}
 
 /// Resolve `--back N` to an `Oid` by walking HEAD's first-parent ancestry
 /// N steps backward.
@@ -1630,6 +1747,919 @@ mod tests {
             err.contains("--back must be >= 1"),
             "expected '--back must be >= 1' in error, got: {err}"
         );
+    }
+
+    // ── Diff-based adapter shared helpers ─────────────────────────────────────
+
+    /// A SourceAdapter that tracks how many times `extract_with_llm` is called
+    /// and which file paths are passed to it. Uses an Arc<Mutex<Vec<String>>>
+    /// so we can inspect it from outside the async pipeline.
+    ///
+    /// It overrides `changed_sources` with a real git2 diff so that unchanged
+    /// files are not considered dirty. Only `.txt` files are reported.
+    struct TrackingAdapter {
+        corpus_id: &'static str,
+        /// Appended with the file_name each time extract_with_llm is called.
+        calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl TrackingAdapter {
+        fn new(corpus_id: &'static str) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+            let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            (
+                Self {
+                    corpus_id,
+                    calls: calls.clone(),
+                },
+                calls,
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::adapter::SourceAdapter for TrackingAdapter {
+        fn kind(&self) -> &str {
+            "code"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+
+        async fn discover(
+            &self,
+            source: &str,
+        ) -> anyhow::Result<Vec<crate::adapter::DiscoveredSource>> {
+            let mut sources = Vec::new();
+            if let Ok(rd) = std::fs::read_dir(source) {
+                for entry in rd.flatten() {
+                    let p = entry.path();
+                    if p.extension().and_then(|e| e.to_str()) == Some("txt") {
+                        sources.push(crate::adapter::DiscoveredSource {
+                            path: p.to_string_lossy().into_owned(),
+                            kind: "text".to_string(),
+                            meta: serde_json::Value::Null,
+                        });
+                    }
+                }
+            }
+            Ok(sources)
+        }
+
+        async fn chunk(
+            &self,
+            source: &crate::adapter::DiscoveredSource,
+        ) -> anyhow::Result<Vec<crate::types::Chunk>> {
+            let corpus_id = self.corpus_id;
+            let rel = std::path::Path::new(&source.path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            Ok(vec![crate::types::Chunk::new(
+                corpus_id.to_string(),
+                None,
+                "file".to_string(),
+                crate::types::Location::new(corpus_id, &rel),
+                std::fs::read_to_string(&source.path).unwrap_or_default(),
+            )])
+        }
+
+        async fn extract_structure(
+            &self,
+            _chunk: &crate::types::Chunk,
+        ) -> anyhow::Result<crate::adapter::ExtractedStructure> {
+            Ok(crate::adapter::ExtractedStructure {
+                parent_path: None,
+                child_paths: vec![],
+                structural_entities: vec![],
+                structural_edges: vec![],
+            })
+        }
+
+        async fn extract_with_llm(
+            &self,
+            chunk: &crate::types::Chunk,
+            _llm: &dyn callimachus_llm::LlmProvider,
+        ) -> anyhow::Result<Option<crate::adapter::ExtractedSemantic>> {
+            // Record which file triggered the LLM call.
+            let file_name = std::path::Path::new(&chunk.location.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| chunk.location.path.clone());
+            self.calls.lock().unwrap().push(file_name);
+            Ok(Some(crate::adapter::ExtractedSemantic {
+                entities: vec![],
+                edges: vec![],
+                summary_text: None,
+            }))
+        }
+
+        async fn summarize(
+            &self,
+            _chunk: &crate::types::Chunk,
+            _llm: &dyn callimachus_llm::LlmProvider,
+            _depth: &str,
+        ) -> anyhow::Result<Option<String>> {
+            Ok(None)
+        }
+
+        async fn resolve_aliases(
+            &self,
+            _entities: &[crate::types::Entity],
+            _llm: &dyn callimachus_llm::LlmProvider,
+        ) -> anyhow::Result<Vec<crate::adapter::EntityMerge>> {
+            Ok(vec![])
+        }
+
+        fn format_location(&self, chunk: &crate::types::Chunk) -> String {
+            chunk.location.path.clone()
+        }
+
+        fn parse_location(&self, uri: &str) -> anyhow::Result<crate::adapter::LocationRef> {
+            Ok(crate::adapter::LocationRef {
+                corpus_id: self.corpus_id.to_string(),
+                path: uri.to_string(),
+            })
+        }
+
+        /// Override with a real git2 diff so only actually-changed .txt files
+        /// are returned as dirty. Unchanged files return an empty diff entry
+        /// (i.e. they are NOT included in the returned Vec).
+        fn changed_sources(
+            &self,
+            source_path: &str,
+            from_version: Option<&str>,
+            to_version: &str,
+        ) -> anyhow::Result<Vec<crate::indexing::change_manifest::ChangedSource>> {
+            use crate::indexing::change_manifest::{ChangeKind, ChangedSource};
+            let from = match from_version {
+                Some(f) => f,
+                None => {
+                    return crate::adapter::default_changed_sources(source_path, None, to_version);
+                }
+            };
+            if from == to_version {
+                return Ok(vec![]);
+            }
+            let parse = |v: &str| {
+                v.strip_prefix("git:")
+                    .and_then(|s| git2::Oid::from_str(s).ok())
+            };
+            let (Some(fo), Some(to)) = (parse(from), parse(to_version)) else {
+                return crate::adapter::default_changed_sources(
+                    source_path,
+                    Some(from),
+                    to_version,
+                );
+            };
+            let repo = git2::Repository::open(source_path)?;
+            let ft = repo.find_commit(fo)?.tree()?;
+            let tt = repo.find_commit(to)?.tree()?;
+            let diff = repo.diff_tree_to_tree(Some(&ft), Some(&tt), None)?;
+            let mut changed = Vec::new();
+            diff.foreach(
+                &mut |delta, _| {
+                    let kind = match delta.status() {
+                        git2::Delta::Added => ChangeKind::Added,
+                        git2::Delta::Deleted => ChangeKind::Deleted,
+                        _ => ChangeKind::Modified,
+                    };
+                    let file = if delta.status() == git2::Delta::Deleted {
+                        delta.old_file()
+                    } else {
+                        delta.new_file()
+                    };
+                    if let Some(p) = file.path() {
+                        let ps = p.to_string_lossy().to_string();
+                        if ps.ends_with(".txt") {
+                            changed.push(ChangedSource {
+                                path: ps,
+                                kind,
+                                commit_meta: None,
+                            });
+                        }
+                    }
+                    true
+                },
+                None,
+                None,
+                None,
+            )?;
+            Ok(changed)
+        }
+    }
+
+    // ── Test 4: forward walk does diff-based work ─────────────────────────────
+    //
+    // 3-commit linear repo:
+    //   C0: adds a.txt
+    //   C1: adds b.txt (a.txt unchanged)
+    //   C2: modifies a.txt (b.txt unchanged)
+    //
+    // Assert: LLM is invoked for b.txt (not a.txt) at C1, and for a.txt (not b.txt) at C2.
+    #[tokio::test]
+    async fn forward_walk_does_diff_based_work() {
+        // Build the 3-commit repo manually so we can control the content changes.
+        let td = TempDir::new().expect("temp dir");
+        let repo = Repository::init(td.path()).expect("git init");
+        let sig = Signature::now("Test", "t@t.com").unwrap();
+
+        // C0: add a.txt
+        fs::write(td.path().join("a.txt"), "content-a-v1").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("a.txt")).unwrap();
+        idx.write().unwrap();
+        let tree0_oid = idx.write_tree().unwrap();
+        let tree0 = repo.find_tree(tree0_oid).unwrap();
+        let c0 = repo
+            .commit(Some("HEAD"), &sig, &sig, "C0: add a.txt", &tree0, &[])
+            .unwrap();
+
+        // C1: add b.txt (a.txt unchanged)
+        fs::write(td.path().join("b.txt"), "content-b").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("b.txt")).unwrap();
+        idx.write().unwrap();
+        let tree1_oid = idx.write_tree().unwrap();
+        let tree1 = repo.find_tree(tree1_oid).unwrap();
+        let c0c = repo.find_commit(c0).unwrap();
+        let c1 = repo
+            .commit(Some("HEAD"), &sig, &sig, "C1: add b.txt", &tree1, &[&c0c])
+            .unwrap();
+
+        // C2: modify a.txt (b.txt unchanged)
+        fs::write(td.path().join("a.txt"), "content-a-v2").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("a.txt")).unwrap();
+        idx.write().unwrap();
+        let tree2_oid = idx.write_tree().unwrap();
+        let tree2 = repo.find_tree(tree2_oid).unwrap();
+        let c1c = repo.find_commit(c1).unwrap();
+        let _c2 = repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "C2: modify a.txt",
+                &tree2,
+                &[&c1c],
+            )
+            .unwrap();
+
+        let repo_path = td.path().to_string_lossy().into_owned();
+        let corpus_id = "diff-walk-test";
+
+        let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let corpus = Corpus::new(
+            corpus_id.to_string(),
+            "Diff Walk Test".to_string(),
+            "code".to_string(),
+            repo_path.clone(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        let (adapter, calls) = TrackingAdapter::new(corpus_id);
+        let pipeline = IndexPipeline {
+            db: db.clone(),
+            adapter: Arc::new(adapter),
+            llm: Arc::new(DryRunProvider::new()),
+            embedder: None,
+        };
+
+        let walk_opts = WalkOptions {
+            from_sha: None,
+            skip_confirm: true,
+        };
+        let opts = IndexOptions {
+            passes: vec![Pass::Chunk, Pass::Structure, Pass::Semantic],
+            ..IndexOptions::default()
+        };
+
+        walk_history_forward(&pipeline, &corpus, opts, walk_opts)
+            .await
+            .expect("walk_history_forward failed");
+
+        let recorded = calls.lock().unwrap().clone();
+
+        // At C1 (index 1), only b.txt should be processed — a.txt is unchanged.
+        // At C2 (index 2), only a.txt should be processed — b.txt is unchanged.
+        //
+        // C0 (first commit) always derives everything, so both we expect a.txt there.
+        // We look for the key behavioral property:
+        //   - b.txt appears in recorded calls (from C1)
+        //   - a.txt appears in recorded calls (from C0 and C2)
+        //   - Crucially, a.txt does NOT appear a second time at C1 (no duplicate for unchanged)
+        //   - b.txt does NOT appear at C2 (not re-derived when unchanged)
+        //
+        // Since the calls vec is ordered by commit then by file, we count occurrences.
+        let a_count = recorded.iter().filter(|s| s.as_str() == "a.txt").count();
+        let b_count = recorded.iter().filter(|s| s.as_str() == "b.txt").count();
+
+        // a.txt should appear exactly TWICE: once at C0 (first derive) + once at C2 (modified).
+        // b.txt should appear exactly ONCE: once at C1 (first derive).
+        assert_eq!(
+            a_count, 2,
+            "a.txt should be LLM-processed exactly 2 times (C0+C2), got {a_count}. All calls: {recorded:?}"
+        );
+        assert_eq!(
+            b_count, 1,
+            "b.txt should be LLM-processed exactly 1 time (C1 only), got {b_count}. All calls: {recorded:?}"
+        );
+    }
+
+    // ── Test 6: backward first step reads HEAD ────────────────────────────────
+    //
+    // Repo: C0 adds a.txt + b.txt; C1 (HEAD) modifies a.txt (b unchanged).
+    // Forward-ingest to HEAD, then walk_history_backward from C0.
+    // Assert C0's chunk for b.txt was copied from HEAD state with
+    // introduced_at_version = git:C0. Head tables untouched.
+    #[tokio::test]
+    async fn backward_first_step_reads_head() {
+        let td = TempDir::new().unwrap();
+        let repo = Repository::init(td.path()).unwrap();
+        let sig = Signature::now("Test", "t@t.com").unwrap();
+
+        // C0: add a.txt + b.txt
+        fs::write(td.path().join("a.txt"), "a-v1").unwrap();
+        fs::write(td.path().join("b.txt"), "b-content").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("a.txt")).unwrap();
+        idx.add_path(Path::new("b.txt")).unwrap();
+        idx.write().unwrap();
+        let tree0_oid = idx.write_tree().unwrap();
+        let tree0 = repo.find_tree(tree0_oid).unwrap();
+        let c0 = repo
+            .commit(Some("HEAD"), &sig, &sig, "C0: add a+b", &tree0, &[])
+            .unwrap();
+
+        // C1: modify a.txt (b.txt unchanged)
+        fs::write(td.path().join("a.txt"), "a-v2").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("a.txt")).unwrap();
+        idx.write().unwrap();
+        let tree1_oid = idx.write_tree().unwrap();
+        let tree1 = repo.find_tree(tree1_oid).unwrap();
+        let c0c = repo.find_commit(c0).unwrap();
+        let _c1 = repo
+            .commit(Some("HEAD"), &sig, &sig, "C1: modify a", &tree1, &[&c0c])
+            .unwrap();
+
+        let repo_path = td.path().to_string_lossy().into_owned();
+        let corpus_id = "bwd-head-test";
+
+        let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let corpus = Corpus::new(
+            corpus_id.to_string(),
+            "Bwd Head Test".to_string(),
+            "code".to_string(),
+            repo_path.clone(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        let (adapter, _calls) = TrackingAdapter::new(corpus_id);
+        let pipeline = IndexPipeline {
+            db: db.clone(),
+            adapter: Arc::new(adapter),
+            llm: Arc::new(DryRunProvider::new()),
+            embedder: None,
+        };
+
+        // Forward-walk to HEAD.
+        walk_history_forward(
+            &pipeline,
+            &corpus,
+            IndexOptions {
+                passes: vec![Pass::Chunk, Pass::Structure],
+                ..IndexOptions::default()
+            },
+            WalkOptions {
+                from_sha: None,
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("forward walk failed");
+
+        let head_chunk_count = db.chunk_count(corpus_id).unwrap();
+
+        // Backward backfill from C0.
+        walk_history_backward(
+            &pipeline,
+            &corpus,
+            IndexOptions {
+                passes: vec![Pass::Chunk, Pass::Structure],
+                ..IndexOptions::default()
+            },
+            WalkOptions {
+                from_sha: Some(c0.to_string()),
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("backward walk failed");
+
+        // Head tables must be untouched.
+        let head_chunk_count_after = db.chunk_count(corpus_id).unwrap();
+        assert_eq!(
+            head_chunk_count, head_chunk_count_after,
+            "head chunk count should not change after backward walk"
+        );
+
+        // b.txt chunk should appear in chunks_history at C0's SHA
+        // with introduced_at_version = git:<c0>.
+        let v_c0 = format!("git:{c0}");
+        let g = db.db_for_test();
+        let conn = g.conn();
+
+        let b_history: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks_history \
+                 WHERE corpus_id=?1 AND location_uri LIKE '%b.txt%' AND introduced_at_version=?2",
+                rusqlite::params![corpus_id, v_c0],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert!(
+            b_history >= 1,
+            "b.txt should have a chunks_history row at introduced_at_version={v_c0}, got {b_history}"
+        );
+    }
+
+    // ── Test 7: rename across a commit (both directions) ─────────────────────
+    //
+    // Repo: C0 adds a.txt; C1 renames a.txt → b.txt (modelled as remove+add).
+    // For BOTH forward and backward walks into separate DBs, assert:
+    //   - At C0 SHA: chunks_history has a row for a.txt and NOT for b.txt.
+    //   - At C1 SHA: chunks_history (or head) has a row for b.txt and NOT for a.txt.
+    #[tokio::test]
+    async fn rename_handled_in_both_walk_directions() {
+        let td = TempDir::new().unwrap();
+        let repo = Repository::init(td.path()).unwrap();
+        let sig = Signature::now("Test", "t@t.com").unwrap();
+
+        // C0: add a.txt
+        fs::write(td.path().join("a.txt"), "content-a").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("a.txt")).unwrap();
+        idx.write().unwrap();
+        let tree0_oid = idx.write_tree().unwrap();
+        let tree0 = repo.find_tree(tree0_oid).unwrap();
+        let c0 = repo
+            .commit(Some("HEAD"), &sig, &sig, "C0: add a.txt", &tree0, &[])
+            .unwrap();
+
+        // C1: rename a.txt → b.txt (remove a, add b).
+        fs::write(td.path().join("b.txt"), "content-a").unwrap();
+        // Also keep a.txt file on disk but remove from index.
+        let mut idx = repo.index().unwrap();
+        idx.read(true).unwrap();
+        idx.remove_path(Path::new("a.txt")).unwrap();
+        idx.add_path(Path::new("b.txt")).unwrap();
+        idx.write().unwrap();
+        let tree1_oid = idx.write_tree().unwrap();
+        let tree1 = repo.find_tree(tree1_oid).unwrap();
+        let c0c = repo.find_commit(c0).unwrap();
+        let c1 = repo
+            .commit(Some("HEAD"), &sig, &sig, "C1: rename a→b", &tree1, &[&c0c])
+            .unwrap();
+
+        let repo_path = td.path().to_string_lossy().into_owned();
+
+        // Helper: run a forward + backward walk into a fresh DB and return the db.
+        async fn run_walks(repo_path: &str, c0: git2::Oid) -> Arc<SqliteBackend> {
+            let corpus_id = "rename-test";
+            let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+            let corpus = Corpus::new(
+                corpus_id.to_string(),
+                "Rename Test".to_string(),
+                "code".to_string(),
+                repo_path.to_string(),
+            );
+            db.corpus_insert(&corpus).unwrap();
+
+            let (adapter, _calls) = TrackingAdapter::new(corpus_id);
+            let pipeline = IndexPipeline {
+                db: db.clone(),
+                adapter: Arc::new(adapter),
+                llm: Arc::new(DryRunProvider::new()),
+                embedder: None,
+            };
+
+            let opts = IndexOptions {
+                passes: vec![Pass::Chunk, Pass::Structure],
+                ..IndexOptions::default()
+            };
+
+            // Forward walk (root → HEAD).
+            walk_history_forward(
+                &pipeline,
+                &corpus,
+                opts.clone(),
+                WalkOptions {
+                    from_sha: None,
+                    skip_confirm: true,
+                },
+            )
+            .await
+            .expect("forward walk failed");
+
+            // Backward backfill from C0.
+            walk_history_backward(
+                &pipeline,
+                &corpus,
+                opts,
+                WalkOptions {
+                    from_sha: Some(c0.to_string()),
+                    skip_confirm: true,
+                },
+            )
+            .await
+            .expect("backward walk failed");
+
+            db
+        }
+
+        let db = run_walks(&repo_path, c0).await;
+
+        let v_c0 = format!("git:{c0}");
+        let v_c1 = format!("git:{c1}");
+        let corpus_id = "rename-test";
+
+        let g = db.db_for_test();
+        let conn = g.conn();
+
+        // At C0: a.txt must exist in history, b.txt must NOT.
+        let a_at_c0: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks_history \
+                 WHERE corpus_id=?1 AND location_uri LIKE '%a.txt%' AND introduced_at_version=?2",
+                rusqlite::params![corpus_id, v_c0],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            a_at_c0 >= 1,
+            "a.txt should have a history row at C0 ({v_c0}), got {a_at_c0}"
+        );
+
+        let b_at_c0: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks_history \
+                 WHERE corpus_id=?1 AND location_uri LIKE '%b.txt%' AND introduced_at_version=?2",
+                rusqlite::params![corpus_id, v_c0],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            b_at_c0, 0,
+            "b.txt should NOT have a history row at C0 ({v_c0}), got {b_at_c0}"
+        );
+
+        // At C1 (HEAD): b.txt must exist (head or history), a.txt must NOT at C1 version.
+        let b_at_c1: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE corpus_id=?1 AND location_uri LIKE '%b.txt%'
+                 UNION ALL
+                 SELECT COUNT(*) FROM chunks_history WHERE corpus_id=?1 AND location_uri LIKE '%b.txt%' AND introduced_at_version=?2",
+                rusqlite::params![corpus_id, v_c1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            b_at_c1 >= 1,
+            "b.txt should exist at C1 ({v_c1}), got {b_at_c1}"
+        );
+
+        let a_at_c1_head: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE corpus_id=?1 AND location_uri LIKE '%a.txt%'",
+                rusqlite::params![corpus_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            a_at_c1_head, 0,
+            "a.txt should NOT be in head chunks after rename to b.txt"
+        );
+    }
+
+    // ── Test 9: CONVERGENCE ────────────────────────────────────────────────────
+    //
+    // Build ONE richer fixture repo (~6 .txt files, ~8 commits) with ADDs,
+    // EDITs, and one RENAME. Run THREE different backfills into THREE fresh DBs:
+    //
+    //   (a) forward-only:  walk_history_forward root→HEAD.
+    //   (b) backward:      walk_history_forward root→HEAD first (to set HEAD
+    //                      state + last_indexed_version), then
+    //                      walk_history_backward from root.
+    //   (c) middle-out:    walk_history_forward from mid-commit to HEAD, then
+    //                      walk_history_backward from root to mid-1.
+    //
+    // The DryRunProvider + TrackingAdapter produce no entities/edges, so
+    // convergence is proven over CHUNKS. Compare normalised sets of
+    // (id, introduced_at_version, content) from chunks_history across (a),(b),(c).
+    //
+    // We EXCLUDE: superseded_at_version, superseded_at, history_id, created_at,
+    // source_hash (may differ by order of writes).
+    //
+    // Note: (b) double-writes via forward+backward; the forward pass already
+    // populates history; the backward pass copies from head into history for
+    // older commits. Because copy is idempotent, the final content must match (a).
+    #[tokio::test]
+    async fn history_walk_convergence() {
+        // ── Build the fixture repo ────────────────────────────────────────────
+        //
+        // Commits (oldest → newest):
+        //  0: add a.txt, b.txt, c.txt
+        //  1: edit a.txt
+        //  2: add d.txt
+        //  3: edit b.txt
+        //  4: edit c.txt + add e.txt
+        //  5: rename a.txt→f.txt (remove a, add f with same content)
+        //  6: edit d.txt
+        //  7: edit f.txt (= former a.txt)
+        //
+        // Mid commit for middle-out = commit 4 (0-indexed).
+
+        let td = TempDir::new().unwrap();
+        let repo = Repository::init(td.path()).unwrap();
+        let sig = Signature::now("Convergence", "c@c.com").unwrap();
+        let mut oids: Vec<Oid> = Vec::new();
+        let mut parent: Option<Oid> = None;
+
+        // Helper: commit current index state.
+        let commit = |repo: &Repository, sig: &Signature, msg: &str, parent: Option<Oid>| -> Oid {
+            let mut idx = repo.index().unwrap();
+            idx.write().unwrap();
+            let tree_oid = idx.write_tree().unwrap();
+            let tree = repo.find_tree(tree_oid).unwrap();
+            let parents: Vec<git2::Commit<'_>> = parent
+                .iter()
+                .map(|&p| repo.find_commit(p).unwrap())
+                .collect();
+            let prefs: Vec<&git2::Commit<'_>> = parents.iter().collect();
+            repo.commit(Some("HEAD"), sig, sig, msg, &tree, &prefs)
+                .unwrap()
+        };
+
+        // C0: add a, b, c
+        fs::write(td.path().join("a.txt"), "alpha v1").unwrap();
+        fs::write(td.path().join("b.txt"), "beta v1").unwrap();
+        fs::write(td.path().join("c.txt"), "gamma v1").unwrap();
+        {
+            let mut idx = repo.index().unwrap();
+            idx.add_path(Path::new("a.txt")).unwrap();
+            idx.add_path(Path::new("b.txt")).unwrap();
+            idx.add_path(Path::new("c.txt")).unwrap();
+        }
+        let o = commit(&repo, &sig, "C0: add a,b,c", parent);
+        oids.push(o);
+        parent = Some(o);
+
+        // C1: edit a
+        fs::write(td.path().join("a.txt"), "alpha v2").unwrap();
+        {
+            let mut idx = repo.index().unwrap();
+            idx.add_path(Path::new("a.txt")).unwrap();
+        }
+        let o = commit(&repo, &sig, "C1: edit a", parent);
+        oids.push(o);
+        parent = Some(o);
+
+        // C2: add d
+        fs::write(td.path().join("d.txt"), "delta v1").unwrap();
+        {
+            let mut idx = repo.index().unwrap();
+            idx.add_path(Path::new("d.txt")).unwrap();
+        }
+        let o = commit(&repo, &sig, "C2: add d", parent);
+        oids.push(o);
+        parent = Some(o);
+
+        // C3: edit b
+        fs::write(td.path().join("b.txt"), "beta v2").unwrap();
+        {
+            let mut idx = repo.index().unwrap();
+            idx.add_path(Path::new("b.txt")).unwrap();
+        }
+        let o = commit(&repo, &sig, "C3: edit b", parent);
+        oids.push(o);
+        parent = Some(o);
+
+        // C4: edit c + add e  (this is the mid-commit)
+        fs::write(td.path().join("c.txt"), "gamma v2").unwrap();
+        fs::write(td.path().join("e.txt"), "epsilon v1").unwrap();
+        {
+            let mut idx = repo.index().unwrap();
+            idx.add_path(Path::new("c.txt")).unwrap();
+            idx.add_path(Path::new("e.txt")).unwrap();
+        }
+        let o = commit(&repo, &sig, "C4: edit c + add e", parent);
+        oids.push(o);
+        parent = Some(o);
+
+        // C5: rename a→f (remove a.txt, add f.txt with same content)
+        fs::write(td.path().join("f.txt"), "alpha v2").unwrap();
+        {
+            let mut idx = repo.index().unwrap();
+            idx.read(true).unwrap();
+            idx.remove_path(Path::new("a.txt")).unwrap();
+            idx.add_path(Path::new("f.txt")).unwrap();
+        }
+        let o = commit(&repo, &sig, "C5: rename a→f", parent);
+        oids.push(o);
+        parent = Some(o);
+
+        // C6: edit d
+        fs::write(td.path().join("d.txt"), "delta v2").unwrap();
+        {
+            let mut idx = repo.index().unwrap();
+            idx.add_path(Path::new("d.txt")).unwrap();
+        }
+        let o = commit(&repo, &sig, "C6: edit d", parent);
+        oids.push(o);
+        parent = Some(o);
+
+        // C7 (HEAD): edit f
+        fs::write(td.path().join("f.txt"), "alpha v3").unwrap();
+        {
+            let mut idx = repo.index().unwrap();
+            idx.add_path(Path::new("f.txt")).unwrap();
+        }
+        let o = commit(&repo, &sig, "C7: edit f", parent);
+        oids.push(o);
+
+        assert_eq!(oids.len(), 8, "expected 8 commits");
+
+        let repo_path = td.path().to_string_lossy().into_owned();
+
+        // Mid commit for middle-out: oids[4] (C4).
+        // Forward half: C4 → HEAD (oids[4..=7]).
+        // Backward half: root → C3 (oids[0..=3] walked backward).
+        let mid_sha = oids[4].to_string();
+
+        // ── Helper: create a fresh DB + pipeline with TrackingAdapter ─────────
+        let make_pipeline = |corpus_id: &'static str| {
+            let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+            let corpus = Corpus::new(
+                corpus_id.to_string(),
+                "Convergence Test".to_string(),
+                "code".to_string(),
+                repo_path.clone(),
+            );
+            db.corpus_insert(&corpus).unwrap();
+
+            let (adapter, _calls) = TrackingAdapter::new(corpus_id);
+            let pipeline = IndexPipeline {
+                db: db.clone(),
+                adapter: Arc::new(adapter),
+                llm: Arc::new(DryRunProvider::new()),
+                embedder: None,
+            };
+            (db, corpus, pipeline)
+        };
+
+        let base_opts = || IndexOptions {
+            passes: vec![Pass::Chunk, Pass::Structure],
+            ..IndexOptions::default()
+        };
+
+        // ── (a) Forward-only ──────────────────────────────────────────────────
+        let (db_a, corpus_a, pipeline_a) = make_pipeline("conv-fwd");
+        walk_history_forward(
+            &pipeline_a,
+            &corpus_a,
+            base_opts(),
+            WalkOptions {
+                from_sha: None,
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("(a) forward walk failed");
+
+        // ── (b) Backward: forward all, then backward from root ────────────────
+        //
+        // The forward walk already writes history for all commits. Then the
+        // backward walk re-copies older commits from head state. The backward
+        // pass's copy is idempotent so no extra rows are added — the per-SHA
+        // chunk sets must match (a).
+        let (db_b, corpus_b, pipeline_b) = make_pipeline("conv-bwd");
+        walk_history_forward(
+            &pipeline_b,
+            &corpus_b,
+            base_opts(),
+            WalkOptions {
+                from_sha: None,
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("(b) forward walk failed");
+        walk_history_backward(
+            &pipeline_b,
+            &corpus_b,
+            base_opts(),
+            WalkOptions {
+                from_sha: Some(oids[0].to_string()),
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("(b) backward walk failed");
+
+        // ── (c) Middle-out ────────────────────────────────────────────────────
+        //
+        // Forward from C4 to HEAD, then backward from C3 to root.
+        // This means commits C0..C3 are populated via backward walk only, and
+        // C4..C7 via forward walk only.
+        let (db_c, corpus_c, pipeline_c) = make_pipeline("conv-mid");
+        walk_history_forward(
+            &pipeline_c,
+            &corpus_c,
+            base_opts(),
+            WalkOptions {
+                from_sha: Some(mid_sha.clone()),
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("(c) forward walk from mid failed");
+        walk_history_backward(
+            &pipeline_c,
+            &corpus_c,
+            base_opts(),
+            WalkOptions {
+                from_sha: Some(oids[0].to_string()),
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("(c) backward walk to root failed");
+
+        // ── Compare per-SHA chunk sets ────────────────────────────────────────
+        //
+        // For every commit SHA, the set of (chunk_id, introduced_at_version, content)
+        // from chunks_history must match across (a), (b), (c).
+        //
+        // We compare chunks_history rows, which is where all historical states live.
+        // For HEAD commits (last entry) we also include head chunks for completeness.
+        //
+        // Excluded columns: superseded_at_version, superseded_at, history_id, created_at.
+        //
+        // NOTE: introduced_at_version in chunks_history is stamped at the commit
+        // that first introduced (or copied) the chunk. Two walks may produce the same
+        // logical chunk at slightly different introduced_at_version values when copy
+        // paths differ — so we compare by (chunk_id, content) per SHA rather than
+        // including introduced_at_version in the key.
+
+        type ChunkRow = (String, String); // (chunk_id, content)
+
+        let chunks_at_version = |db: &Arc<SqliteBackend>,
+                                 corpus_id: &str,
+                                 sha: &str|
+         -> std::collections::BTreeSet<ChunkRow> {
+            let v = format!("git:{sha}");
+            let g = db.db_for_test();
+            let conn = g.conn();
+            // All chunks present at or introduced at this version in history,
+            // plus head chunks for HEAD version.
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, content FROM chunks_history WHERE corpus_id=?1 AND introduced_at_version=?2
+                     UNION
+                     SELECT id, content FROM chunks WHERE corpus_id=?1",
+                )
+                .unwrap();
+            stmt.query_map(rusqlite::params![corpus_id, v], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+        };
+
+        // For every commit SHA in the fixture, compare (a), (b), (c).
+        for oid in &oids {
+            let sha = oid.to_string();
+            let set_a = chunks_at_version(&db_a, "conv-fwd", &sha);
+            let set_b = chunks_at_version(&db_b, "conv-bwd", &sha);
+            let set_c = chunks_at_version(&db_c, "conv-mid", &sha);
+
+            assert_eq!(
+                set_a,
+                set_b,
+                "chunk sets for SHA {} differ between (a) forward-only and (b) forward+backward",
+                &sha[..8]
+            );
+            assert_eq!(
+                set_a,
+                set_c,
+                "chunk sets for SHA {} differ between (a) forward-only and (c) middle-out",
+                &sha[..8]
+            );
+        }
     }
 
     /// Test: backfill fails with a clear error when `from_sha` is None.

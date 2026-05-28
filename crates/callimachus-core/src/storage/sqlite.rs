@@ -16,7 +16,7 @@ use crate::storage::run_log::{PassStats, RunRecord};
 use rusqlite::OptionalExtension;
 
 use crate::storage::{
-    backend::{CascadeStats, StorageBackend},
+    backend::{CascadeStats, CopyStats, StorageBackend},
     block_store, chunk_store, collection_store, contract_store, corpus_store, correction_store,
     db::Database,
     edge_store, embedding_store, entity_store, fts, history,
@@ -745,6 +745,334 @@ impl StorageBackend for SqliteBackend {
         })
     }
 
+    fn copy_unchanged_artifacts(
+        &self,
+        corpus_id: &str,
+        from_version: &str,
+        to_version: &str,
+        superseded_at_version: &str,
+        entity_ids: &[String],
+        dirty_paths: &[String],
+    ) -> Result<CopyStats> {
+        use crate::indexing::change_manifest::file_path_from_uri;
+        use std::collections::HashSet;
+
+        // Build the dirty-path set once for chunk filtering. Mirror
+        // `ChangeManifest::is_dirty`'s legacy `src/` tolerance so chunk URIs that
+        // carry the historical `src/` prefix still match diff paths that don't.
+        let dirty: HashSet<&str> = dirty_paths.iter().map(|s| s.as_str()).collect();
+        let is_dirty_path = |path: &str| -> bool {
+            dirty.contains(path)
+                || path
+                    .strip_prefix("src/")
+                    .is_some_and(|stripped| dirty.contains(stripped))
+        };
+
+        self.with_write_tx(|tx| {
+            let now = chrono::Utc::now().to_rfc3339();
+            let mut stats = CopyStats::default();
+
+            // Stage the unchanged entity ids into a temp table so the
+            // INSERT…SELECT statements below can join against it without
+            // building dynamic IN-clauses. TEMP tables are connection-scoped, so
+            // re-create/clear on every call.
+            tx.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS _copy_eids (id TEXT PRIMARY KEY);
+                 DELETE FROM _copy_eids;
+                 CREATE TEMP TABLE IF NOT EXISTS _copy_cids (id TEXT PRIMARY KEY);
+                 DELETE FROM _copy_cids;",
+            )?;
+            {
+                let mut ins = tx.prepare("INSERT OR IGNORE INTO _copy_eids(id) VALUES (?1)")?;
+                for id in entity_ids {
+                    ins.execute(rusqlite::params![id])?;
+                }
+            }
+
+            // ── Entities ────────────────────────────────────────────────────────
+            stats.entities_copied = tx.execute(
+                "INSERT INTO entities_history
+                   (id, corpus_id, canonical_name, kind, aliases, description,
+                    first_location_uri, last_location_uri, appearance_count, confidence,
+                    derived_at_version, superseded_at_version, superseded_at)
+                 SELECT id, corpus_id, canonical_name, kind, aliases, description,
+                        first_location_uri, last_location_uri, appearance_count, confidence,
+                        ?3, ?4, ?5
+                 FROM (
+                   SELECT id, corpus_id, canonical_name, kind, aliases, description,
+                          first_location_uri, last_location_uri, appearance_count, confidence
+                   FROM entities
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND id IN (SELECT id FROM _copy_eids)
+                   UNION
+                   SELECT id, corpus_id, canonical_name, kind, aliases, description,
+                          first_location_uri, last_location_uri, appearance_count, confidence
+                   FROM entities_history
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND id IN (SELECT id FROM _copy_eids)
+                 ) src
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM entities_history d
+                   WHERE d.corpus_id = ?1 AND d.id = src.id AND d.derived_at_version = ?3
+                 )",
+                rusqlite::params![corpus_id, from_version, to_version, superseded_at_version, now],
+            )? as u64;
+
+            // ── Edges (touching any unchanged entity) ─────────────────────────────
+            stats.edges_copied = tx.execute(
+                "INSERT INTO edges_history
+                   (id, corpus_id, from_entity_id, to_entity_id, kind,
+                    location_uri, confidence, derived_at_version,
+                    superseded_at_version, superseded_at)
+                 SELECT id, corpus_id, from_entity_id, to_entity_id, kind,
+                        location_uri, confidence, ?3, ?4, ?5
+                 FROM (
+                   SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence
+                   FROM edges
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND (from_entity_id IN (SELECT id FROM _copy_eids)
+                          OR to_entity_id IN (SELECT id FROM _copy_eids))
+                   UNION
+                   SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence
+                   FROM edges_history
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND (from_entity_id IN (SELECT id FROM _copy_eids)
+                          OR to_entity_id IN (SELECT id FROM _copy_eids))
+                 ) src
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM edges_history d
+                   WHERE d.corpus_id = ?1 AND d.id = src.id AND d.derived_at_version = ?3
+                 )",
+                rusqlite::params![corpus_id, from_version, to_version, superseded_at_version, now],
+            )? as u64;
+
+            // ── Purposes ──────────────────────────────────────────────────────────
+            stats.purposes_copied = tx.execute(
+                "INSERT INTO entity_purposes_history
+                   (entity_id, corpus_id, purpose, model, model_tier, generated_at,
+                    derived_at_version, superseded_at_version, superseded_at)
+                 SELECT entity_id, corpus_id, purpose, model, model_tier, generated_at,
+                        ?3, ?4, ?5
+                 FROM (
+                   SELECT entity_id, corpus_id, purpose, model, model_tier, generated_at
+                   FROM entity_purposes
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND entity_id IN (SELECT id FROM _copy_eids)
+                   UNION
+                   SELECT entity_id, corpus_id, purpose, model, model_tier, generated_at
+                   FROM entity_purposes_history
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND entity_id IN (SELECT id FROM _copy_eids)
+                 ) src
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM entity_purposes_history d
+                   WHERE d.corpus_id = ?1 AND d.entity_id = src.entity_id
+                     AND d.model = src.model AND d.derived_at_version = ?3
+                 )",
+                rusqlite::params![corpus_id, from_version, to_version, superseded_at_version, now],
+            )? as u64;
+
+            // ── Contracts ─────────────────────────────────────────────────────────
+            stats.contracts_copied = tx.execute(
+                "INSERT INTO entity_contracts_history
+                   (entity_id, corpus_id,
+                    is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
+                    is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
+                    panic_call_count, debt_markers, assumptions, risks,
+                    intent_gap, caller_notes, model, model_tier, generated_at,
+                    derived_at_version, superseded_at_version, superseded_at)
+                 SELECT entity_id, corpus_id,
+                        is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
+                        is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
+                        panic_call_count, debt_markers, assumptions, risks,
+                        intent_gap, caller_notes, model, model_tier, generated_at,
+                        ?3, ?4, ?5
+                 FROM (
+                   SELECT entity_id, corpus_id,
+                          is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
+                          is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
+                          panic_call_count, debt_markers, assumptions, risks,
+                          intent_gap, caller_notes, model, model_tier, generated_at
+                   FROM entity_contracts
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND entity_id IN (SELECT id FROM _copy_eids)
+                   UNION
+                   SELECT entity_id, corpus_id,
+                          is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
+                          is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
+                          panic_call_count, debt_markers, assumptions, risks,
+                          intent_gap, caller_notes, model, model_tier, generated_at
+                   FROM entity_contracts_history
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND entity_id IN (SELECT id FROM _copy_eids)
+                 ) src
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM entity_contracts_history d
+                   WHERE d.corpus_id = ?1 AND d.entity_id = src.entity_id
+                     AND d.model = src.model AND d.derived_at_version = ?3
+                 )",
+                rusqlite::params![corpus_id, from_version, to_version, superseded_at_version, now],
+            )? as u64;
+
+            // ── Blocks ────────────────────────────────────────────────────────────
+            stats.blocks_copied = tx.execute(
+                "INSERT INTO entity_blocks_history
+                   (id, entity_id, corpus_id, label, description, position,
+                    derived_at_version, superseded_at_version, superseded_at)
+                 SELECT id, entity_id, corpus_id, label, description, position,
+                        ?3, ?4, ?5
+                 FROM (
+                   SELECT id, entity_id, corpus_id, label, description, position
+                   FROM entity_blocks
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND entity_id IN (SELECT id FROM _copy_eids)
+                   UNION
+                   SELECT id, entity_id, corpus_id, label, description, position
+                   FROM entity_blocks_history
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND entity_id IN (SELECT id FROM _copy_eids)
+                 ) src
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM entity_blocks_history d
+                   WHERE d.corpus_id = ?1 AND d.id = src.id AND d.derived_at_version = ?3
+                 )",
+                rusqlite::params![corpus_id, from_version, to_version, superseded_at_version, now],
+            )? as u64;
+
+            // ── Themes (theme entities present in the unchanged set) ──────────────
+            stats.themes_copied = tx.execute(
+                "INSERT INTO themes_history
+                   (id, corpus_id, title, statement, confidence,
+                    model, model_tier, generated_at,
+                    derived_at_version, superseded_at_version, superseded_at)
+                 SELECT id, corpus_id, title, statement, confidence,
+                        model, model_tier, generated_at, ?3, ?4, ?5
+                 FROM (
+                   SELECT id, corpus_id, title, statement, confidence, model, model_tier, generated_at
+                   FROM themes
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND id IN (SELECT id FROM _copy_eids)
+                   UNION
+                   SELECT id, corpus_id, title, statement, confidence, model, model_tier, generated_at
+                   FROM themes_history
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND id IN (SELECT id FROM _copy_eids)
+                 ) src
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM themes_history d
+                   WHERE d.corpus_id = ?1 AND d.id = src.id AND d.derived_at_version = ?3
+                 )",
+                rusqlite::params![corpus_id, from_version, to_version, superseded_at_version, now],
+            )? as u64;
+
+            // ── Chunks (every chunk present at `from` whose path is NOT dirty) ────
+            // Read candidate chunks at `from` from head ∪ history, filter dirty
+            // paths in Rust (URI→path extraction is awkward in SQL), then insert
+            // re-stamped rows guarded by a natural-key NOT EXISTS check.
+            //
+            // Row shape: (id, corpus_id, parent_path, kind, location_uri,
+            //             content, byte_length, created_at, source_hash).
+            type ChunkCopyRow = (
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+                String,
+                i64,
+                String,
+                Option<String>,
+            );
+            let candidates: Vec<ChunkCopyRow> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id, corpus_id, parent_path, kind, location_uri, content,
+                            byte_length, created_at, source_hash
+                     FROM chunks
+                     WHERE corpus_id = ?1 AND introduced_at_version = ?2
+                     UNION
+                     SELECT id, corpus_id, parent_path, kind, location_uri, content,
+                            byte_length, created_at, source_hash
+                     FROM chunks_history
+                     WHERE corpus_id = ?1 AND introduced_at_version = ?2",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![corpus_id, from_version], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                        r.get::<_, i64>(6)?,
+                        r.get::<_, String>(7)?,
+                        r.get::<_, Option<String>>(8)?,
+                    ))
+                })?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
+
+            let mut copied_chunk_ids: Vec<String> = Vec::new();
+            {
+                let mut ins = tx.prepare(
+                    "INSERT INTO chunks_history
+                       (id, corpus_id, parent_path, kind, location_uri, content,
+                        byte_length, created_at, semantic_processed, source_hash,
+                        introduced_at_version, last_modified_at_version,
+                        last_modified_commit_message, last_modified_author,
+                        superseded_at_version, superseded_at)
+                     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10,?10,NULL,NULL,?11,?12
+                     WHERE NOT EXISTS (
+                       SELECT 1 FROM chunks_history d
+                       WHERE d.id = ?1 AND d.introduced_at_version = ?10
+                     )",
+                )?;
+                let mut cid_ins = tx.prepare("INSERT OR IGNORE INTO _copy_cids(id) VALUES (?1)")?;
+                for (id, c_corpus, parent, kind, uri, content, blen, created, shash) in &candidates {
+                    if is_dirty_path(file_path_from_uri(uri)) {
+                        continue;
+                    }
+                    let n = ins.execute(rusqlite::params![
+                        id, c_corpus, parent, kind, uri, content, blen, created, shash,
+                        to_version, superseded_at_version, now,
+                    ])?;
+                    cid_ins.execute(rusqlite::params![id])?;
+                    copied_chunk_ids.push(id.clone());
+                    stats.chunks_copied += n as u64;
+                }
+            }
+
+            // ── Summaries (targeting unchanged entities OR copied chunks) ─────────
+            stats.summaries_copied = tx.execute(
+                "INSERT INTO summaries_history
+                   (id, corpus_id, target_kind, target_id, depth, text,
+                    model, model_tier, generated_at,
+                    derived_at_version, superseded_at_version, superseded_at)
+                 SELECT id, corpus_id, target_kind, target_id, depth, text,
+                        model, model_tier, generated_at, ?3, ?4, ?5
+                 FROM (
+                   SELECT id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at
+                   FROM summaries
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND (target_id IN (SELECT id FROM _copy_eids)
+                          OR target_id IN (SELECT id FROM _copy_cids))
+                   UNION
+                   SELECT id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at
+                   FROM summaries_history
+                   WHERE corpus_id = ?1 AND derived_at_version = ?2
+                     AND (target_id IN (SELECT id FROM _copy_eids)
+                          OR target_id IN (SELECT id FROM _copy_cids))
+                 ) src
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM summaries_history d
+                   WHERE d.corpus_id = ?1 AND d.id = src.id AND d.derived_at_version = ?3
+                 )",
+                rusqlite::params![corpus_id, from_version, to_version, superseded_at_version, now],
+            )? as u64;
+
+            Ok(stats)
+        })
+    }
+
     // ── Graph helpers ─────────────────────────────────────────────────────────
 
     fn entities_without_inbound_calls(&self, corpus_id: &str) -> Result<Vec<Entity>> {
@@ -1382,5 +1710,601 @@ mod tests {
         // If migrations didn't run, corpus_list would fail.
         let result = backend.corpus_list();
         assert!(result.is_ok());
+    }
+
+    // ── Test 1: copy_unchanged_artifacts re-stamps version ────────────────────
+    //
+    // Seed: entity + purpose + contract + block + edge + chunk + summary, all at
+    // derived_at_version/introduced_at_version = "git:v1".
+    // Call copy_unchanged_artifacts("git:v1" → "git:v2").
+    // Assert each *_history table has a row stamped at "git:v2" and that
+    // CopyStats counts ≥1 for each seeded type.
+    #[test]
+    fn copy_restamps_version_in_history_tables() {
+        use crate::storage::backend::{CopyStats, StorageBackend};
+        use crate::types::{
+            Chunk, Corpus, Edge, Entity, EntityBlock, EntityContract, EntityPurpose, Location,
+            Summary, SummaryTargetKind,
+        };
+
+        let db = SqliteBackend::open_in_memory().unwrap();
+        let corpus_id = "restamp-test";
+        db.corpus_insert(&Corpus::new(
+            corpus_id.to_string(),
+            "Restamp Test".to_string(),
+            "code".to_string(),
+            "/tmp".to_string(),
+        ))
+        .unwrap();
+
+        let v1 = "git:v1";
+        let v2 = "git:v2";
+
+        // Seed entity A (source entity for edge + all per-entity artifacts).
+        let eid = "entity-a";
+        let mut ent = Entity::new(
+            eid.to_string(),
+            corpus_id.to_string(),
+            "EntityA".to_string(),
+            "function".to_string(),
+        );
+        ent.derived_at_version = Some(v1.to_string());
+        ent.first_location = Some(Location::new(corpus_id, "a.txt"));
+        ent.last_location = Some(Location::new(corpus_id, "a.txt"));
+        db.entity_upsert(&ent).unwrap();
+
+        // Seed entity B (target of the edge; not in unchanged set).
+        let eid2 = "entity-b";
+        let mut ent2 = Entity::new(
+            eid2.to_string(),
+            corpus_id.to_string(),
+            "EntityB".to_string(),
+            "function".to_string(),
+        );
+        ent2.derived_at_version = Some(v1.to_string());
+        db.entity_upsert(&ent2).unwrap();
+
+        // Seed an edge from A → B.
+        let mut edge = Edge::new(
+            "edge-ab".to_string(),
+            corpus_id.to_string(),
+            eid.to_string(),
+            eid2.to_string(),
+            "calls".to_string(),
+            Location::new(corpus_id, "a.txt"),
+        );
+        edge.derived_at_version = Some(v1.to_string());
+        db.edge_upsert(&edge).unwrap();
+
+        // Seed an EntityPurpose for A.
+        let purpose = EntityPurpose {
+            entity_id: eid.to_string(),
+            corpus_id: corpus_id.to_string(),
+            purpose: "does something".to_string(),
+            model: "test-model".to_string(),
+            model_tier: "haiku".to_string(),
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            derived_at_version: Some(v1.to_string()),
+        };
+        db.purpose_upsert(&purpose).unwrap();
+
+        // Seed an EntityContract for A.
+        let contract = EntityContract {
+            entity_id: eid.to_string(),
+            corpus_id: corpus_id.to_string(),
+            model: "test-model".to_string(),
+            model_tier: "haiku".to_string(),
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            derived_at_version: Some(v1.to_string()),
+            ..EntityContract::default()
+        };
+        db.contract_upsert(&contract).unwrap();
+
+        // Seed an EntityBlock for A.
+        let block = EntityBlock {
+            id: "block-a1".to_string(),
+            entity_id: eid.to_string(),
+            corpus_id: corpus_id.to_string(),
+            label: "init".to_string(),
+            description: "initialisation block".to_string(),
+            position: 0,
+            derived_at_version: Some(v1.to_string()),
+        };
+        db.block_upsert(&block).unwrap();
+
+        // Seed a chunk (introduced_at_version = v1).
+        let mut chunk = Chunk::new(
+            corpus_id.to_string(),
+            None,
+            "file".to_string(),
+            Location::new(corpus_id, "a.txt"),
+            "content of a".to_string(),
+        );
+        chunk.introduced_at_version = Some(v1.to_string());
+        chunk.last_modified_at_version = Some(v1.to_string());
+        let chunk_id = chunk.id.clone();
+        db.chunk_upsert(&chunk).unwrap();
+
+        // Seed a Summary targeting entity A.
+        let summary = Summary {
+            id: "sum-a".to_string(),
+            corpus_id: corpus_id.to_string(),
+            target_kind: SummaryTargetKind::Entity,
+            target_id: eid.to_string(),
+            depth: "entity".to_string(),
+            text: "summary of A".to_string(),
+            model: "test-model".to_string(),
+            model_tier: "haiku".to_string(),
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            derived_at_version: Some(v1.to_string()),
+        };
+        db.summary_upsert(&summary).unwrap();
+
+        // Call copy_unchanged_artifacts: unchanged = [entity A], no dirty paths.
+        let entity_ids = vec![eid.to_string()];
+        let stats: CopyStats = db
+            .copy_unchanged_artifacts(corpus_id, v1, v2, v2, &entity_ids, &[])
+            .unwrap();
+
+        // Verify CopyStats counts.
+        assert!(
+            stats.entities_copied >= 1,
+            "entities_copied should be >= 1, got {}",
+            stats.entities_copied
+        );
+        assert!(
+            stats.edges_copied >= 1,
+            "edges_copied should be >= 1, got {}",
+            stats.edges_copied
+        );
+        assert!(
+            stats.purposes_copied >= 1,
+            "purposes_copied should be >= 1, got {}",
+            stats.purposes_copied
+        );
+        assert!(
+            stats.contracts_copied >= 1,
+            "contracts_copied should be >= 1, got {}",
+            stats.contracts_copied
+        );
+        assert!(
+            stats.blocks_copied >= 1,
+            "blocks_copied should be >= 1, got {}",
+            stats.blocks_copied
+        );
+        assert!(
+            stats.chunks_copied >= 1,
+            "chunks_copied should be >= 1, got {}",
+            stats.chunks_copied
+        );
+        assert!(
+            stats.summaries_copied >= 1,
+            "summaries_copied should be >= 1, got {}",
+            stats.summaries_copied
+        );
+
+        // Verify each *_history table has a row at git:v2.
+        let guard = db.db_for_test();
+        let conn = guard.conn();
+
+        let entity_h: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities_history WHERE corpus_id=?1 AND derived_at_version=?2",
+                rusqlite::params![corpus_id, v2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(entity_h >= 1, "entities_history should have a row at {v2}");
+
+        let edge_h: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges_history WHERE corpus_id=?1 AND derived_at_version=?2",
+                rusqlite::params![corpus_id, v2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(edge_h >= 1, "edges_history should have a row at {v2}");
+
+        let purpose_h: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entity_purposes_history WHERE corpus_id=?1 AND derived_at_version=?2",
+                rusqlite::params![corpus_id, v2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            purpose_h >= 1,
+            "entity_purposes_history should have a row at {v2}"
+        );
+
+        let contract_h: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entity_contracts_history WHERE corpus_id=?1 AND derived_at_version=?2",
+                rusqlite::params![corpus_id, v2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            contract_h >= 1,
+            "entity_contracts_history should have a row at {v2}"
+        );
+
+        let block_h: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entity_blocks_history WHERE corpus_id=?1 AND derived_at_version=?2",
+                rusqlite::params![corpus_id, v2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            block_h >= 1,
+            "entity_blocks_history should have a row at {v2}"
+        );
+
+        let chunk_h: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks_history WHERE corpus_id=?1 AND introduced_at_version=?2",
+                rusqlite::params![corpus_id, v2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            chunk_h >= 1,
+            "chunks_history should have a row with introduced_at_version={v2}"
+        );
+
+        let summary_h: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM summaries_history WHERE corpus_id=?1 AND derived_at_version=?2",
+                rusqlite::params![corpus_id, v2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            summary_h >= 1,
+            "summaries_history should have a row at {v2}"
+        );
+
+        // Verify superseded_at_version is set to v2 as supplied.
+        let entity_superseded: String = conn
+            .query_row(
+                "SELECT superseded_at_version FROM entities_history WHERE corpus_id=?1 AND derived_at_version=?2 LIMIT 1",
+                rusqlite::params![corpus_id, v2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            entity_superseded, v2,
+            "entities_history superseded_at_version should be {v2}"
+        );
+
+        // Assert head tables are unchanged: entity A still in entities at v1.
+        let entity_head: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities WHERE id=?1 AND derived_at_version=?2",
+                rusqlite::params![eid, v1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            entity_head, 1,
+            "head entities table should still have entity A at {v1}"
+        );
+
+        let _ = chunk_id;
+    }
+
+    // ── Test 2: copy_unchanged_artifacts reads from HEAD tables ───────────────
+    //
+    // Seed entity + chunk ONLY in head tables (no history rows). Call
+    // copy_unchanged_artifacts. Assert history rows appear and HEAD tables
+    // are unchanged (same row counts).
+    #[test]
+    fn copy_reads_from_head_tables() {
+        use crate::storage::backend::StorageBackend;
+        use crate::types::{Chunk, Corpus, Entity, Location};
+
+        let db = SqliteBackend::open_in_memory().unwrap();
+        let corpus_id = "head-read-test";
+        db.corpus_insert(&Corpus::new(
+            corpus_id.to_string(),
+            "Head Read Test".to_string(),
+            "code".to_string(),
+            "/tmp".to_string(),
+        ))
+        .unwrap();
+
+        let from_v = "git:HEAD";
+        let to_v = "git:C";
+
+        // Seed entity only in head table.
+        let eid = "ent-head";
+        let mut ent = Entity::new(
+            eid.to_string(),
+            corpus_id.to_string(),
+            "HeadEnt".to_string(),
+            "function".to_string(),
+        );
+        ent.derived_at_version = Some(from_v.to_string());
+        ent.first_location = Some(Location::new(corpus_id, "f.txt"));
+        db.entity_upsert(&ent).unwrap();
+
+        // Seed chunk only in head table.
+        let mut chunk = Chunk::new(
+            corpus_id.to_string(),
+            None,
+            "file".to_string(),
+            Location::new(corpus_id, "f.txt"),
+            "head content".to_string(),
+        );
+        chunk.introduced_at_version = Some(from_v.to_string());
+        chunk.last_modified_at_version = Some(from_v.to_string());
+        db.chunk_upsert(&chunk).unwrap();
+
+        let head_entity_count_before: i64 = {
+            let g = db.db_for_test();
+            g.conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM entities WHERE corpus_id=?1",
+                    rusqlite::params![corpus_id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let head_chunk_count_before = db.chunk_count(corpus_id).unwrap();
+
+        // No history rows should exist yet.
+        {
+            let g = db.db_for_test();
+            let n: i64 = g
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM entities_history WHERE corpus_id=?1",
+                    rusqlite::params![corpus_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "no history rows should exist before copy");
+        }
+
+        let entity_ids = vec![eid.to_string()];
+        db.copy_unchanged_artifacts(corpus_id, from_v, to_v, to_v, &entity_ids, &[])
+            .unwrap();
+
+        // Assert history rows appeared.
+        {
+            let g = db.db_for_test();
+            let conn = g.conn();
+
+            let entity_h: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM entities_history WHERE corpus_id=?1 AND derived_at_version=?2",
+                    rusqlite::params![corpus_id, to_v],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                entity_h >= 1,
+                "entities_history should have a row at {to_v}"
+            );
+
+            let chunk_h: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM chunks_history WHERE corpus_id=?1 AND introduced_at_version=?2",
+                    rusqlite::params![corpus_id, to_v],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                chunk_h >= 1,
+                "chunks_history should have a row with introduced_at_version={to_v}"
+            );
+        }
+
+        // Assert head tables byte-for-byte unchanged.
+        let head_entity_count_after: i64 = {
+            let g = db.db_for_test();
+            g.conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM entities WHERE corpus_id=?1",
+                    rusqlite::params![corpus_id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let head_chunk_count_after = db.chunk_count(corpus_id).unwrap();
+
+        assert_eq!(
+            head_entity_count_before, head_entity_count_after,
+            "head entities count should not change after copy"
+        );
+        assert_eq!(
+            head_chunk_count_before, head_chunk_count_after,
+            "head chunks count should not change after copy"
+        );
+    }
+
+    // ── Test 3: copy_unchanged_artifacts is idempotent ────────────────────────
+    //
+    // Call copy_unchanged_artifacts twice with identical args.
+    // Assert *_history row counts are identical after the 2nd call (no duplicates).
+    #[test]
+    fn copy_is_idempotent() {
+        use crate::storage::backend::StorageBackend;
+        use crate::types::{Chunk, Corpus, Entity, Location};
+
+        let db = SqliteBackend::open_in_memory().unwrap();
+        let corpus_id = "idempotent-test";
+        db.corpus_insert(&Corpus::new(
+            corpus_id.to_string(),
+            "Idempotent Test".to_string(),
+            "code".to_string(),
+            "/tmp".to_string(),
+        ))
+        .unwrap();
+
+        let v1 = "git:v1";
+        let v2 = "git:v2";
+
+        let eid = "ent-idem";
+        let mut ent = Entity::new(
+            eid.to_string(),
+            corpus_id.to_string(),
+            "IdemEnt".to_string(),
+            "function".to_string(),
+        );
+        ent.derived_at_version = Some(v1.to_string());
+        ent.first_location = Some(Location::new(corpus_id, "x.txt"));
+        db.entity_upsert(&ent).unwrap();
+
+        let mut chunk = Chunk::new(
+            corpus_id.to_string(),
+            None,
+            "file".to_string(),
+            Location::new(corpus_id, "x.txt"),
+            "idempotent content".to_string(),
+        );
+        chunk.introduced_at_version = Some(v1.to_string());
+        chunk.last_modified_at_version = Some(v1.to_string());
+        db.chunk_upsert(&chunk).unwrap();
+
+        let entity_ids = vec![eid.to_string()];
+
+        // First call.
+        db.copy_unchanged_artifacts(corpus_id, v1, v2, v2, &entity_ids, &[])
+            .unwrap();
+
+        // Record row counts after first call.
+        let (eh1, ch1): (i64, i64) = {
+            let g = db.db_for_test();
+            let conn = g.conn();
+            let eh = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM entities_history WHERE corpus_id=?1",
+                    rusqlite::params![corpus_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let ch = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM chunks_history WHERE corpus_id=?1",
+                    rusqlite::params![corpus_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            (eh, ch)
+        };
+
+        // Second call — identical args.
+        db.copy_unchanged_artifacts(corpus_id, v1, v2, v2, &entity_ids, &[])
+            .unwrap();
+
+        // Row counts must be unchanged.
+        let (eh2, ch2): (i64, i64) = {
+            let g = db.db_for_test();
+            let conn = g.conn();
+            let eh = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM entities_history WHERE corpus_id=?1",
+                    rusqlite::params![corpus_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let ch = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM chunks_history WHERE corpus_id=?1",
+                    rusqlite::params![corpus_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            (eh, ch)
+        };
+
+        assert_eq!(
+            eh1, eh2,
+            "entities_history row count should be unchanged after 2nd copy (got {eh1} then {eh2})"
+        );
+        assert_eq!(
+            ch1, ch2,
+            "chunks_history row count should be unchanged after 2nd copy (got {ch1} then {ch2})"
+        );
+    }
+
+    // ── Test 8 (storage variant): theme copy when nothing changed ─────────────
+    //
+    // Choice: we use the STORAGE-level approach because the theme-pass machinery
+    // requires ≥20 entities and extract_themes to fire, which is impractical
+    // in a unit test without a full corpus setup. Instead we seed a themes row +
+    // its kind=theme entity at git:v1, call copy_unchanged_artifacts, and assert
+    // a themes_history row appears at git:v2 with CopyStats.themes_copied >= 1.
+    #[test]
+    fn copy_includes_theme_rows() {
+        use crate::storage::backend::StorageBackend;
+        use crate::types::{Corpus, Entity, Location, Theme};
+
+        let db = SqliteBackend::open_in_memory().unwrap();
+        let corpus_id = "theme-copy-test";
+        db.corpus_insert(&Corpus::new(
+            corpus_id.to_string(),
+            "Theme Copy Test".to_string(),
+            "code".to_string(),
+            "/tmp".to_string(),
+        ))
+        .unwrap();
+
+        let v1 = "git:v1";
+        let v2 = "git:v2";
+
+        // Seed a theme entity (kind = "theme").
+        let theme_eid = "theme-entity-1";
+        let mut theme_ent = Entity::new(
+            theme_eid.to_string(),
+            corpus_id.to_string(),
+            "Separation of Concerns".to_string(),
+            "theme".to_string(),
+        );
+        theme_ent.derived_at_version = Some(v1.to_string());
+        theme_ent.first_location = Some(Location::new(corpus_id, ""));
+        db.entity_upsert(&theme_ent).unwrap();
+
+        // Seed a themes row with the same id.
+        let theme = Theme {
+            id: theme_eid.to_string(),
+            corpus_id: corpus_id.to_string(),
+            title: "Separation of Concerns".to_string(),
+            statement: "Keep things separated.".to_string(),
+            confidence: 0.9,
+            model: "test-model".to_string(),
+            model_tier: "haiku".to_string(),
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            derived_at_version: Some(v1.to_string()),
+        };
+        db.theme_upsert(&theme).unwrap();
+
+        // copy_unchanged_artifacts with the theme entity in the unchanged set.
+        let entity_ids = vec![theme_eid.to_string()];
+        let stats = db
+            .copy_unchanged_artifacts(corpus_id, v1, v2, v2, &entity_ids, &[])
+            .unwrap();
+
+        assert!(
+            stats.themes_copied >= 1,
+            "themes_copied should be >= 1, got {}",
+            stats.themes_copied
+        );
+
+        let g = db.db_for_test();
+        let theme_h: i64 = g
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM themes_history WHERE corpus_id=?1 AND derived_at_version=?2",
+                rusqlite::params![corpus_id, v2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            theme_h >= 1,
+            "themes_history should have a row at {v2}, got {theme_h}"
+        );
     }
 }

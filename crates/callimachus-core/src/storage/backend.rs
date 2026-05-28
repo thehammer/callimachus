@@ -28,6 +28,19 @@ pub struct CascadeStats {
     pub entities_archived: u64,
 }
 
+/// Statistics returned by [`StorageBackend::copy_unchanged_artifacts`].
+#[derive(Debug, Default, Clone)]
+pub struct CopyStats {
+    pub entities_copied: u64,
+    pub edges_copied: u64,
+    pub purposes_copied: u64,
+    pub contracts_copied: u64,
+    pub blocks_copied: u64,
+    pub summaries_copied: u64,
+    pub chunks_copied: u64,
+    pub themes_copied: u64,
+}
+
 /// A swappable storage backend. `SqliteBackend` is the default implementation.
 ///
 /// All methods are synchronous. The backend is responsible for its own concurrency
@@ -456,6 +469,46 @@ pub trait StorageBackend: Send + Sync {
         dirty_chunk_ids: &[String],
         superseded_at_version: &str,
     ) -> Result<CascadeStats>;
+
+    /// Copy every artifact row associated with the *unchanged* set at
+    /// `from_version` into the corresponding `*_history` table, re-stamped with
+    /// `derived_at_version = to_version` (and, for chunks,
+    /// `introduced_at_version`/`last_modified_at_version = to_version`) and
+    /// `superseded_at_version = superseded_at_version`.
+    ///
+    /// This is the "copy, don't recompute" primitive that powers the diff-based
+    /// history walk: at each commit only the changed files are re-derived; the
+    /// artifacts of every unchanged file are byte-for-byte identical to the
+    /// neighbour commit's already-computed rows and are copied here instead of
+    /// re-deriving them via LLM calls.
+    ///
+    /// Inputs:
+    /// * `entity_ids` — the unchanged entities. Drives the copy of entity rows
+    ///   plus their per-entity artifacts (purposes, contracts, blocks), edges
+    ///   that touch them, entity-targeted summaries, and (for `kind=theme`
+    ///   entities) the corresponding `themes` rows.
+    /// * `dirty_paths` — source-file paths that changed at this commit. Chunks
+    ///   whose location URI resolves to one of these paths are NOT copied
+    ///   (they will be re-derived). Every other chunk present at `from_version`
+    ///   is copied, along with its chunk-targeted summaries.
+    ///
+    /// Rows are read from BOTH the head tables and `*_history` at `from_version`
+    /// (so a backward walk's first step, whose neighbour is HEAD, reads head
+    /// rows; later steps read history rows).
+    ///
+    /// Idempotent: re-inserts are guarded by a natural-key `NOT EXISTS` check
+    /// against the destination `*_history` table at `to_version`, so re-running
+    /// a backfill never duplicates rows. All inserts run in a single write
+    /// transaction. Head tables are never modified.
+    fn copy_unchanged_artifacts(
+        &self,
+        corpus_id: &str,
+        from_version: &str,
+        to_version: &str,
+        superseded_at_version: &str,
+        entity_ids: &[String],
+        dirty_paths: &[String],
+    ) -> Result<CopyStats>;
 
     // ── Graph helpers ─────────────────────────────────────────────────────────
 
