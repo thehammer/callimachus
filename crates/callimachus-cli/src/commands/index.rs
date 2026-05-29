@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use callimachus_adapter_book::BookAdapter;
 use callimachus_adapter_code::CodeAdapter;
+use callimachus_adapter_docs::DocsAdapter;
 use callimachus_adapter_wiki::WikiAdapter;
 use callimachus_core::{
     adapter::SourceAdapter,
@@ -100,6 +101,7 @@ pub fn build_adapter(corpus: &Corpus) -> Result<Arc<dyn SourceAdapter>> {
         "book" => Ok(Arc::new(BookAdapter::new())),
         "code" => Ok(Arc::new(CodeAdapter::new())),
         "wiki" => Ok(Arc::new(WikiAdapter::new())),
+        "docs" => Ok(Arc::new(DocsAdapter::new())),
         other => bail!("adapter not yet available for corpus kind '{other}'"),
     }
 }

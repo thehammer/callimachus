@@ -8,6 +8,7 @@ members = [
     "crates/adapters/callimachus-adapter-book",
     "crates/adapters/callimachus-adapter-code",
     "crates/adapters/callimachus-adapter-wiki",
+    "crates/adapters/callimachus-adapter-docs",
 ]
 resolver = "2"
 

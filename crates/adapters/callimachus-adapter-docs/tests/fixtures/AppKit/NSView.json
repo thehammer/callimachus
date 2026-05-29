@@ -1,0 +1,110 @@
+{
+  "metadata": {
+    "title": "NSView",
+    "symbolKind": "class",
+    "roleHeading": "Class",
+    "modules": [{"name": "AppKit"}],
+    "platforms": [
+      {"name": "macOS", "introduced": "10.0", "deprecated": ""}
+    ]
+  },
+  "abstract": [
+    {"type": "text", "text": "The infrastructure for drawing, printing, and handling events in an app."}
+  ],
+  "primaryContentSections": [
+    {
+      "kind": "declarations",
+      "declarations": [
+        {
+          "languages": ["swift"],
+          "platforms": ["macOS"],
+          "tokens": [
+            {"kind": "keyword", "text": "class"},
+            {"kind": "text", "text": " "},
+            {"kind": "identifier", "text": "NSView"},
+            {"kind": "text", "text": " : "},
+            {"kind": "typeIdentifier", "text": "NSResponder", "identifier": "doc://com.apple.documentation/documentation/appkit/nsresponder"}
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "content",
+      "content": [
+        {
+          "type": "paragraph",
+          "inlineContent": [
+            {"type": "text", "text": "The NSView class provides the fundamental infrastructure for drawing content, handling events, and handling drag operations in your macOS apps."}
+          ]
+        }
+      ]
+    }
+  ],
+  "topicSections": [
+    {
+      "title": "Creating a View",
+      "identifiers": [
+        "doc://com.apple.documentation/documentation/appkit/nsview/tag"
+      ]
+    },
+    {
+      "title": "Configuring the Bounds Rectangle",
+      "identifiers": [
+        "doc://com.apple.documentation/documentation/appkit/nsview/bounds"
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "type": "inheritsFrom",
+      "source": "doc://com.apple.documentation/documentation/appkit/nsview",
+      "target": "doc://com.apple.documentation/documentation/appkit/nsresponder"
+    },
+    {
+      "type": "conformsTo",
+      "source": "doc://com.apple.documentation/documentation/appkit/nsview",
+      "target": "doc://com.apple.documentation/documentation/appkit/nsaccessibility"
+    }
+  ],
+  "references": {
+    "doc://com.apple.documentation/documentation/appkit/nsresponder": {
+      "identifier": "doc://com.apple.documentation/documentation/appkit/nsresponder",
+      "title": "NSResponder",
+      "role": "symbol",
+      "kind": "symbol",
+      "url": "/documentation/appkit/nsresponder",
+      "abstract": [{"type": "text", "text": "An abstract class that forms the basis of event and command processing."}],
+      "pathComponents": ["NSResponder"]
+    },
+    "doc://com.apple.documentation/documentation/appkit/nsaccessibility": {
+      "identifier": "doc://com.apple.documentation/documentation/appkit/nsaccessibility",
+      "title": "NSAccessibility",
+      "role": "symbol",
+      "kind": "symbol",
+      "url": "/documentation/appkit/nsaccessibility",
+      "abstract": [{"type": "text", "text": "A protocol that provides the interface to the accessibility hierarchy."}],
+      "pathComponents": ["NSAccessibility"]
+    },
+    "doc://com.apple.documentation/documentation/appkit/nsview/tag": {
+      "identifier": "doc://com.apple.documentation/documentation/appkit/nsview/tag",
+      "title": "NSView.tag",
+      "role": "symbol",
+      "kind": "symbol",
+      "url": "/documentation/appkit/nsview/tag",
+      "abstract": [{"type": "text", "text": "The view's tag, which is an integer you use to identify a view."}],
+      "pathComponents": ["NSView", "tag"]
+    },
+    "doc://com.apple.documentation/documentation/appkit/nsview/bounds": {
+      "identifier": "doc://com.apple.documentation/documentation/appkit/nsview/bounds",
+      "title": "NSView.bounds",
+      "role": "symbol",
+      "kind": "symbol",
+      "url": "/documentation/appkit/nsview/bounds",
+      "abstract": [{"type": "text", "text": "The view's bounds rectangle, which expresses its location and size in its own coordinate system."}],
+      "pathComponents": ["NSView", "bounds"]
+    }
+  },
+  "availability": [
+    {"name": "macOS", "introduced": "10.0"}
+  ]
+}

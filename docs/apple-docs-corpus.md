@@ -109,3 +109,80 @@ Manual. Re-run the build script when:
 
 The `.gitignore` patterns use `apple-docs-macos-*` wildcards so future
 versions slot in without additional ignore entries.
+
+---
+
+## v2 corpus — dedicated docs adapter with structured edges
+
+The v2 corpus (`apple-docs-macos-26-v2.pinakes`) is built from the same DocC JSON
+but processed by the new `callimachus-adapter-docs` crate instead of the wiki adapter.
+
+### What's new in v2
+
+- **Rich entity taxonomy.** Symbols are typed as `class`, `struct`, `enum`, `protocol`,
+  `method`, `property`, `initializer`, `enum_case`, `notification`, `typealias`, or
+  `constant` — not a flat "topic" shape.
+
+- **Structured graph edges.** Four edge kinds extracted directly from DocC JSON:
+  - `inherits_from` — from `relationships[type == "inheritsFrom"]`
+  - `conforms_to` — from `relationships[type == "conformsTo"]`
+  - `references_type` — from declaration token typeIdentifiers (de-duplicated per page)
+  - `member_of` — from `topicSections[].identifiers[]` (child → parent direction)
+
+- **Per-method pages.** `--depth 2` fetches child symbol pages (methods, properties,
+  enum cases) so each gets a standalone entity with its own Discussion prose.
+  This resolves the v1 limitation where methods only appeared as Topics-section snippets.
+
+- **Availability metadata.** macOS `introducedAt`/`deprecatedAt` is surfaced in the
+  entity description prefix (`**Availability:** macOS 14.0+`) so FTS picks it up.
+
+### Building v2
+
+```bash
+./scripts/build-apple-docs-macos-26.sh
+```
+
+The script runs both blocks sequentially: v1 first, then v2. The v2 block calls
+`fetch-apple-docs.py --format json --depth 2`, which takes approximately 35 minutes
+for AppKit alone (14,000+ child symbols at 0.15 s/req). Both pinakes are produced.
+
+### Extra cost of `--depth 2`
+
+Each top-level type exposes ~100 child symbols on average. For the three frameworks:
+
+| Framework | Top-level types | Estimated children | Estimated time |
+|---|---|---|---|
+| AppKit | ~350 | ~35,000 | ~88 min |
+| Combine | ~40 | ~400 | ~1 min |
+| Foundation | ~130 | ~13,000 | ~33 min |
+
+Run the fetch step overnight or with `--depth 1` first to confirm connectivity,
+then re-run with `--depth 2 --force` for the full corpus.
+
+### Using v2 alongside v1
+
+Both corpora can be registered in `.mcp.json` simultaneously:
+
+```json
+{
+  "mcpServers": {
+    "callimachus-v1": {
+      "command": "calli",
+      "args": ["--pinakes", "data/apple-docs-macos-26.pinakes", "mcp"]
+    },
+    "callimachus-v2": {
+      "command": "calli",
+      "args": ["--pinakes", "data/apple-docs-macos-26-v2.pinakes", "mcp"]
+    }
+  }
+}
+```
+
+Queries against v1 return the wiki-adapter page shape; queries against v2 return
+the structured entity graph with typed edges.
+
+### v1 remains stable
+
+The v1 pinakes is unaffected by v2. Existing consumers continue working
+without any configuration change. Switch to v2 by updating the `.mcp.json`
+corpus reference when ready.

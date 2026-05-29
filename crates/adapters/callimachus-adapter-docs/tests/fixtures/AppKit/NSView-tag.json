@@ -1,0 +1,59 @@
+{
+  "metadata": {
+    "title": "NSView.tag",
+    "symbolKind": "instp",
+    "roleHeading": "Instance Property",
+    "modules": [{"name": "AppKit"}],
+    "platforms": [
+      {"name": "macOS", "introduced": "10.0", "deprecated": ""}
+    ]
+  },
+  "abstract": [
+    {"type": "text", "text": "The view's tag, which is an integer that you use to identify a view object within your app."}
+  ],
+  "primaryContentSections": [
+    {
+      "kind": "declarations",
+      "declarations": [
+        {
+          "languages": ["swift"],
+          "platforms": ["macOS"],
+          "tokens": [
+            {"kind": "keyword", "text": "var"},
+            {"kind": "text", "text": " "},
+            {"kind": "identifier", "text": "tag"},
+            {"kind": "text", "text": ": "},
+            {"kind": "typeIdentifier", "text": "Int", "identifier": "doc://com.apple.documentation/documentation/swift/int"}
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "content",
+      "content": [
+        {
+          "type": "paragraph",
+          "inlineContent": [
+            {"type": "text", "text": "The default value of this property is -1. You can use tags to distinguish views from each other in your app."}
+          ]
+        }
+      ]
+    }
+  ],
+  "topicSections": [],
+  "relationships": [],
+  "references": {
+    "doc://com.apple.documentation/documentation/swift/int": {
+      "identifier": "doc://com.apple.documentation/documentation/swift/int",
+      "title": "Int",
+      "role": "symbol",
+      "kind": "symbol",
+      "url": "/documentation/swift/int",
+      "abstract": [{"type": "text", "text": "A signed integer value type."}],
+      "pathComponents": ["Int"]
+    }
+  },
+  "availability": [
+    {"name": "macOS", "introduced": "10.0"}
+  ]
+}
