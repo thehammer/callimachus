@@ -24,6 +24,9 @@ use crate::storage::{
     purpose_store, run_log, sqlite_graph, summary_store, theme_store,
 };
 use crate::types::pass::{Pass, RunStatus};
+use crate::types::provenance::{
+    ArchiveSet, ArchiveStats, CachedArtifact, Layer2CacheKey, Provenance, RefineOutcome, Tombstone,
+};
 use crate::types::{
     Chunk, Collection, CollectionMember, Corpus, CorpusStatus, Edge, Entity, EntityBlock,
     EntityContract, EntityPurpose, Location, MemberType, Summary, SummaryTargetKind, Theme,
@@ -1081,6 +1084,192 @@ impl StorageBackend for SqliteBackend {
 
     fn entities_without_verified_by(&self, corpus_id: &str) -> Result<Vec<Entity>> {
         sqlite_graph::entities_without_verified_by(&db!(self), corpus_id)
+    }
+
+    // ── Honest provenance (migration 013) ──────────────────────────────────────
+
+    fn entity_list_at_sha(&self, corpus_id: &str, target_sha: &str) -> Result<Vec<Entity>> {
+        // Naive facade: exact-SHA match via the legacy at-version query.
+        self.entity_list_at_version(corpus_id, target_sha)
+    }
+
+    fn archive_to_history(
+        &self,
+        corpus_id: &str,
+        set: &ArchiveSet,
+        provenance: &Provenance,
+    ) -> Result<ArchiveStats> {
+        // Naive facade: fan out to the existing per-artifact archive helpers,
+        // using the provenance SHA as the supersession version.
+        let sha = provenance.sha();
+        let mut stats = ArchiveStats::default();
+        for entity_id in &set.entity_ids {
+            if self.archive_entity(entity_id, corpus_id, sha)? {
+                stats.entities_archived += 1;
+            }
+            stats.edges_archived += self.archive_edges_for_entity(entity_id, sha)?;
+            stats.purposes_archived += self.archive_purposes_for_entity(entity_id, sha)?;
+            stats.contracts_archived += self.archive_contracts_for_entity(entity_id, sha)?;
+            stats.blocks_archived += self.archive_blocks_for_entity(entity_id, sha)?;
+        }
+        for chunk_id in &set.chunk_ids {
+            if self.archive_chunk(chunk_id, sha)? {
+                stats.chunks_archived += 1;
+            }
+        }
+        for target_id in &set.summary_target_ids {
+            stats.summaries_archived += self.archive_summaries_for_target(corpus_id, target_id, sha)?;
+        }
+        for theme_id in &set.theme_ids {
+            if self.archive_theme(theme_id, corpus_id, sha)? {
+                stats.themes_archived += 1;
+            }
+        }
+        Ok(stats)
+    }
+
+    fn refine_provenance(
+        &self,
+        _corpus_id: &str,
+        _artifact_kind: &str,
+        _artifact_id: &str,
+        _observed: &Provenance,
+    ) -> Result<RefineOutcome> {
+        // Stub: the real monotonic refinement lands with the walker rewrite.
+        Ok(RefineOutcome::Unchanged)
+    }
+
+    fn tombstone_insert(
+        &self,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+        provenance: &Provenance,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        let guard = db!(self);
+        let (kind, sha) = provenance.to_columns();
+        let now = chrono::Utc::now().to_rfc3339();
+        guard.conn().execute(
+            "INSERT OR IGNORE INTO artifact_tombstones
+             (corpus_id, artifact_kind, artifact_id, derived_at_kind, derived_at_sha, reason, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![corpus_id, artifact_kind, artifact_id, kind, sha, reason, now],
+        )?;
+        Ok(())
+    }
+
+    fn tombstone_list(
+        &self,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+    ) -> Result<Vec<Tombstone>> {
+        let guard = db!(self);
+        let mut stmt = guard.conn().prepare(
+            "SELECT corpus_id, artifact_kind, artifact_id, derived_at_kind, derived_at_sha,
+                    reason, created_at
+             FROM artifact_tombstones
+             WHERE corpus_id = ?1 AND artifact_kind = ?2 AND artifact_id = ?3
+             ORDER BY created_at DESC, tombstone_id DESC",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![corpus_id, artifact_kind, artifact_id],
+            |row| {
+                let kind: String = row.get(3)?;
+                let sha: String = row.get(4)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    kind,
+                    sha,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (corpus_id, artifact_kind, artifact_id, kind, sha, reason, created_at) = row?;
+            out.push(Tombstone {
+                corpus_id,
+                artifact_kind,
+                artifact_id,
+                provenance: Provenance::from_columns(&kind, &sha)?,
+                reason,
+                created_at,
+            });
+        }
+        Ok(out)
+    }
+
+    fn layer2_cache_get(&self, key: &Layer2CacheKey) -> Result<Option<CachedArtifact>> {
+        let guard = db!(self);
+        let cache_key = key.cache_key();
+        let row = guard
+            .conn()
+            .query_row(
+                "SELECT cache_key, artifact_kind, entity_id, content_hash, file_shape_hash,
+                        model, stable_sampling, payload, created_at, first_seen_at_sha, hit_count
+                 FROM layer2_cache WHERE cache_key = ?1",
+                rusqlite::params![cache_key],
+                |row| {
+                    Ok(CachedArtifact {
+                        cache_key: row.get(0)?,
+                        artifact_kind: row.get(1)?,
+                        entity_id: row.get(2)?,
+                        content_hash: row.get(3)?,
+                        file_shape_hash: row.get(4)?,
+                        model: row.get(5)?,
+                        stable_sampling: row.get::<_, i64>(6)? != 0,
+                        payload: row.get(7)?,
+                        created_at: row.get(8)?,
+                        first_seen_at_sha: row.get(9)?,
+                        hit_count: row.get(10)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    fn layer2_cache_put(
+        &self,
+        key: &Layer2CacheKey,
+        payload: &str,
+        first_seen_at_sha: &str,
+    ) -> Result<()> {
+        let guard = db!(self);
+        let cache_key = key.cache_key();
+        let now = chrono::Utc::now().to_rfc3339();
+        guard.conn().execute(
+            "INSERT INTO layer2_cache
+             (cache_key, artifact_kind, entity_id, content_hash, file_shape_hash, model,
+              stable_sampling, payload, created_at, first_seen_at_sha, hit_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)
+             ON CONFLICT(cache_key) DO UPDATE SET
+                 artifact_kind   = excluded.artifact_kind,
+                 entity_id       = excluded.entity_id,
+                 content_hash    = excluded.content_hash,
+                 file_shape_hash = excluded.file_shape_hash,
+                 model           = excluded.model,
+                 stable_sampling = excluded.stable_sampling,
+                 payload         = excluded.payload",
+            rusqlite::params![
+                cache_key,
+                key.artifact_kind,
+                key.entity_id,
+                key.content_hash,
+                key.file_shape_hash,
+                key.model,
+                key.stable_sampling as i64,
+                payload,
+                now,
+                first_seen_at_sha,
+            ],
+        )?;
+        Ok(())
     }
 
     // ── Schema ────────────────────────────────────────────────────────────────

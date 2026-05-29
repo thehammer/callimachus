@@ -7,6 +7,7 @@ pub mod edge;
 pub mod entity;
 pub mod location;
 pub mod pass;
+pub mod provenance;
 pub mod purpose;
 pub mod result;
 pub mod scope;
@@ -22,6 +23,9 @@ pub use edge::Edge;
 pub use entity::Entity;
 pub use location::Location;
 pub use pass::{Pass, RunStatus, parse_passes_list};
+pub use provenance::{
+    ArchiveSet, ArchiveStats, CachedArtifact, Layer2CacheKey, Provenance, RefineOutcome, Tombstone,
+};
 pub use purpose::EntityPurpose;
 pub use result::{CostMetadata, ToolError, ToolResult, ToolSuccess};
 pub use scope::Scope;

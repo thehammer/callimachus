@@ -36,6 +36,9 @@ use crate::storage::fts::FtsResult;
 use crate::storage::pruning::PruneStats;
 use crate::storage::run_log::{PassStats, RunRecord};
 use crate::types::pass::RunStatus;
+use crate::types::provenance::{
+    ArchiveSet, ArchiveStats, CachedArtifact, Layer2CacheKey, Provenance, RefineOutcome, Tombstone,
+};
 use crate::types::{
     Chunk, Collection, CollectionMember, Corpus, CorpusStatus, Edge, Entity, EntityBlock,
     EntityContract, EntityPurpose, Location, MemberType, Summary, SummaryTargetKind, Theme,
@@ -1018,6 +1021,61 @@ impl StorageBackend for BackfillStorageWrapper {
 
     fn entities_without_verified_by(&self, _corpus_id: &str) -> Result<Vec<Entity>> {
         Ok(vec![])
+    }
+
+    // ── Honest provenance (migration 013) — delegate to inner ──────────────────
+
+    fn entity_list_at_sha(&self, corpus_id: &str, target_sha: &str) -> Result<Vec<Entity>> {
+        self.inner.entity_list_at_sha(corpus_id, target_sha)
+    }
+    fn archive_to_history(
+        &self,
+        corpus_id: &str,
+        set: &ArchiveSet,
+        provenance: &Provenance,
+    ) -> Result<ArchiveStats> {
+        self.inner.archive_to_history(corpus_id, set, provenance)
+    }
+    fn refine_provenance(
+        &self,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+        observed: &Provenance,
+    ) -> Result<RefineOutcome> {
+        self.inner
+            .refine_provenance(corpus_id, artifact_kind, artifact_id, observed)
+    }
+    fn tombstone_insert(
+        &self,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+        provenance: &Provenance,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        self.inner
+            .tombstone_insert(corpus_id, artifact_kind, artifact_id, provenance, reason)
+    }
+    fn tombstone_list(
+        &self,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+    ) -> Result<Vec<Tombstone>> {
+        self.inner
+            .tombstone_list(corpus_id, artifact_kind, artifact_id)
+    }
+    fn layer2_cache_get(&self, key: &Layer2CacheKey) -> Result<Option<CachedArtifact>> {
+        self.inner.layer2_cache_get(key)
+    }
+    fn layer2_cache_put(
+        &self,
+        key: &Layer2CacheKey,
+        payload: &str,
+        first_seen_at_sha: &str,
+    ) -> Result<()> {
+        self.inner.layer2_cache_put(key, payload, first_seen_at_sha)
     }
 
     // ── Schema ────────────────────────────────────────────────────────────────

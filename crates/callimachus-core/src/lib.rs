@@ -23,7 +23,8 @@ pub use indexing::{
 pub use query::QueryService;
 pub use storage::{Database, PostgresBackend, SqliteBackend, StorageBackend};
 pub use types::{
-    Chunk, Collection, CollectionKind, CollectionMember, Corpus, CorpusStatus, CostMetadata, Edge,
-    Entity, Location, MemberType, Pass, RunStatus, Scope, Summary, SummaryTargetKind, ToolError,
+    ArchiveSet, ArchiveStats, CachedArtifact, Chunk, Collection, CollectionKind, CollectionMember,
+    Corpus, CorpusStatus, CostMetadata, Edge, Entity, Layer2CacheKey, Location, MemberType, Pass,
+    Provenance, RefineOutcome, RunStatus, Scope, Summary, SummaryTargetKind, Tombstone, ToolError,
     ToolResult, ToolSuccess, hash_content,
 };
