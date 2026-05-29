@@ -14,6 +14,9 @@ use crate::storage::fts::FtsResult;
 use crate::storage::pruning::PruneStats;
 use crate::storage::run_log::{PassStats, RunRecord};
 use crate::types::pass::RunStatus;
+use crate::types::provenance::{
+    ArchiveSet, ArchiveStats, CachedArtifact, Layer2CacheKey, Provenance, RefineOutcome, Tombstone,
+};
 use crate::types::{
     Chunk, Collection, CollectionMember, Corpus, CorpusStatus, Edge, Entity, EntityBlock,
     EntityContract, EntityPurpose, Location, MemberType, Summary, SummaryTargetKind, Theme,
@@ -533,6 +536,81 @@ pub trait StorageBackend: Send + Sync {
     /// **This operation is destructive and irreversible.**  Pruned history rows
     /// cannot be recovered.
     fn prune_history(&self, corpus_id: &str, keep: usize, dry_run: bool) -> Result<PruneStats>;
+
+    // ── Honest provenance (migration 013) ──────────────────────────────────────
+    //
+    // The honest-provenance substrate. In this PR the query/archive/refine
+    // methods are deliberately *naive* facades over the existing
+    // `*_at_version` / `archive_*` machinery so that no observable behaviour
+    // changes; the tombstone and Layer-2 cache primitives are fully
+    // implemented (they have no callers yet). Subsequent PRs replace the naive
+    // bodies with the real SHA-aware history layer.
+
+    /// Entities present at `target_sha` under tagged-union + tombstone
+    /// semantics.
+    ///
+    /// **Naive in this PR:** delegates to [`Self::entity_list_at_version`], i.e.
+    /// exact-SHA match. The proper SHA-aware reconstruction lands in a later PR.
+    fn entity_list_at_sha(&self, corpus_id: &str, target_sha: &str) -> Result<Vec<Entity>>;
+
+    /// Archive a set of head artifacts into their `*_history` tables, stamping
+    /// the archived rows with `provenance`.
+    ///
+    /// **Naive in this PR:** fans out to the existing per-artifact `archive_*`
+    /// methods, using `provenance`'s SHA as the `superseded_at_version`. The
+    /// unified single-writer implementation lands in a later PR.
+    fn archive_to_history(
+        &self,
+        corpus_id: &str,
+        set: &ArchiveSet,
+        provenance: &Provenance,
+    ) -> Result<ArchiveStats>;
+
+    /// Refine the provenance tag on a head artifact, enforcing monotonicity
+    /// (`Concrete` is never overwritten by `RangePredating`; a `RangePredating`
+    /// upper bound only narrows).
+    ///
+    /// **Stub in this PR:** always returns [`RefineOutcome::Unchanged`]. The
+    /// real implementation lands with the walker rewrite in a later PR.
+    fn refine_provenance(
+        &self,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+        observed: &Provenance,
+    ) -> Result<RefineOutcome>;
+
+    /// Write a tombstone recording that an artifact stopped existing at the
+    /// given provenance. Idempotent on
+    /// `(corpus_id, artifact_kind, artifact_id, derived_at_kind, derived_at_sha)`.
+    fn tombstone_insert(
+        &self,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+        provenance: &Provenance,
+        reason: Option<&str>,
+    ) -> Result<()>;
+
+    /// List tombstones for a specific artifact, newest-first by `created_at`.
+    fn tombstone_list(
+        &self,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+    ) -> Result<Vec<Tombstone>>;
+
+    /// Read a Layer-2 cache entry by key. Returns `None` on a miss.
+    fn layer2_cache_get(&self, key: &Layer2CacheKey) -> Result<Option<CachedArtifact>>;
+
+    /// Insert or replace a Layer-2 cache entry for `key` carrying `payload`.
+    /// `first_seen_at_sha` is recorded for audit only.
+    fn layer2_cache_put(
+        &self,
+        key: &Layer2CacheKey,
+        payload: &str,
+        first_seen_at_sha: &str,
+    ) -> Result<()>;
 
     // ── Schema ────────────────────────────────────────────────────────────────
 

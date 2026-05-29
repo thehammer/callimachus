@@ -18,6 +18,9 @@ use crate::storage::fts::FtsResult;
 use crate::storage::pruning::PruneStats;
 use crate::storage::run_log::{PassStats, RunRecord};
 use crate::types::pass::RunStatus;
+use crate::types::provenance::{
+    ArchiveSet, ArchiveStats, CachedArtifact, Layer2CacheKey, Provenance, RefineOutcome, Tombstone,
+};
 use crate::types::{
     Chunk, Collection, CollectionMember, Corpus, CorpusStatus, Edge, Entity, EntityBlock,
     EntityContract, EntityPurpose, Location, MemberType, Summary, SummaryTargetKind, Theme,
@@ -497,6 +500,63 @@ impl StorageBackend for PostgresBackend {
 
     fn prune_history(&self, _corpus_id: &str, _keep: usize, _dry_run: bool) -> Result<PruneStats> {
         unimplemented!("postgres backend does not yet support history pruning")
+    }
+
+    // ── Honest provenance (migration 013) ──────────────────────────────────────
+    //
+    // Migration parity: a real Postgres backend must apply an equivalent of
+    // `013_honest_provenance.sql` via its own migrator (see the struct docstring
+    // and `docs/adapting-storage.md`). The trait methods below are stubbed
+    // alongside every other method until the Postgres backend is implemented.
+
+    fn entity_list_at_sha(&self, _corpus_id: &str, _target_sha: &str) -> Result<Vec<Entity>> {
+        Err(unimplemented())
+    }
+    fn archive_to_history(
+        &self,
+        _corpus_id: &str,
+        _set: &ArchiveSet,
+        _provenance: &Provenance,
+    ) -> Result<ArchiveStats> {
+        Err(unimplemented())
+    }
+    fn refine_provenance(
+        &self,
+        _corpus_id: &str,
+        _artifact_kind: &str,
+        _artifact_id: &str,
+        _observed: &Provenance,
+    ) -> Result<RefineOutcome> {
+        Err(unimplemented())
+    }
+    fn tombstone_insert(
+        &self,
+        _corpus_id: &str,
+        _artifact_kind: &str,
+        _artifact_id: &str,
+        _provenance: &Provenance,
+        _reason: Option<&str>,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn tombstone_list(
+        &self,
+        _corpus_id: &str,
+        _artifact_kind: &str,
+        _artifact_id: &str,
+    ) -> Result<Vec<Tombstone>> {
+        Err(unimplemented())
+    }
+    fn layer2_cache_get(&self, _key: &Layer2CacheKey) -> Result<Option<CachedArtifact>> {
+        Err(unimplemented())
+    }
+    fn layer2_cache_put(
+        &self,
+        _key: &Layer2CacheKey,
+        _payload: &str,
+        _first_seen_at_sha: &str,
+    ) -> Result<()> {
+        Err(unimplemented())
     }
 
     // ── Schema ────────────────────────────────────────────────────────────────
