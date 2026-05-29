@@ -117,14 +117,24 @@ fn tombstone_insert_and_list_round_trip() {
     seed_corpus(&backend, "c1");
 
     backend
-        .tombstone_insert("c1", "entity", "e1", &Provenance::concrete("sha1"), Some("removed"))
+        .tombstone_insert(
+            "c1",
+            "entity",
+            "e1",
+            &Provenance::concrete("sha1"),
+            Some("removed"),
+        )
         .expect("tombstone_insert must succeed");
 
     let stones = backend
         .tombstone_list("c1", "entity", "e1")
         .expect("tombstone_list must succeed");
 
-    assert_eq!(stones.len(), 1, "tombstone_list must return exactly one row");
+    assert_eq!(
+        stones.len(),
+        1,
+        "tombstone_list must return exactly one row"
+    );
 
     let s = &stones[0];
     assert_eq!(s.corpus_id, "c1");
@@ -260,7 +270,10 @@ fn layer2_cache_get_returns_none_for_unknown_key() {
         .layer2_cache_get(&key)
         .expect("layer2_cache_get must not error on a miss");
 
-    assert!(result.is_none(), "layer2_cache_get must return None for an unknown key");
+    assert!(
+        result.is_none(),
+        "layer2_cache_get must return None for an unknown key"
+    );
 }
 
 // ── Test 7: layer2_cache_put on the same key twice upserts the payload ────────

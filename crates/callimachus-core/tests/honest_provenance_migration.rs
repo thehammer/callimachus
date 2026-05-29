@@ -116,7 +116,12 @@ fn entities_head_table_has_provenance_and_content_hash_columns() {
 fn chunks_head_table_has_new_columns() {
     let db = Database::open_in_memory().unwrap();
 
-    for col in &["derived_at_kind", "derived_at_sha", "file_shape_hash", "entity_id_list"] {
+    for col in &[
+        "derived_at_kind",
+        "derived_at_sha",
+        "file_shape_hash",
+        "entity_id_list",
+    ] {
         assert!(
             has_column(&db, "chunks", col),
             "chunks must have column {col} after migration 013"
@@ -132,7 +137,11 @@ fn chunks_head_table_has_new_columns() {
 fn embeddings_head_table_has_provenance_and_context_hash_columns() {
     let db = Database::open_in_memory().unwrap();
 
-    for col in &["derived_at_kind", "derived_at_sha", "surrounding_context_hash"] {
+    for col in &[
+        "derived_at_kind",
+        "derived_at_sha",
+        "surrounding_context_hash",
+    ] {
         assert!(
             has_column(&db, "embeddings", col),
             "embeddings must have column {col} after migration 013"
@@ -201,11 +210,7 @@ fn new_tables_are_queryable_and_empty() {
         );
 
         let count: i64 = conn
-            .query_row(
-                &format!("SELECT COUNT(*) FROM {table}"),
-                [],
-                |r| r.get(0),
-            )
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
             .unwrap_or_else(|e| panic!("SELECT COUNT(*) FROM {table} failed: {e}"));
 
         assert_eq!(count, 0, "table {table} must be empty in a fresh database");

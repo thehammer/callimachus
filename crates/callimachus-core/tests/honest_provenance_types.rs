@@ -93,7 +93,10 @@ fn accessors_concrete() {
 
     assert_eq!(p.kind_str(), "concrete");
     assert!(p.is_concrete(), "is_concrete must be true for Concrete");
-    assert!(!p.is_range_predating(), "is_range_predating must be false for Concrete");
+    assert!(
+        !p.is_range_predating(),
+        "is_range_predating must be false for Concrete"
+    );
     assert_eq!(p.sha(), "sha123");
 }
 
@@ -106,8 +109,14 @@ fn accessors_range_predating() {
     let p = Provenance::range_predating("sha456");
 
     assert_eq!(p.kind_str(), "range_predating");
-    assert!(!p.is_concrete(), "is_concrete must be false for RangePredating");
-    assert!(p.is_range_predating(), "is_range_predating must be true for RangePredating");
+    assert!(
+        !p.is_concrete(),
+        "is_concrete must be false for RangePredating"
+    );
+    assert!(
+        p.is_range_predating(),
+        "is_range_predating must be true for RangePredating"
+    );
     assert_eq!(p.sha(), "sha456");
 }
 
@@ -193,9 +202,11 @@ fn is_valid_at_range_predating_semantics() {
 fn serde_json_round_trip_concrete() {
     let original = Provenance::concrete("abc123");
     let json = serde_json::to_string(&original).expect("serialize must succeed");
-    let recovered: Provenance =
-        serde_json::from_str(&json).expect("deserialize must succeed");
-    assert_eq!(original, recovered, "Concrete must survive a JSON round-trip");
+    let recovered: Provenance = serde_json::from_str(&json).expect("deserialize must succeed");
+    assert_eq!(
+        original, recovered,
+        "Concrete must survive a JSON round-trip"
+    );
 }
 
 // ── Test 11: serde round-trip — RangePredating ────────────────────────────────
@@ -206,9 +217,11 @@ fn serde_json_round_trip_concrete() {
 fn serde_json_round_trip_range_predating() {
     let original = Provenance::range_predating("def456");
     let json = serde_json::to_string(&original).expect("serialize must succeed");
-    let recovered: Provenance =
-        serde_json::from_str(&json).expect("deserialize must succeed");
-    assert_eq!(original, recovered, "RangePredating must survive a JSON round-trip");
+    let recovered: Provenance = serde_json::from_str(&json).expect("deserialize must succeed");
+    assert_eq!(
+        original, recovered,
+        "RangePredating must survive a JSON round-trip"
+    );
 }
 
 // ── Test 12: from_columns rejects empty kind ─────────────────────────────────

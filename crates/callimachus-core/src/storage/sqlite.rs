@@ -1118,7 +1118,8 @@ impl StorageBackend for SqliteBackend {
             }
         }
         for target_id in &set.summary_target_ids {
-            stats.summaries_archived += self.archive_summaries_for_target(corpus_id, target_id, sha)?;
+            stats.summaries_archived +=
+                self.archive_summaries_for_target(corpus_id, target_id, sha)?;
         }
         for theme_id in &set.theme_ids {
             if self.archive_theme(theme_id, corpus_id, sha)? {

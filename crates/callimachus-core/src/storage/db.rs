@@ -21,9 +21,7 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../../migrations/012_provenance_and_history.sql"
         )),
-        M::up(include_str!(
-            "../../migrations/013_honest_provenance.sql"
-        )),
+        M::up(include_str!("../../migrations/013_honest_provenance.sql")),
     ])
 }
 
