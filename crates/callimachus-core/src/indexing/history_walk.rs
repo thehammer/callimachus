@@ -3,7 +3,7 @@
 //! [`walk_history_forward`] collects the first-parent ancestry of a code
 //! corpus's git repository from a starting commit up to HEAD, then runs the
 //! full indexing pipeline at each commit in chronological order.  Because the
-//! foundation from PR #27 stamps every artifact with `derived_at_version` and
+//! foundation from PR #27 stamps every artifact with `derived_at_sha` and
 //! archives superseded rows into `*_history` tables, walking forward and
 //! re-running the pipeline at each commit naturally populates the history
 //! tables with intermediate states.
@@ -1071,7 +1071,7 @@ mod tests {
             "expected >= 2 history rows, got {history_count}"
         );
 
-        // Verify the history rows have distinct derived_at_version values for
+        // Verify the history rows have distinct derived_at_sha values for
         // oids[0] and oids[1].
         let oid0_str = format!("git:{}", oids[0]);
         let oid1_str = format!("git:{}", oids[1]);
@@ -1080,14 +1080,14 @@ mod tests {
 
         let rows_oid0: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM chunks_history WHERE superseded_at_version = ?1",
+                "SELECT COUNT(*) FROM chunks_history WHERE superseded_at_sha = ?1",
                 rusqlite::params![oid1_str_superseded],
                 |r| r.get(0),
             )
             .unwrap();
         let rows_oid1: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM chunks_history WHERE superseded_at_version = ?1",
+                "SELECT COUNT(*) FROM chunks_history WHERE superseded_at_sha = ?1",
                 rusqlite::params![oid2_str_superseded],
                 |r| r.get(0),
             )
@@ -1276,7 +1276,7 @@ mod tests {
         assert_eq!(stats.commits_processed, 3);
 
         // History rows should all have introduced_at_version matching those 3 commits.
-        // Note: chunks_history uses introduced_at_version, not derived_at_version.
+        // Note: chunks_history uses introduced_at_version, not derived_at_sha.
         let db_guard = db.db_for_test();
         let conn = db_guard.conn();
         for &oid in &oids[..3] {
@@ -1343,8 +1343,8 @@ mod tests {
     ///
     /// Commit order (oldest → newest): C0, C1, C2 (HEAD).
     /// Backfill walks: C1 first (superseded by HEAD version), then C0 (superseded by C1 version).
-    /// So history for C1 has superseded_at_version = git:<C2>, and
-    /// history for C0 has superseded_at_version = git:<C1>.
+    /// So history for C1 has superseded_at_sha = git:<C2>, and
+    /// history for C0 has superseded_at_sha = git:<C1>.
     #[tokio::test]
     async fn backfill_supersession_chain_correct() {
         let (db, corpus, pipeline, _td, oids) =
@@ -1374,10 +1374,10 @@ mod tests {
         let v3 = format!("git:{}", oids[2]);
 
         // C0's history row must be superseded by C1 (the commit immediately newer).
-        // chunks_history uses introduced_at_version (not derived_at_version).
+        // chunks_history uses introduced_at_version (not derived_at_sha).
         let c0_superseded: String = conn
             .query_row(
-                "SELECT superseded_at_version FROM chunks_history \
+                "SELECT superseded_at_sha FROM chunks_history \
                  WHERE introduced_at_version = ?1 LIMIT 1",
                 rusqlite::params![v1],
                 |r| r.get(0),
@@ -1391,7 +1391,7 @@ mod tests {
         // C1's history row must be superseded by C2 (HEAD).
         let c1_superseded: String = conn
             .query_row(
-                "SELECT superseded_at_version FROM chunks_history \
+                "SELECT superseded_at_sha FROM chunks_history \
                  WHERE introduced_at_version = ?1 LIMIT 1",
                 rusqlite::params![v2],
                 |r| r.get(0),
@@ -1404,12 +1404,12 @@ mod tests {
     }
 
     /// Test: an artifact present in an older commit but absent from HEAD
-    /// appears in history with a superseded_at_version equal to the commit
+    /// appears in history with a superseded_at_sha equal to the commit
     /// that first lacked it.
     ///
     /// Commit C0 has "gone.txt"; C1 (HEAD) removes it.
     /// Backfilling C0 should produce a history row for "gone.txt"
-    /// with superseded_at_version = git:<C1>.
+    /// with superseded_at_sha = git:<C1>.
     #[tokio::test]
     async fn backfill_artifact_missing_from_head() {
         // Build a repo where C0 adds "gone.txt" + "stays.txt",
@@ -1618,12 +1618,12 @@ mod tests {
         let v_c0 = format!("git:{c0}");
         let v_c1 = format!("git:{c1}");
 
-        // chunks_history uses introduced_at_version (not derived_at_version).
+        // chunks_history uses introduced_at_version (not derived_at_sha).
         // The chunk id column is "id", and location_uri contains "gone".
         let gone_history: Vec<(String, String)> = {
             let mut stmt = conn
                 .prepare(
-                    "SELECT introduced_at_version, superseded_at_version \
+                    "SELECT introduced_at_version, superseded_at_sha \
                      FROM chunks_history \
                      WHERE location_uri LIKE '%gone%'",
                 )
@@ -1645,7 +1645,7 @@ mod tests {
             );
             assert_eq!(
                 superseded, &v_c1,
-                "gone.txt history superseded_at_version should be {v_c1} (HEAD), got {superseded}"
+                "gone.txt history superseded_at_sha should be {v_c1} (HEAD), got {superseded}"
             );
         }
     }
@@ -2428,7 +2428,7 @@ mod tests {
     // convergence is proven over CHUNKS. Compare normalised sets of
     // (id, introduced_at_version, content) from chunks_history across (a),(b),(c).
     //
-    // We EXCLUDE: superseded_at_version, superseded_at, history_id, created_at,
+    // We EXCLUDE: superseded_at_sha, superseded_at, history_id, created_at,
     // source_hash (may differ by order of writes).
     //
     // Note: (b) double-writes via forward+backward; the forward pass already
@@ -3110,7 +3110,7 @@ mod tests {
             model: "dry-run".to_string(),
             model_tier: "unknown".to_string(),
             generated_at: chrono::Utc::now().to_rfc3339(),
-            derived_at_version: Some(v_c0.clone()),
+            provenance: Some(crate::types::provenance::Provenance::concrete(v_c0.clone())),
         };
         db.theme_upsert(&theme).unwrap();
 
@@ -3133,7 +3133,7 @@ mod tests {
         .expect("cascade::run failed");
 
         // The prior theme must now appear in themes_history with
-        // superseded_at_sha = v_c1 (same value as superseded_at_version).
+        // superseded_at_sha = v_c1 (same value as superseded_at_sha).
         let g = db.db_for_test();
         let conn = g.conn();
         let archived: i64 = conn

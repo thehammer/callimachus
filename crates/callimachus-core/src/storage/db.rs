@@ -23,6 +23,9 @@ fn migrations() -> Migrations<'static> {
         )),
         M::up(include_str!("../../migrations/013_honest_provenance.sql")),
         M::up(include_str!("../../migrations/014_backfill_cursor.sql")),
+        M::up(include_str!(
+            "../../migrations/015_drop_legacy_version_columns.sql"
+        )),
     ])
 }
 

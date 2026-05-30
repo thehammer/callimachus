@@ -7,9 +7,9 @@
 //!
 //! # Coverage
 //!
-//! 1. `entity_list_at_sha_agrees_with_entity_list_at_version` — the naive
+//! 1. `entity_list_at_sha_agrees_with_entity_list_by_sha` — the naive
 //!    facade `entity_list_at_sha` returns the same entity IDs as
-//!    `entity_list_at_version` for both a matching and a non-matching SHA.
+//!    `entity_list_by_sha` for both a matching and a non-matching SHA.
 //! 2. `tombstone_insert_and_list_round_trip` — a single tombstone survives
 //!    insert and comes back with the correct fields.
 //! 3. `tombstone_insert_is_idempotent` — inserting the same tombstone twice
@@ -68,41 +68,41 @@ fn test_cache_key() -> Layer2CacheKey {
     }
 }
 
-// ── Test 1: entity_list_at_sha agrees with entity_list_at_version ─────────────
+// ── Test 1: entity_list_at_sha agrees with entity_list_by_sha ─────────────────
 
-/// In this PR `entity_list_at_sha` is a naive facade over
-/// `entity_list_at_version`. Both methods must return identically-ordered
-/// results for the same input — the two sets of entity IDs must agree.
+/// Both `entity_list_at_sha` (ancestry-aware) and `entity_list_by_sha`
+/// (exact-SHA equality) must return identically-ordered results for the same
+/// input when no ancestry oracle is supplied.
 ///
-/// We test with a SHA that matches an upserted entity's `derived_at_version`
+/// We test with a SHA that matches an upserted entity's `derived_at_sha`
 /// (set via raw SQL) and with a SHA that matches nothing.
 #[test]
-fn entity_list_at_sha_agrees_with_entity_list_at_version() {
+fn entity_list_at_sha_agrees_with_entity_list_by_sha() {
     let backend = make_backend();
     seed_corpus(&backend, "c1");
 
-    // Upsert one entity, then stamp its derived_at_version so the lookup fires.
+    // Upsert one entity, then stamp its derived_at_sha so the lookup fires.
     let entity = minimal_entity("c1", "ent-sha-test");
     backend.entity_upsert(&entity).expect("entity_upsert");
 
-    // For both a version that might match and one that definitely doesn't,
+    // For both a SHA that might match and one that definitely doesn't,
     // the two methods must return the same set of IDs.
     for sha in &["v1", "missing-sha"] {
         let by_sha = backend
             .entity_list_at_sha("c1", sha, None)
             .expect("entity_list_at_sha must not error");
-        let by_version = backend
-            .entity_list_at_version("c1", sha)
-            .expect("entity_list_at_version must not error");
+        let by_exact = backend
+            .entity_list_by_sha("c1", sha)
+            .expect("entity_list_by_sha must not error");
 
         let mut ids_sha: Vec<&str> = by_sha.iter().map(|e| e.id.as_str()).collect();
-        let mut ids_ver: Vec<&str> = by_version.iter().map(|e| e.id.as_str()).collect();
+        let mut ids_exact: Vec<&str> = by_exact.iter().map(|e| e.id.as_str()).collect();
         ids_sha.sort_unstable();
-        ids_ver.sort_unstable();
+        ids_exact.sort_unstable();
 
         assert_eq!(
-            ids_sha, ids_ver,
-            "entity_list_at_sha and entity_list_at_version must agree for sha={sha}"
+            ids_sha, ids_exact,
+            "entity_list_at_sha and entity_list_by_sha must agree for sha={sha}"
         );
     }
 }

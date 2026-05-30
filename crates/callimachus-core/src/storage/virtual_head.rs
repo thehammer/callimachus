@@ -2,7 +2,7 @@
 //!
 //! [`VirtualHead`] presents the derived state of a corpus AS-IT-WAS at a
 //! specific commit SHA, by querying `*_history` tables (and the current head
-//! tables) filtered to `derived_at_version = target_sha`.
+//! tables) filtered to `derived_at_sha = target_sha`.
 //!
 //! ## Why SHA-based rather than timestamp-based
 //!
@@ -12,7 +12,7 @@
 //! newest-older → oldest-older, older commits end up with *larger*
 //! `superseded_at` timestamps — the opposite of commit chronology. A
 //! timestamp-based UNION ALL predicate would therefore return wrong rows.
-//! Filtering by `derived_at_version = target_sha` is monotonically correct for
+//! Filtering by `derived_at_sha = target_sha` is monotonically correct for
 //! both forward and backward walks.
 //!
 //! ## When rows are available
@@ -20,7 +20,7 @@
 //! VirtualHead is useful in two scenarios:
 //!
 //! 1. **Same backfill walk** — chunk/structure passes run first and write entity
-//!    rows to `entities_history` with `derived_at_version = git:<sha>`. When
+//!    rows to `entities_history` with `derived_at_sha = git:<sha>`. When
 //!    theme pass runs later in the same iteration, `VirtualHead` finds those
 //!    rows.
 //!
@@ -40,7 +40,7 @@ use crate::types::Entity;
 /// Presents the corpus's derived state as it was at `target_sha`.
 ///
 /// Reads are served from `*_history` tables and the current head tables,
-/// filtered to `derived_at_version = target_sha`.
+/// filtered to `derived_at_sha = target_sha`.
 ///
 /// Constructed once per backfill iteration in
 /// [`walk_history_backward`](crate::indexing::history_walk::walk_history_backward)
@@ -66,7 +66,7 @@ impl VirtualHead {
     ///
     /// `db` **must** be the real (non-wrapper) storage backend so that reads
     /// go to the actual SQLite tables. The `BackfillStorageWrapper` intercepts
-    /// writes but transparently delegates `entity_list_at_version` to the real
+    /// writes but transparently delegates `entity_list_by_sha` to the real
     /// backend, so passing the wrapper also works in practice.
     pub fn new(db: Arc<dyn StorageBackend>, corpus_id: String, target_sha: String) -> Self {
         Self {
@@ -76,26 +76,26 @@ impl VirtualHead {
         }
     }
 
-    /// List all entities with `derived_at_version = target_sha`.
+    /// List all entities with `derived_at_sha = target_sha`.
     ///
     /// Combines rows from both the head `entities` table (entities still at
-    /// HEAD whose version matches) and `entities_history` (entities that were
+    /// HEAD whose SHA matches) and `entities_history` (entities that were
     /// superseded after the target commit).
     pub fn entity_list(&self) -> Result<Vec<Entity>> {
         self.db
-            .entity_list_at_version(&self.corpus_id, &self.target_sha)
+            .entity_list_by_sha(&self.corpus_id, &self.target_sha)
     }
 
-    /// Count entities with `derived_at_version = target_sha`.
+    /// Count entities with `derived_at_sha = target_sha`.
     pub fn entity_count(&self) -> Result<u64> {
         self.db
-            .entity_count_at_version(&self.corpus_id, &self.target_sha)
+            .entity_count_by_sha(&self.corpus_id, &self.target_sha)
     }
 
     /// Find entities by canonical-name fragment at `target_sha`.
     ///
     /// Returns entities (case-insensitive substring match on `canonical_name`
-    /// or any alias) that have `derived_at_version = target_sha`.
+    /// or any alias) that have `derived_at_sha = target_sha`.
     pub fn entity_find_by_name(&self, name: &str) -> Result<Vec<Entity>> {
         let lower = name.to_lowercase();
         let all = self.entity_list()?;
@@ -116,6 +116,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::storage::{SqliteBackend, StorageBackend};
+    use crate::types::provenance::Provenance;
     use crate::types::{Corpus, Entity};
 
     use super::VirtualHead;
@@ -132,15 +133,15 @@ mod tests {
         db.corpus_insert(&corpus).unwrap();
     }
 
-    /// Insert an entity with a given `derived_at_version` directly into the
+    /// Insert an entity with a given `derived_at_sha` directly into the
     /// head table via `entity_upsert`.
-    fn seed_entity(db: &SqliteBackend, corpus_id: &str, entity_id: &str, version: &str) {
+    fn seed_entity(db: &SqliteBackend, corpus_id: &str, entity_id: &str, sha: &str) {
         let entity = Entity {
             id: entity_id.to_string(),
             corpus_id: corpus_id.to_string(),
             canonical_name: format!("Entity {entity_id}"),
             kind: "function".to_string(),
-            derived_at_version: Some(version.to_string()),
+            provenance: Some(Provenance::concrete(sha)),
             ..Default::default()
         };
         db.entity_upsert(&entity).unwrap();
@@ -152,7 +153,7 @@ mod tests {
 
     // ── entity_list / entity_count ────────────────────────────────────────────
 
-    /// A head entity whose `derived_at_version` matches `target_sha` is included.
+    /// A head entity whose `derived_at_sha` matches `target_sha` is included.
     #[test]
     fn active_at_includes_unsuperseded_head_rows() {
         let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
@@ -170,12 +171,12 @@ mod tests {
         assert_eq!(vh.entity_count().unwrap(), 1);
     }
 
-    /// A head entity whose `derived_at_version` does NOT match is excluded.
+    /// A head entity whose `derived_at_sha` does NOT match is excluded.
     #[test]
-    fn active_at_excludes_head_rows_with_different_version() {
+    fn active_at_excludes_head_rows_with_different_sha() {
         let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
         seed_corpus(&db, "corp");
-        seed_entity(&db, "corp", "ent-1", "git:xyz"); // wrong version
+        seed_entity(&db, "corp", "ent-1", "git:xyz"); // wrong sha
 
         let vh = make_vh(
             Arc::clone(&db) as Arc<dyn StorageBackend>,
@@ -184,16 +185,16 @@ mod tests {
         );
         assert!(
             vh.entity_list().unwrap().is_empty(),
-            "entity with different version should be excluded"
+            "entity with different sha should be excluded"
         );
         assert_eq!(vh.entity_count().unwrap(), 0);
     }
 
-    /// After an entity is superseded (upsert with new version snapshots old row
-    /// into history), VirtualHead at the old version returns the history row
-    /// and VirtualHead at the new version returns the head row.
+    /// After an entity is superseded (upsert with new sha snapshots old row
+    /// into history), VirtualHead at the old sha returns the history row
+    /// and VirtualHead at the new sha returns the head row.
     #[test]
-    fn active_at_excludes_superseded_rows_returns_history_version() {
+    fn active_at_excludes_superseded_rows_returns_history_sha() {
         let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
         seed_corpus(&db, "corp");
 
@@ -204,7 +205,7 @@ mod tests {
             corpus_id: "corp".to_string(),
             canonical_name: "Entity ent-1 v2".to_string(),
             kind: "function".to_string(),
-            derived_at_version: Some("git:v2".to_string()),
+            provenance: Some(Provenance::concrete("git:v2")),
             ..Default::default()
         };
         db.entity_upsert(&entity_v2).unwrap();
@@ -214,7 +215,7 @@ mod tests {
         let ents_v1 = vh_v1.entity_list().unwrap();
         assert_eq!(ents_v1.len(), 1, "expected 1 entity at v1 (from history)");
         assert_eq!(
-            ents_v1[0].derived_at_version.as_deref(),
+            ents_v1[0].provenance.as_ref().map(|p| p.sha()),
             Some("git:v1"),
             "returned entity should have v1"
         );
@@ -224,7 +225,7 @@ mod tests {
         let ents_v2 = vh_v2.entity_list().unwrap();
         assert_eq!(ents_v2.len(), 1, "expected 1 entity at v2 (from head)");
         assert_eq!(
-            ents_v2[0].derived_at_version.as_deref(),
+            ents_v2[0].provenance.as_ref().map(|p| p.sha()),
             Some("git:v2"),
             "returned entity should have v2"
         );
@@ -233,7 +234,7 @@ mod tests {
     /// Querying a target SHA that has rows only in entities_history (not head)
     /// returns those history rows.
     #[test]
-    fn active_at_returns_history_version_when_superseded_after_target() {
+    fn active_at_returns_history_sha_when_superseded_after_target() {
         let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
         seed_corpus(&db, "corp");
 
@@ -244,7 +245,7 @@ mod tests {
             corpus_id: "corp".to_string(),
             canonical_name: "E".to_string(),
             kind: "function".to_string(),
-            derived_at_version: Some(ver.to_string()),
+            provenance: Some(Provenance::concrete(ver)),
             ..Default::default()
         };
         db.entity_upsert(&make_ent("git:v2")).unwrap();
@@ -254,7 +255,10 @@ mod tests {
         let vh = make_vh(Arc::clone(&db) as Arc<dyn StorageBackend>, "corp", "git:v2");
         let ents = vh.entity_list().unwrap();
         assert_eq!(ents.len(), 1, "expected 1 entity at v2");
-        assert_eq!(ents[0].derived_at_version.as_deref(), Some("git:v2"));
+        assert_eq!(
+            ents[0].provenance.as_ref().map(|p| p.sha()),
+            Some("git:v2")
+        );
     }
 
     /// VirtualHead::new builds correctly from a SHA that is current HEAD (no
@@ -278,7 +282,7 @@ mod tests {
 
     /// When the target SHA has no matching rows at all, entity_list is empty.
     #[test]
-    fn empty_when_no_rows_at_version() {
+    fn empty_when_no_rows_at_sha() {
         let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
         seed_corpus(&db, "corp");
         seed_entity(&db, "corp", "ent-1", "git:other");
@@ -296,7 +300,7 @@ mod tests {
 
     /// entity_find_by_name filters by canonical_name fragment at the target SHA.
     #[test]
-    fn find_by_name_returns_matching_entities_at_version() {
+    fn find_by_name_returns_matching_entities_at_sha() {
         let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
         seed_corpus(&db, "corp");
 
@@ -307,7 +311,7 @@ mod tests {
                 corpus_id: "corp".to_string(),
                 canonical_name: name.to_string(),
                 kind: "struct".to_string(),
-                derived_at_version: Some("git:v1".to_string()),
+                provenance: Some(Provenance::concrete("git:v1")),
                 ..Default::default()
             };
             db.entity_upsert(&e).unwrap();
@@ -331,7 +335,7 @@ mod tests {
             canonical_name: "MainHandler".to_string(),
             kind: "struct".to_string(),
             aliases: vec!["FooProcessor".to_string()],
-            derived_at_version: Some("git:v1".to_string()),
+            provenance: Some(Provenance::concrete("git:v1")),
             ..Default::default()
         };
         db.entity_upsert(&e).unwrap();
@@ -343,9 +347,9 @@ mod tests {
         assert_eq!(found[0].id, "ent-1");
     }
 
-    /// find_by_name at a different version returns nothing.
+    /// find_by_name at a different sha returns nothing.
     #[test]
-    fn find_by_name_excludes_wrong_version() {
+    fn find_by_name_excludes_wrong_sha() {
         let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
         seed_corpus(&db, "corp");
         seed_entity(&db, "corp", "ent-foo", "git:v2");
@@ -353,7 +357,7 @@ mod tests {
         let vh = make_vh(Arc::clone(&db) as Arc<dyn StorageBackend>, "corp", "git:v1");
         assert!(
             vh.entity_find_by_name("foo").unwrap().is_empty(),
-            "wrong version should return nothing"
+            "wrong sha should return nothing"
         );
     }
 }

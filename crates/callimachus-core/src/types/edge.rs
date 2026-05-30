@@ -1,4 +1,5 @@
 use crate::types::location::Location;
+use crate::types::provenance::Provenance;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,10 +13,10 @@ pub struct Edge {
     pub kind: String,
     pub location: Location,
     pub confidence: f32,
-    /// The manifest `current_version` at which this edge was last written.
-    /// `None` for rows that pre-date migration 012.
+    /// The honest-provenance tag for this edge. `None` for rows that
+    /// pre-date migration 013.
     #[serde(default)]
-    pub derived_at_version: Option<String>,
+    pub provenance: Option<Provenance>,
 }
 
 impl Edge {
@@ -35,7 +36,7 @@ impl Edge {
             kind,
             location,
             confidence: 0.5,
-            derived_at_version: None,
+            provenance: None,
         }
     }
 }

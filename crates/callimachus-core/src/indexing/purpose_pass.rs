@@ -11,6 +11,7 @@ use crate::{
     indexing::model_tier::{ModelTier, ModelTierRouter, TierConfig},
     storage::{StorageBackend, run_log::PassStats},
     types::{Corpus, Entity, EntityBlock, EntityPurpose, Layer2CacheKey},
+    types::provenance::Provenance,
 };
 
 use super::{
@@ -326,7 +327,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
                 model,
                 model_tier: tier_str,
                 generated_at: now.clone(),
-                derived_at_version: version.clone(),
+                provenance: version.as_deref().map(Provenance::concrete),
             };
 
             let mut block_entities = Vec::new();
@@ -350,7 +351,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
                     label: block.label.clone(),
                     description: block.description.clone(),
                     position: i as i64,
-                    derived_at_version: version.clone(),
+                    provenance: version.as_deref().map(Provenance::concrete),
                 };
                 blocks.push(BlockData { entity_block: eb });
 
@@ -362,7 +363,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
                     kind: "defines".to_string(),
                     location: crate::types::Location::new(corpus_id, ""),
                     confidence: 0.5,
-                    derived_at_version: version.clone(),
+                    provenance: version.as_deref().map(Provenance::concrete),
                 };
                 edges.push(edge);
             }

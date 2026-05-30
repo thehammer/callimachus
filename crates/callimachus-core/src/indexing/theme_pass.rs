@@ -7,6 +7,7 @@ use crate::{
     adapter::SourceAdapter,
     storage::{StorageBackend, run_log::PassStats},
     types::{Corpus, Edge, Entity, Layer2CacheKey, Theme},
+    types::provenance::Provenance,
 };
 
 use super::{file_shape, layer2_cache, pipeline::IndexOptions};
@@ -123,7 +124,7 @@ pub async fn run(
                     et.title.clone(),
                     "theme".to_string(),
                 );
-                theme_entity.derived_at_version = version.clone();
+                theme_entity.provenance = version.as_deref().map(Provenance::concrete);
                 db.entity_upsert(&theme_entity)?;
 
                 // Insert theme record.
@@ -138,7 +139,7 @@ pub async fn run(
                     model,
                     model_tier: tier,
                     generated_at: now.clone(),
-                    derived_at_version: version.clone(),
+                    provenance: version.as_deref().map(Provenance::concrete),
                 };
                 db.theme_upsert(&theme)?;
 
@@ -158,7 +159,7 @@ pub async fn run(
                             kind: "upheld_by".to_string(),
                             location: crate::types::Location::new(&corpus.id, ""),
                             confidence: 0.5,
-                            derived_at_version: version.clone(),
+                            provenance: version.as_deref().map(Provenance::concrete),
                         };
                         db.edge_upsert(&edge)?;
                     }
@@ -180,7 +181,7 @@ pub async fn run(
                             kind: "violated_by".to_string(),
                             location: crate::types::Location::new(&corpus.id, ""),
                             confidence: 0.5,
-                            derived_at_version: version.clone(),
+                            provenance: version.as_deref().map(Provenance::concrete),
                         };
                         db.edge_upsert(&edge)?;
                     }

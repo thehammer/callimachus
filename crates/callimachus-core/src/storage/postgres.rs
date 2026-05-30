@@ -195,10 +195,10 @@ impl StorageBackend for PostgresBackend {
     fn kind_taxonomy_list(&self) -> Result<Vec<(String, String, String)>> {
         Err(unimplemented())
     }
-    fn entity_list_at_version(&self, _corpus_id: &str, _version: &str) -> Result<Vec<Entity>> {
+    fn entity_list_by_sha(&self, _corpus_id: &str, _sha: &str) -> Result<Vec<Entity>> {
         Err(unimplemented())
     }
-    fn entity_count_at_version(&self, _corpus_id: &str, _version: &str) -> Result<u64> {
+    fn entity_count_by_sha(&self, _corpus_id: &str, _sha: &str) -> Result<u64> {
         Err(unimplemented())
     }
 
@@ -422,35 +422,35 @@ impl StorageBackend for PostgresBackend {
         &self,
         _entity_id: &str,
         _corpus_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<bool> {
         Err(unimplemented())
     }
     fn archive_edges_for_entity(
         &self,
         _entity_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Err(unimplemented())
     }
     fn archive_purposes_for_entity(
         &self,
         _entity_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Err(unimplemented())
     }
     fn archive_contracts_for_entity(
         &self,
         _entity_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Err(unimplemented())
     }
     fn archive_blocks_for_entity(
         &self,
         _entity_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Err(unimplemented())
     }
@@ -458,25 +458,25 @@ impl StorageBackend for PostgresBackend {
         &self,
         _corpus_id: &str,
         _target_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Err(unimplemented())
     }
-    fn archive_chunk(&self, _chunk_id: &str, _superseded_at_version: &str) -> Result<bool> {
+    fn archive_chunk(&self, _chunk_id: &str, _superseded_at_sha: &str) -> Result<bool> {
         Err(unimplemented())
     }
     fn archive_theme(
         &self,
         _theme_id: &str,
         _corpus_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<bool> {
         Err(unimplemented())
     }
     fn archive_themes_for_corpus(
         &self,
         _corpus_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Err(unimplemented())
     }
@@ -484,7 +484,7 @@ impl StorageBackend for PostgresBackend {
         &self,
         _corpus_id: &str,
         _dirty_chunk_ids: &[String],
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<CascadeStats> {
         Err(unimplemented())
     }
@@ -600,15 +600,15 @@ impl StorageBackend for PostgresBackend {
     fn chunk_history_insert(
         &self,
         _chunk: &Chunk,
-        _derived_at_version: &str,
-        _superseded_at_version: &str,
+        _derived_at_sha: &str,
+        _superseded_at_sha: &str,
     ) -> Result<()> {
         Err(unimplemented())
     }
     fn chunk_history_update_source_hash(
         &self,
         _chunk_id: &str,
-        _derived_at_version: &str,
+        _derived_at_sha: &str,
         _source_hash: &str,
     ) -> Result<()> {
         Err(unimplemented())
@@ -616,7 +616,7 @@ impl StorageBackend for PostgresBackend {
     fn chunk_history_update_version(
         &self,
         _chunk_id: &str,
-        _derived_at_version: &str,
+        _derived_at_sha: &str,
         _last_modified_at_version: &str,
         _commit_message: Option<&str>,
         _author: Option<&str>,
@@ -626,84 +626,84 @@ impl StorageBackend for PostgresBackend {
     fn entity_history_insert(
         &self,
         _entity: &Entity,
-        _derived_at_version: &str,
-        _superseded_at_version: &str,
+        _derived_at_sha: &str,
+        _superseded_at_sha: &str,
     ) -> Result<()> {
         Err(unimplemented())
     }
     fn edge_history_insert(
         &self,
         _edge: &Edge,
-        _derived_at_version: &str,
-        _superseded_at_version: &str,
+        _derived_at_sha: &str,
+        _superseded_at_sha: &str,
     ) -> Result<()> {
         Err(unimplemented())
     }
     fn summary_history_insert(
         &self,
         _summary: &Summary,
-        _derived_at_version: &str,
-        _superseded_at_version: &str,
+        _derived_at_sha: &str,
+        _superseded_at_sha: &str,
     ) -> Result<()> {
         Err(unimplemented())
     }
     fn purpose_history_insert(
         &self,
         _purpose: &EntityPurpose,
-        _derived_at_version: &str,
-        _superseded_at_version: &str,
+        _derived_at_sha: &str,
+        _superseded_at_sha: &str,
     ) -> Result<()> {
         Err(unimplemented())
     }
     fn contract_history_insert(
         &self,
         _contract: &EntityContract,
-        _derived_at_version: &str,
-        _superseded_at_version: &str,
+        _derived_at_sha: &str,
+        _superseded_at_sha: &str,
     ) -> Result<()> {
         Err(unimplemented())
     }
     fn block_history_insert(
         &self,
         _block: &EntityBlock,
-        _derived_at_version: &str,
-        _superseded_at_version: &str,
+        _derived_at_sha: &str,
+        _superseded_at_sha: &str,
     ) -> Result<()> {
         Err(unimplemented())
     }
     fn theme_history_insert(
         &self,
         _theme: &Theme,
-        _derived_at_version: &str,
-        _superseded_at_version: &str,
+        _derived_at_sha: &str,
+        _superseded_at_sha: &str,
     ) -> Result<()> {
         Err(unimplemented())
     }
 
     // ── Backfill seeding helpers ──────────────────────────────────────────────
 
-    fn entity_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn entity_head_shas(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
         Err(unimplemented())
     }
-    fn chunk_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn chunk_head_shas(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
         Err(unimplemented())
     }
-    fn edge_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn edge_head_shas(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
         Err(unimplemented())
     }
-    fn summary_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn summary_head_shas(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
         Err(unimplemented())
     }
-    fn purpose_head_versions(&self, _corpus_id: &str) -> Result<Vec<((String, String), String)>> {
+    fn purpose_head_shas(&self, _corpus_id: &str) -> Result<Vec<((String, String), String)>> {
         Err(unimplemented())
     }
-    fn contract_head_versions(&self, _corpus_id: &str) -> Result<Vec<((String, String), String)>> {
+    fn contract_head_shas(&self, _corpus_id: &str) -> Result<Vec<((String, String), String)>> {
         Err(unimplemented())
     }
-    fn block_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn block_head_shas(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
         Err(unimplemented())
     }
-    fn theme_head_versions(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn theme_head_shas(&self, _corpus_id: &str) -> Result<Vec<(String, String)>> {
         Err(unimplemented())
     }
 }

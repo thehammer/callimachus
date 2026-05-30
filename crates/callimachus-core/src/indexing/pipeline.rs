@@ -69,7 +69,7 @@ pub enum IndexMode {
 /// should read through this layer rather than the live head tables.
 ///
 /// The `Virtual` variant wraps a [`VirtualHead`] that filters `*_history` and
-/// head tables to rows with `derived_at_version = target_sha`.
+/// head tables to rows with `derived_at_sha = target_sha`.
 #[derive(Debug)]
 pub enum ReadView {
     /// Read entities as they were at `target_sha`.

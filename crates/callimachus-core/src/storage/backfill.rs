@@ -4,7 +4,7 @@
 //!
 //! ## [`BackfillSupersession`]
 //!
-//! A per-walk resolver that answers "what is the `superseded_at_version` for
+//! A per-walk resolver that answers "what is the `superseded_at_sha` for
 //! artifact X at the commit currently being filled?"
 //!
 //! Seeded from the HEAD tables before the walk begins, then updated after each
@@ -46,7 +46,7 @@ use crate::types::{
 
 // ── BackfillSupersession ──────────────────────────────────────────────────────
 
-/// Tracks `superseded_at_version` for each artifact kind across a backward
+/// Tracks `superseded_at_sha` for each artifact kind across a backward
 /// backfill walk.
 ///
 /// Seeded from the current HEAD tables so the first write for each artifact
@@ -54,10 +54,10 @@ use crate::types::{
 /// write the map is updated so older-commit iterations see the newly-written
 /// version as their next-newer anchor.
 ///
-/// The invariant: for commit C(k) being filled, the `superseded_at_version` for
+/// The invariant: for commit C(k) being filled, the `superseded_at_sha` for
 /// artifact A is either
 /// (a) the HEAD version of A if A has not yet been backfilled, or
-/// (b) the `derived_at_version` of the most-recently-written backfill row for A.
+/// (b) the `derived_at_sha` of the most-recently-written backfill row for A.
 pub struct BackfillSupersession {
     inner: Mutex<BackfillSupersessionInner>,
 }
@@ -90,42 +90,42 @@ impl BackfillSupersession {
     /// real (non-wrapper) backend so that head rows are read.
     pub fn seeded_from(db: &dyn StorageBackend, corpus_id: &str) -> Result<Self> {
         let entities = db
-            .entity_head_versions(corpus_id)?
+            .entity_head_shas(corpus_id)?
             .into_iter()
             .filter(|(_, v)| !v.is_empty())
             .collect();
         let chunks = db
-            .chunk_head_versions(corpus_id)?
+            .chunk_head_shas(corpus_id)?
             .into_iter()
             .filter(|(_, v)| !v.is_empty())
             .collect();
         let edges = db
-            .edge_head_versions(corpus_id)?
+            .edge_head_shas(corpus_id)?
             .into_iter()
             .filter(|(_, v)| !v.is_empty())
             .collect();
         let summaries = db
-            .summary_head_versions(corpus_id)?
+            .summary_head_shas(corpus_id)?
             .into_iter()
             .filter(|(_, v)| !v.is_empty())
             .collect();
         let purposes = db
-            .purpose_head_versions(corpus_id)?
+            .purpose_head_shas(corpus_id)?
             .into_iter()
             .filter(|(_, v)| !v.is_empty())
             .collect();
         let contracts = db
-            .contract_head_versions(corpus_id)?
+            .contract_head_shas(corpus_id)?
             .into_iter()
             .filter(|(_, v)| !v.is_empty())
             .collect();
         let blocks = db
-            .block_head_versions(corpus_id)?
+            .block_head_shas(corpus_id)?
             .into_iter()
             .filter(|(_, v)| !v.is_empty())
             .collect();
         let themes = db
-            .theme_head_versions(corpus_id)?
+            .theme_head_shas(corpus_id)?
             .into_iter()
             .filter(|(_, v)| !v.is_empty())
             .collect();
@@ -300,7 +300,7 @@ impl BackfillSupersession {
 /// [`walk_history_backward`]: crate::indexing::history_walk::walk_history_backward
 pub struct BackfillStorageWrapper {
     inner: Arc<dyn StorageBackend>,
-    derived_at_version: String,
+    derived_at_sha: String,
     supersession: Arc<BackfillSupersession>,
     /// Chunks written during this iteration (in-memory, keyed by chunk ID).
     written_chunks: Mutex<HashMap<String, Chunk>>,
@@ -311,12 +311,12 @@ pub struct BackfillStorageWrapper {
 impl BackfillStorageWrapper {
     pub fn new(
         inner: Arc<dyn StorageBackend>,
-        derived_at_version: String,
+        derived_at_sha: String,
         supersession: Arc<BackfillSupersession>,
     ) -> Self {
         Self {
             inner,
-            derived_at_version,
+            derived_at_sha,
             supersession,
             written_chunks: Mutex::new(HashMap::new()),
             written_entities: Mutex::new(HashMap::new()),
@@ -382,9 +382,9 @@ impl StorageBackend for BackfillStorageWrapper {
     fn chunk_upsert(&self, chunk: &Chunk) -> Result<()> {
         let superseded = self.supersession.superseded_for_chunk(&chunk.id);
         self.inner
-            .chunk_history_insert(chunk, &self.derived_at_version, &superseded)?;
+            .chunk_history_insert(chunk, &self.derived_at_sha, &superseded)?;
         self.supersession
-            .record_write_chunk(&chunk.id, &self.derived_at_version);
+            .record_write_chunk(&chunk.id, &self.derived_at_sha);
         // Buffer for downstream pass reads.
         self.written_chunks
             .lock()
@@ -459,7 +459,7 @@ impl StorageBackend for BackfillStorageWrapper {
     fn chunk_set_source_hash(&self, chunk_id: &str, hash: &str) -> Result<()> {
         // Update history row.
         self.inner
-            .chunk_history_update_source_hash(chunk_id, &self.derived_at_version, hash)?;
+            .chunk_history_update_source_hash(chunk_id, &self.derived_at_sha, hash)?;
         // Update buffer.
         if let Some(c) = self.written_chunks.lock().unwrap().get_mut(chunk_id) {
             c.source_hash = Some(hash.to_string());
@@ -491,7 +491,7 @@ impl StorageBackend for BackfillStorageWrapper {
     ) -> Result<()> {
         self.inner.chunk_history_update_version(
             chunk_id,
-            &self.derived_at_version,
+            &self.derived_at_sha,
             version,
             commit_message,
             author,
@@ -534,9 +534,9 @@ impl StorageBackend for BackfillStorageWrapper {
     fn entity_upsert(&self, entity: &Entity) -> Result<()> {
         let superseded = self.supersession.superseded_for_entity(&entity.id);
         self.inner
-            .entity_history_insert(entity, &self.derived_at_version, &superseded)?;
+            .entity_history_insert(entity, &self.derived_at_sha, &superseded)?;
         self.supersession
-            .record_write_entity(&entity.id, &self.derived_at_version);
+            .record_write_entity(&entity.id, &self.derived_at_sha);
         self.written_entities
             .lock()
             .unwrap()
@@ -626,9 +626,9 @@ impl StorageBackend for BackfillStorageWrapper {
     fn edge_upsert(&self, edge: &Edge) -> Result<()> {
         let superseded = self.supersession.superseded_for_edge(&edge.id);
         self.inner
-            .edge_history_insert(edge, &self.derived_at_version, &superseded)?;
+            .edge_history_insert(edge, &self.derived_at_sha, &superseded)?;
         self.supersession
-            .record_write_edge(&edge.id, &self.derived_at_version);
+            .record_write_edge(&edge.id, &self.derived_at_sha);
         Ok(())
     }
 
@@ -671,9 +671,9 @@ impl StorageBackend for BackfillStorageWrapper {
     fn summary_upsert(&self, summary: &Summary) -> Result<()> {
         let superseded = self.supersession.superseded_for_summary(&summary.target_id);
         self.inner
-            .summary_history_insert(summary, &self.derived_at_version, &superseded)?;
+            .summary_history_insert(summary, &self.derived_at_sha, &superseded)?;
         self.supersession
-            .record_write_summary(&summary.target_id, &self.derived_at_version);
+            .record_write_summary(&summary.target_id, &self.derived_at_sha);
         Ok(())
     }
 
@@ -835,9 +835,9 @@ impl StorageBackend for BackfillStorageWrapper {
             .supersession
             .superseded_for_purpose(&p.entity_id, &p.model);
         self.inner
-            .purpose_history_insert(p, &self.derived_at_version, &superseded)?;
+            .purpose_history_insert(p, &self.derived_at_sha, &superseded)?;
         self.supersession
-            .record_write_purpose(&p.entity_id, &p.model, &self.derived_at_version);
+            .record_write_purpose(&p.entity_id, &p.model, &self.derived_at_sha);
         Ok(())
     }
 
@@ -863,9 +863,9 @@ impl StorageBackend for BackfillStorageWrapper {
     fn block_upsert(&self, b: &EntityBlock) -> Result<()> {
         let superseded = self.supersession.superseded_for_block(&b.entity_id);
         self.inner
-            .block_history_insert(b, &self.derived_at_version, &superseded)?;
+            .block_history_insert(b, &self.derived_at_sha, &superseded)?;
         self.supersession
-            .record_write_block(&b.entity_id, &self.derived_at_version);
+            .record_write_block(&b.entity_id, &self.derived_at_sha);
         Ok(())
     }
 
@@ -880,9 +880,9 @@ impl StorageBackend for BackfillStorageWrapper {
             .supersession
             .superseded_for_contract(&c.entity_id, &c.model);
         self.inner
-            .contract_history_insert(c, &self.derived_at_version, &superseded)?;
+            .contract_history_insert(c, &self.derived_at_sha, &superseded)?;
         self.supersession
-            .record_write_contract(&c.entity_id, &c.model, &self.derived_at_version);
+            .record_write_contract(&c.entity_id, &c.model, &self.derived_at_sha);
         Ok(())
     }
 
@@ -916,9 +916,9 @@ impl StorageBackend for BackfillStorageWrapper {
     fn theme_upsert(&self, t: &Theme) -> Result<()> {
         let superseded = self.supersession.superseded_for_theme(&t.id);
         self.inner
-            .theme_history_insert(t, &self.derived_at_version, &superseded)?;
+            .theme_history_insert(t, &self.derived_at_sha, &superseded)?;
         self.supersession
-            .record_write_theme(&t.id, &self.derived_at_version);
+            .record_write_theme(&t.id, &self.derived_at_sha);
         Ok(())
     }
 
@@ -935,7 +935,7 @@ impl StorageBackend for BackfillStorageWrapper {
         &self,
         _entity_id: &str,
         _corpus_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<bool> {
         Ok(false) // NO-OP in backfill
     }
@@ -943,7 +943,7 @@ impl StorageBackend for BackfillStorageWrapper {
     fn archive_edges_for_entity(
         &self,
         _entity_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Ok(0)
     }
@@ -951,7 +951,7 @@ impl StorageBackend for BackfillStorageWrapper {
     fn archive_purposes_for_entity(
         &self,
         _entity_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Ok(0)
     }
@@ -959,7 +959,7 @@ impl StorageBackend for BackfillStorageWrapper {
     fn archive_contracts_for_entity(
         &self,
         _entity_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Ok(0)
     }
@@ -967,7 +967,7 @@ impl StorageBackend for BackfillStorageWrapper {
     fn archive_blocks_for_entity(
         &self,
         _entity_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Ok(0)
     }
@@ -976,12 +976,12 @@ impl StorageBackend for BackfillStorageWrapper {
         &self,
         _corpus_id: &str,
         _target_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Ok(0)
     }
 
-    fn archive_chunk(&self, _chunk_id: &str, _superseded_at_version: &str) -> Result<bool> {
+    fn archive_chunk(&self, _chunk_id: &str, _superseded_at_sha: &str) -> Result<bool> {
         Ok(false) // NO-OP
     }
 
@@ -989,7 +989,7 @@ impl StorageBackend for BackfillStorageWrapper {
         &self,
         _theme_id: &str,
         _corpus_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<bool> {
         Ok(false)
     }
@@ -997,7 +997,7 @@ impl StorageBackend for BackfillStorageWrapper {
     fn archive_themes_for_corpus(
         &self,
         _corpus_id: &str,
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<u64> {
         Ok(0)
     }
@@ -1006,7 +1006,7 @@ impl StorageBackend for BackfillStorageWrapper {
         &self,
         _corpus_id: &str,
         _dirty_chunk_ids: &[String],
-        _superseded_at_version: &str,
+        _superseded_at_sha: &str,
     ) -> Result<CascadeStats> {
         Ok(CascadeStats::default()) // NO-OP: no head rows to cascade
     }
@@ -1110,34 +1110,34 @@ impl StorageBackend for BackfillStorageWrapper {
     fn chunk_history_insert(
         &self,
         chunk: &Chunk,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         self.inner
-            .chunk_history_insert(chunk, derived_at_version, superseded_at_version)
+            .chunk_history_insert(chunk, derived_at_sha, superseded_at_sha)
     }
 
     fn chunk_history_update_source_hash(
         &self,
         chunk_id: &str,
-        derived_at_version: &str,
+        derived_at_sha: &str,
         source_hash: &str,
     ) -> Result<()> {
         self.inner
-            .chunk_history_update_source_hash(chunk_id, derived_at_version, source_hash)
+            .chunk_history_update_source_hash(chunk_id, derived_at_sha, source_hash)
     }
 
     fn chunk_history_update_version(
         &self,
         chunk_id: &str,
-        derived_at_version: &str,
+        derived_at_sha: &str,
         last_modified_at_version: &str,
         commit_message: Option<&str>,
         author: Option<&str>,
     ) -> Result<()> {
         self.inner.chunk_history_update_version(
             chunk_id,
-            derived_at_version,
+            derived_at_sha,
             last_modified_at_version,
             commit_message,
             author,
@@ -1147,115 +1147,115 @@ impl StorageBackend for BackfillStorageWrapper {
     fn entity_history_insert(
         &self,
         entity: &Entity,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         self.inner
-            .entity_history_insert(entity, derived_at_version, superseded_at_version)
+            .entity_history_insert(entity, derived_at_sha, superseded_at_sha)
     }
 
     fn edge_history_insert(
         &self,
         edge: &Edge,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         self.inner
-            .edge_history_insert(edge, derived_at_version, superseded_at_version)
+            .edge_history_insert(edge, derived_at_sha, superseded_at_sha)
     }
 
     fn summary_history_insert(
         &self,
         summary: &Summary,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         self.inner
-            .summary_history_insert(summary, derived_at_version, superseded_at_version)
+            .summary_history_insert(summary, derived_at_sha, superseded_at_sha)
     }
 
     fn purpose_history_insert(
         &self,
         purpose: &EntityPurpose,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         self.inner
-            .purpose_history_insert(purpose, derived_at_version, superseded_at_version)
+            .purpose_history_insert(purpose, derived_at_sha, superseded_at_sha)
     }
 
     fn contract_history_insert(
         &self,
         contract: &EntityContract,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         self.inner
-            .contract_history_insert(contract, derived_at_version, superseded_at_version)
+            .contract_history_insert(contract, derived_at_sha, superseded_at_sha)
     }
 
     fn block_history_insert(
         &self,
         block: &EntityBlock,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         self.inner
-            .block_history_insert(block, derived_at_version, superseded_at_version)
+            .block_history_insert(block, derived_at_sha, superseded_at_sha)
     }
 
     fn theme_history_insert(
         &self,
         theme: &Theme,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         self.inner
-            .theme_history_insert(theme, derived_at_version, superseded_at_version)
+            .theme_history_insert(theme, derived_at_sha, superseded_at_sha)
     }
 
     // ── Backfill seeding helpers (delegate to inner) ──────────────────────────
 
-    fn entity_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
-        self.inner.entity_head_versions(corpus_id)
+    fn entity_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        self.inner.entity_head_shas(corpus_id)
     }
 
-    fn chunk_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
-        self.inner.chunk_head_versions(corpus_id)
+    fn chunk_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        self.inner.chunk_head_shas(corpus_id)
     }
 
-    fn edge_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
-        self.inner.edge_head_versions(corpus_id)
+    fn edge_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        self.inner.edge_head_shas(corpus_id)
     }
 
-    fn summary_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
-        self.inner.summary_head_versions(corpus_id)
+    fn summary_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        self.inner.summary_head_shas(corpus_id)
     }
 
-    fn purpose_head_versions(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>> {
-        self.inner.purpose_head_versions(corpus_id)
+    fn purpose_head_shas(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>> {
+        self.inner.purpose_head_shas(corpus_id)
     }
 
-    fn contract_head_versions(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>> {
-        self.inner.contract_head_versions(corpus_id)
+    fn contract_head_shas(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>> {
+        self.inner.contract_head_shas(corpus_id)
     }
 
-    fn block_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
-        self.inner.block_head_versions(corpus_id)
+    fn block_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        self.inner.block_head_shas(corpus_id)
     }
 
-    fn theme_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
-        self.inner.theme_head_versions(corpus_id)
+    fn theme_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+        self.inner.theme_head_shas(corpus_id)
     }
 
     // ── VirtualHead read helpers (delegate to real inner db) ──────────────────
 
-    fn entity_list_at_version(&self, corpus_id: &str, version: &str) -> Result<Vec<Entity>> {
-        self.inner.entity_list_at_version(corpus_id, version)
+    fn entity_list_by_sha(&self, corpus_id: &str, sha: &str) -> Result<Vec<Entity>> {
+        self.inner.entity_list_by_sha(corpus_id, sha)
     }
 
-    fn entity_count_at_version(&self, corpus_id: &str, version: &str) -> Result<u64> {
-        self.inner.entity_count_at_version(corpus_id, version)
+    fn entity_count_by_sha(&self, corpus_id: &str, sha: &str) -> Result<u64> {
+        self.inner.entity_count_by_sha(corpus_id, sha)
     }
 
     // ── Pruning ───────────────────────────────────────────────────────────────
