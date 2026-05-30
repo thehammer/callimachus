@@ -1023,8 +1023,31 @@ impl StorageBackend for BackfillStorageWrapper {
 
     // ── Honest provenance (migration 013) — delegate to inner ──────────────────
 
-    fn entity_list_at_sha(&self, corpus_id: &str, target_sha: &str) -> Result<Vec<Entity>> {
-        self.inner.entity_list_at_sha(corpus_id, target_sha)
+    fn entity_list_at_sha(
+        &self,
+        corpus_id: &str,
+        target_sha: &str,
+        ancestry: Option<&dyn crate::storage::ancestry::AncestryReader>,
+    ) -> Result<Vec<Entity>> {
+        self.inner
+            .entity_list_at_sha(corpus_id, target_sha, ancestry)
+    }
+    fn is_tombstoned_at(
+        &self,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+        target_sha: &str,
+        ancestry: Option<&dyn crate::storage::ancestry::AncestryReader>,
+    ) -> Result<bool> {
+        self.inner
+            .is_tombstoned_at(corpus_id, artifact_kind, artifact_id, target_sha, ancestry)
+    }
+    fn commit_embedding(&self, embedding: &StoredEmbedding, provenance: &Provenance) -> Result<()> {
+        self.inner.commit_embedding(embedding, provenance)
+    }
+    fn migrate_fresh(&self, corpus_id: &str) -> Result<crate::storage::backend::MigrateFreshStats> {
+        self.inner.migrate_fresh(corpus_id)
     }
     fn archive_to_history(
         &self,

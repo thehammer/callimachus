@@ -89,7 +89,7 @@ fn entity_list_at_sha_agrees_with_entity_list_at_version() {
     // the two methods must return the same set of IDs.
     for sha in &["v1", "missing-sha"] {
         let by_sha = backend
-            .entity_list_at_sha("c1", sha)
+            .entity_list_at_sha("c1", sha, None)
             .expect("entity_list_at_sha must not error");
         let by_version = backend
             .entity_list_at_version("c1", sha)

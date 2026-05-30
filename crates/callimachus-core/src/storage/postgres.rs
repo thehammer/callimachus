@@ -511,7 +511,35 @@ impl StorageBackend for PostgresBackend {
     // and `docs/adapting-storage.md`). The trait methods below are stubbed
     // alongside every other method until the Postgres backend is implemented.
 
-    fn entity_list_at_sha(&self, _corpus_id: &str, _target_sha: &str) -> Result<Vec<Entity>> {
+    fn entity_list_at_sha(
+        &self,
+        _corpus_id: &str,
+        _target_sha: &str,
+        _ancestry: Option<&dyn crate::storage::ancestry::AncestryReader>,
+    ) -> Result<Vec<Entity>> {
+        Err(unimplemented())
+    }
+    fn is_tombstoned_at(
+        &self,
+        _corpus_id: &str,
+        _artifact_kind: &str,
+        _artifact_id: &str,
+        _target_sha: &str,
+        _ancestry: Option<&dyn crate::storage::ancestry::AncestryReader>,
+    ) -> Result<bool> {
+        Err(unimplemented())
+    }
+    fn commit_embedding(
+        &self,
+        _embedding: &StoredEmbedding,
+        _provenance: &Provenance,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn migrate_fresh(
+        &self,
+        _corpus_id: &str,
+    ) -> Result<crate::storage::backend::MigrateFreshStats> {
         Err(unimplemented())
     }
     fn archive_to_history(

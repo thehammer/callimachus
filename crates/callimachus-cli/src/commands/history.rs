@@ -15,6 +15,7 @@
 //!   most-recent supersession SHA.  **This operation is destructive and
 //!   irreversible.**  Use `--dry-run` to preview what would be deleted.
 
+use std::io::{self, Write};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -113,6 +114,31 @@ pub enum HistoryCommand {
         /// Preview what would be deleted without modifying the database.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+    },
+
+    /// Wipe all derived content for a corpus and start fresh.
+    ///
+    /// Deletes every head row, every `*_history` row, all tombstones, and the
+    /// Layer-2 cache, then resets `backfill_cursor` and `last_indexed_version`
+    /// to NULL. The `corpora` registration row itself is preserved, so the
+    /// corpus stays known to `calli`.
+    ///
+    /// This is the documented migration path for a pinakes built before the
+    /// honest-provenance refactor (or one whose history is suspect): rather than
+    /// trying to retrofit provenance onto copy-forward rows, wipe and rebuild.
+    /// The next `calli index <corpus>` is a from-scratch rebuild against current
+    /// HEAD.
+    ///
+    /// **This operation is destructive and irreversible.** Use `--yes` to skip
+    /// the confirmation prompt (e.g. in scripts).
+    MigrateFresh {
+        /// Corpus ID to wipe and re-register for a fresh rebuild.
+        #[arg(long = "corpus")]
+        corpus: String,
+
+        /// Skip the interactive "are you sure?" confirmation prompt.
+        #[arg(long, default_value_t = false)]
+        yes: bool,
     },
 }
 
@@ -261,6 +287,52 @@ pub async fn run(
 
             Ok(())
         }
+
+        HistoryCommand::MigrateFresh { corpus, yes } => {
+            // Validate the corpus exists before touching anything.
+            let corpus_row = db.corpus_require(&corpus)?;
+
+            if !yes {
+                eprintln!(
+                    "About to WIPE all derived content for corpus '{corpus}' \
+                     ({}).",
+                    corpus_row.name
+                );
+                eprintln!(
+                    "This deletes every head row, all *_history rows, all \
+                     tombstones, and the Layer-2 cache, and resets the rebuild \
+                     anchors. The corpus registration is preserved."
+                );
+                eprintln!("This operation is destructive and irreversible.");
+                eprint!("Type the corpus id '{corpus}' to confirm: ");
+                io::stderr().flush().ok();
+
+                let mut line = String::new();
+                io::stdin().read_line(&mut line)?;
+                if line.trim() != corpus {
+                    anyhow::bail!("confirmation did not match; aborted (nothing was deleted)");
+                }
+            }
+
+            let stats = db.migrate_fresh(&corpus)?;
+
+            println!("Wiped corpus '{corpus}' for a fresh rebuild:");
+            println!("  Head rows deleted:     {}", stats.head_rows_deleted);
+            println!("  History rows deleted:  {}", stats.history_rows_deleted);
+            println!("  Tombstones deleted:    {}", stats.tombstones_deleted);
+            println!(
+                "  Layer-2 cache cleared: {} (global — the cache is content-addressed, \
+                 not per-corpus)",
+                stats.layer2_cache_deleted
+            );
+            println!();
+            println!("  backfill_cursor and last_indexed_version reset to NULL.");
+            println!("  The corpora row is preserved — the corpus is still registered.");
+            println!();
+            println!("Next step: `calli index {corpus}` will rebuild from scratch against HEAD.");
+
+            Ok(())
+        }
     }
 }
 
@@ -304,6 +376,12 @@ mod tests {
             keep: u32,
             #[arg(long, default_value_t = false)]
             dry_run: bool,
+        },
+        MigrateFresh {
+            #[arg(long = "corpus")]
+            corpus: String,
+            #[arg(long, default_value_t = false)]
+            yes: bool,
         },
     }
 
@@ -498,6 +576,53 @@ mod tests {
             } => {
                 assert_eq!(passes.as_deref(), Some("theme"));
             }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+    }
+
+    // ── migrate-fresh parse tests ─────────────────────────────────────────────
+
+    #[test]
+    fn migrate_fresh_requires_corpus() {
+        // Missing --corpus → parse error.
+        let result = Cli::try_parse_from(["calli", "history", "migrate-fresh"]);
+        assert!(
+            result.is_err(),
+            "expected parse error when --corpus is not supplied"
+        );
+    }
+
+    #[test]
+    fn migrate_fresh_accepts_corpus_and_yes() {
+        let result = Cli::try_parse_from([
+            "calli",
+            "history",
+            "migrate-fresh",
+            "--corpus",
+            "my-corpus",
+            "--yes",
+        ]);
+        assert!(result.is_ok(), "expected parse success, got: {result:?}");
+        match result.unwrap().command {
+            Command::History {
+                sub: HistoryCmd::MigrateFresh { corpus, yes },
+            } => {
+                assert_eq!(corpus, "my-corpus");
+                assert!(yes);
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn migrate_fresh_yes_defaults_false() {
+        let result =
+            Cli::try_parse_from(["calli", "history", "migrate-fresh", "--corpus", "my-corpus"]);
+        assert!(result.is_ok(), "expected parse success, got: {result:?}");
+        match result.unwrap().command {
+            Command::History {
+                sub: HistoryCmd::MigrateFresh { yes, .. },
+            } => assert!(!yes, "yes must default to false"),
             other => panic!("unexpected command variant: {other:?}"),
         }
     }

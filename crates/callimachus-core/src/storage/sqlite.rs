@@ -16,7 +16,8 @@ use crate::storage::run_log::{PassStats, RunRecord};
 use rusqlite::OptionalExtension;
 
 use crate::storage::{
-    backend::{CascadeStats, StorageBackend},
+    ancestry::{self, AncestryReader},
+    backend::{CascadeStats, MigrateFreshStats, StorageBackend},
     block_store, chunk_store, collection_store, contract_store, corpus_store, correction_store,
     db::Database,
     edge_store, embedding_store, entity_store, fts, history,
@@ -71,6 +72,37 @@ impl SqliteBackend {
         let result = f(&tx)?;
         tx.commit()?;
         Ok(result)
+    }
+
+    /// Shared body for the tombstone-ancestry check, usable from a held
+    /// connection (so callers that already hold the lock — e.g.
+    /// `entity_list_at_sha` — don't re-acquire it).
+    ///
+    /// An artifact is tombstoned at `target_sha` when any of its tombstones has a
+    /// death SHA that is an ancestor-or-equal of `target_sha`.
+    fn is_tombstoned_at_conn(
+        conn: &rusqlite::Connection,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+        target_sha: &str,
+        ancestry: Option<&dyn AncestryReader>,
+    ) -> Result<bool> {
+        let mut stmt = conn.prepare(
+            "SELECT derived_at_sha FROM artifact_tombstones
+             WHERE corpus_id = ?1 AND artifact_kind = ?2 AND artifact_id = ?3",
+        )?;
+        let death_shas = stmt.query_map(
+            rusqlite::params![corpus_id, artifact_kind, artifact_id],
+            |row| row.get::<_, String>(0),
+        )?;
+        for sha in death_shas {
+            let sha = sha?;
+            if ancestry::is_ancestor_or_equal(ancestry, &sha, target_sha) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -749,6 +781,10 @@ impl StorageBackend for SqliteBackend {
                     chunk_id,
                     superseded_at_version,
                 )?;
+                // Archive this chunk's embeddings before the FK cascade wipes
+                // them, so they survive in embeddings_history with honest
+                // supersession provenance (closes embeddings-no-history-archival).
+                embedding_store::archive_for_chunk(tx, chunk_id, superseded_at_version)?;
                 history::archive_chunk(tx, chunk_id, superseded_at_version)?;
 
                 // Delete chunk — FK ON DELETE CASCADE removes embeddings.
@@ -780,9 +816,181 @@ impl StorageBackend for SqliteBackend {
 
     // ── Honest provenance (migration 013) ──────────────────────────────────────
 
-    fn entity_list_at_sha(&self, corpus_id: &str, target_sha: &str) -> Result<Vec<Entity>> {
-        // Naive facade: exact-SHA match via the legacy at-version query.
-        self.entity_list_at_version(corpus_id, target_sha)
+    fn entity_list_at_sha(
+        &self,
+        corpus_id: &str,
+        target_sha: &str,
+        ancestry: Option<&dyn AncestryReader>,
+    ) -> Result<Vec<Entity>> {
+        let guard = db!(self);
+        let conn = guard.conn();
+
+        // Gather every (id, provenance) the corpus has ever carried for an
+        // entity — head rows plus archived rows — then keep an id when ANY of
+        // its provenance tags is valid at the target and it is not tombstoned
+        // ancestrally. The head row's data is preferred for the returned entity;
+        // otherwise a valid archived row is materialised.
+        //
+        // Effective SHA bridges the migration-013 transition: code that predates
+        // the history layer (e.g. the structure pass) still populates only
+        // `derived_at_version`, leaving `derived_at_sha` empty. We therefore read
+        // COALESCE(NULLIF(derived_at_sha,''), derived_at_version, '') — the same
+        // expression the history uniqueness indexes key off.
+        let mut stmt = conn.prepare(
+            "SELECT id, corpus_id, canonical_name, kind, abstract_kind,
+                    aliases, description,
+                    first_location_uri, last_location_uri,
+                    appearance_count, confidence, derived_at_version,
+                    derived_at_kind,
+                    COALESCE(NULLIF(derived_at_sha,''), derived_at_version, '') AS eff_sha,
+                    1 AS is_head
+             FROM entities
+             WHERE corpus_id = ?1
+             UNION ALL
+             SELECT id, corpus_id, canonical_name, kind, '' AS abstract_kind,
+                    aliases, description,
+                    first_location_uri, last_location_uri,
+                    appearance_count, confidence, derived_at_version,
+                    derived_at_kind,
+                    COALESCE(NULLIF(derived_at_sha,''), derived_at_version, '') AS eff_sha,
+                    0 AS is_head
+             FROM entities_history
+             WHERE corpus_id = ?1",
+        )?;
+
+        // Each row → (Entity, provenance, is_head). row_to_entity reads the
+        // first 12 columns; derived_at_kind/sha/is_head are columns 13/14/15.
+        let rows = stmt.query_map(rusqlite::params![corpus_id], |row| {
+            let entity = entity_store::row_to_entity(row)?;
+            let kind: String = row.get(12)?;
+            let sha: String = row.get(13)?;
+            let is_head: i64 = row.get(14)?;
+            Ok((entity, kind, sha, is_head != 0))
+        })?;
+
+        // id → (chosen entity, chose_head). Prefer a head row's representation;
+        // among archived rows the first valid one wins (PR-4 fixtures have a
+        // single derivation per id — full multi-version reconstruction is
+        // deferred).
+        use std::collections::HashMap;
+        let mut chosen: HashMap<String, (Entity, bool)> = HashMap::new();
+        for row in rows {
+            let (entity, kind, sha, is_head) = row?;
+            let provenance = Provenance::from_columns(&kind, &sha)?;
+            if !provenance.is_valid_at(target_sha, |a, b| {
+                ancestry::is_ancestor_or_equal(ancestry, a, b)
+            }) {
+                continue;
+            }
+            match chosen.get(&entity.id) {
+                // A head row always wins over an archived one.
+                Some((_, true)) => {}
+                _ => {
+                    chosen.insert(entity.id.clone(), (entity, is_head));
+                }
+            }
+        }
+
+        // Drop ids whose tombstone is ancestral to the target.
+        let mut out = Vec::new();
+        for (id, (entity, _)) in chosen {
+            if Self::is_tombstoned_at_conn(conn, corpus_id, "entity", &id, target_sha, ancestry)? {
+                continue;
+            }
+            out.push(entity);
+        }
+        Ok(out)
+    }
+
+    fn is_tombstoned_at(
+        &self,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+        target_sha: &str,
+        ancestry: Option<&dyn AncestryReader>,
+    ) -> Result<bool> {
+        let guard = db!(self);
+        Self::is_tombstoned_at_conn(
+            guard.conn(),
+            corpus_id,
+            artifact_kind,
+            artifact_id,
+            target_sha,
+            ancestry,
+        )
+    }
+
+    fn commit_embedding(&self, embedding: &StoredEmbedding, provenance: &Provenance) -> Result<()> {
+        embedding_store::commit(&db!(self), embedding, provenance)
+    }
+
+    fn migrate_fresh(&self, corpus_id: &str) -> Result<MigrateFreshStats> {
+        self.with_write_tx(|tx| {
+            let mut stats = MigrateFreshStats::default();
+
+            // Head tables. Order children-before-parents is unnecessary (each
+            // DELETE is scoped by corpus_id and FK cascades cover the rest), but
+            // we delete every table explicitly so the wipe is exhaustive and
+            // self-documenting rather than relying on cascade fan-out.
+            const HEAD_TABLES: &[&str] = &[
+                "embeddings",
+                "edges",
+                "entity_purposes",
+                "entity_contracts",
+                "entity_blocks",
+                "summaries",
+                "themes",
+                "entities",
+                "chunks",
+            ];
+            for table in HEAD_TABLES {
+                stats.head_rows_deleted += tx.execute(
+                    &format!("DELETE FROM {table} WHERE corpus_id = ?1"),
+                    rusqlite::params![corpus_id],
+                )? as u64;
+            }
+
+            // History tables.
+            const HISTORY_TABLES: &[&str] = &[
+                "entities_history",
+                "edges_history",
+                "entity_purposes_history",
+                "entity_contracts_history",
+                "entity_blocks_history",
+                "summaries_history",
+                "themes_history",
+                "chunks_history",
+                "embeddings_history",
+            ];
+            for table in HISTORY_TABLES {
+                stats.history_rows_deleted += tx.execute(
+                    &format!("DELETE FROM {table} WHERE corpus_id = ?1"),
+                    rusqlite::params![corpus_id],
+                )? as u64;
+            }
+
+            // Tombstones for this corpus.
+            stats.tombstones_deleted += tx.execute(
+                "DELETE FROM artifact_tombstones WHERE corpus_id = ?1",
+                rusqlite::params![corpus_id],
+            )? as u64;
+
+            // Layer-2 cache is content-addressed and carries no corpus_id, so it
+            // cannot be scoped to one corpus. Clearing it entirely is safe — it
+            // is a memoisation cache; the next index rebuilds it — and matches
+            // the from-scratch intent of migrate-fresh.
+            stats.layer2_cache_deleted += tx.execute("DELETE FROM layer2_cache", [])? as u64;
+
+            // Preserve the corpora row; reset the rebuild anchors.
+            tx.execute(
+                "UPDATE corpora SET backfill_cursor = NULL, last_indexed_version = NULL
+                 WHERE id = ?1",
+                rusqlite::params![corpus_id],
+            )?;
+
+            Ok(stats)
+        })
     }
 
     fn archive_to_history(
@@ -1669,5 +1877,272 @@ mod tests {
         // If migrations didn't run, corpus_list would fail.
         let result = backend.corpus_list();
         assert!(result.is_ok());
+    }
+
+    // ── PR 4: embeddings history + tombstone-aware reads + migrate-fresh ────────
+
+    use crate::types::{Chunk, Entity, Layer2CacheKey, Location};
+
+    /// Fake ancestry over a linear chain `git:C1 → git:C2 → git:C3`:
+    /// `is_ancestor_or_equal(a, b)` iff `rank(a) <= rank(b)`.
+    struct LinearAncestry;
+    impl AncestryReader for LinearAncestry {
+        fn is_ancestor_or_equal(&self, ancestor: &str, descendant: &str) -> bool {
+            let rank = |s: &str| match s {
+                "git:C1" => 1,
+                "git:C2" => 2,
+                "git:C3" => 3,
+                _ => 0,
+            };
+            rank(ancestor) <= rank(descendant)
+        }
+    }
+
+    fn seed_corpus(backend: &SqliteBackend, id: &str) -> Corpus {
+        let corpus = Corpus::new(id.into(), "Test".into(), "code".into(), "/tmp".into());
+        backend.corpus_insert(&corpus).unwrap();
+        corpus
+    }
+
+    /// When a chunk is superseded (content change → the cascade sweeps it), its
+    /// embedding is archived into `embeddings_history` with honest supersession
+    /// provenance, while the live chunk's head embedding carries the new vector.
+    #[test]
+    fn embedding_archived_to_history_on_chunk_supersession() {
+        let backend = make_backend();
+        seed_corpus(&backend, "c1");
+
+        // C1: a chunk and its embedding, committed at git:C1.
+        let chunk1 = Chunk::new(
+            "c1".into(),
+            None,
+            "file".into(),
+            Location::new("c1", "a.txt"),
+            "content v1".into(),
+        );
+        backend.chunk_upsert(&chunk1).unwrap();
+        let emb1 = StoredEmbedding::new("c1", &chunk1.id, "test-model", vec![1.0, 0.0, 0.0]);
+        backend
+            .commit_embedding(&emb1, &Provenance::concrete("git:C1"))
+            .unwrap();
+
+        // C2 supersedes a.txt: the cascade archives + deletes the chunk (and,
+        // by FK, its head embedding — archived first).
+        backend
+            .cascade_delete_dirty_subtree("c1", std::slice::from_ref(&chunk1.id), "git:C2")
+            .unwrap();
+        assert!(
+            backend
+                .embedding_get_for_chunk(&chunk1.id)
+                .unwrap()
+                .is_none(),
+            "the superseded chunk's head embedding must be gone"
+        );
+
+        // C2: new content → new (content-addressed) chunk + embedding.
+        let chunk2 = Chunk::new(
+            "c1".into(),
+            None,
+            "file".into(),
+            Location::new("c1", "a.txt"),
+            "content v2".into(),
+        );
+        backend.chunk_upsert(&chunk2).unwrap();
+        let emb2 = StoredEmbedding::new("c1", &chunk2.id, "test-model", vec![0.0, 1.0, 0.0]);
+        backend
+            .commit_embedding(&emb2, &Provenance::concrete("git:C2"))
+            .unwrap();
+
+        // Head embedding for the live chunk carries the C2 vector.
+        let head = backend
+            .embedding_get_for_chunk(&chunk2.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            (head.vector[1] - 1.0).abs() < 1e-6,
+            "head embedding must be the C2 vector"
+        );
+
+        // embeddings_history holds the C1 vector: derived at C1, superseded at C2.
+        let guard = backend.db_for_test();
+        let (derived, superseded, blob): (String, String, Vec<u8>) = guard
+            .conn()
+            .query_row(
+                "SELECT derived_at_sha, superseded_at_sha, vector
+                 FROM embeddings_history WHERE chunk_id = ?1",
+                rusqlite::params![chunk1.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("embeddings_history must contain the superseded C1 embedding");
+        assert_eq!(derived, "git:C1", "archived embedding derived at C1");
+        assert_eq!(superseded, "git:C2", "archived embedding superseded at C2");
+        let archived_vec: &[f32] = bytemuck::cast_slice(&blob);
+        assert!(
+            (archived_vec[0] - 1.0).abs() < 1e-6,
+            "archived vector must be the C1 vector"
+        );
+    }
+
+    /// `entity_list_at_sha` excludes an entity once its tombstone is ancestral to
+    /// the query SHA: present at the death commit's parent, absent at the death
+    /// commit and every descendant.
+    #[test]
+    fn entity_list_at_sha_excludes_ancestrally_tombstoned() {
+        let backend = make_backend();
+        seed_corpus(&backend, "c1");
+
+        // Entity derived at C1 (head row stamps derived_at_version; the read
+        // bridges the empty derived_at_sha via COALESCE).
+        let mut e = Entity::new(
+            "ent-1".into(),
+            "c1".into(),
+            "Alpha".into(),
+            "function".into(),
+        );
+        e.derived_at_version = Some("git:C1".into());
+        backend.entity_upsert(&e).unwrap();
+
+        // It dies at C2.
+        backend
+            .tombstone_insert(
+                "c1",
+                "entity",
+                "ent-1",
+                &Provenance::concrete("git:C2"),
+                Some("removed"),
+            )
+            .unwrap();
+
+        let anc = LinearAncestry;
+        let anc: Option<&dyn AncestryReader> = Some(&anc);
+
+        let present = |sha: &str| {
+            backend
+                .entity_list_at_sha("c1", sha, anc)
+                .unwrap()
+                .iter()
+                .any(|x| x.id == "ent-1")
+        };
+
+        assert!(present("git:C1"), "entity present at C1 (before its death)");
+        assert!(!present("git:C2"), "entity absent at C2 (its death commit)");
+        assert!(
+            !present("git:C3"),
+            "entity absent at C3 (tombstone is ancestral)"
+        );
+    }
+
+    /// `migrate_fresh` wipes every head row, every history row, all tombstones,
+    /// and the Layer-2 cache for a corpus, resets the rebuild anchors, and
+    /// preserves the `corpora` registration row.
+    #[test]
+    fn migrate_fresh_wipes_corpus_but_preserves_registration() {
+        let backend = make_backend();
+        seed_corpus(&backend, "c1");
+
+        // Head rows: chunk, entity, embedding.
+        let chunk = Chunk::new(
+            "c1".into(),
+            None,
+            "file".into(),
+            Location::new("c1", "a.txt"),
+            "v1".into(),
+        );
+        backend.chunk_upsert(&chunk).unwrap();
+        let mut e = Entity::new(
+            "ent-1".into(),
+            "c1".into(),
+            "Alpha".into(),
+            "function".into(),
+        );
+        e.derived_at_version = Some("git:C1".into());
+        backend.entity_upsert(&e).unwrap();
+        let emb = StoredEmbedding::new("c1", &chunk.id, "m", vec![1.0, 2.0]);
+        backend
+            .commit_embedding(&emb, &Provenance::concrete("git:C1"))
+            .unwrap();
+
+        // A history row, a tombstone, a cache entry, and the rebuild anchors.
+        backend
+            .chunk_history_insert(&chunk, "git:C0", "git:C1")
+            .unwrap();
+        backend
+            .tombstone_insert(
+                "c1",
+                "entity",
+                "dead",
+                &Provenance::concrete("git:C2"),
+                None,
+            )
+            .unwrap();
+        let key = Layer2CacheKey {
+            artifact_kind: "purpose".into(),
+            entity_id: Some("e".into()),
+            content_hash: "c".into(),
+            file_shape_hash: "f".into(),
+            model: "m".into(),
+            stable_sampling: false,
+        };
+        backend.layer2_cache_put(&key, "{}", "git:C1").unwrap();
+        backend
+            .corpus_set_backfill_cursor("c1", Some("git:C1"))
+            .unwrap();
+        backend
+            .corpus_set_last_indexed_version("c1", "git:C1")
+            .unwrap();
+
+        let stats = backend.migrate_fresh("c1").unwrap();
+        assert!(stats.head_rows_deleted > 0, "head rows must be wiped");
+        assert!(stats.history_rows_deleted > 0, "history rows must be wiped");
+
+        // Head tables empty.
+        assert_eq!(backend.chunk_count("c1").unwrap(), 0);
+        assert_eq!(backend.entity_count("c1").unwrap(), 0);
+        assert_eq!(backend.embedding_count("c1").unwrap(), 0);
+
+        // Tombstones + cache gone.
+        assert!(
+            backend
+                .tombstone_list("c1", "entity", "dead")
+                .unwrap()
+                .is_empty(),
+            "tombstones must be wiped"
+        );
+        assert!(
+            backend.layer2_cache_get(&key).unwrap().is_none(),
+            "layer-2 cache must be cleared"
+        );
+
+        // Corpus registration preserved; rebuild anchors reset to NULL.
+        assert!(
+            backend.corpus_get("c1").unwrap().is_some(),
+            "corpora row must be preserved"
+        );
+        assert_eq!(backend.corpus_get_backfill_cursor("c1").unwrap(), None);
+        assert_eq!(backend.corpus_get_last_indexed_version("c1").unwrap(), None);
+
+        // Every *_history table empty for this corpus.
+        let guard = backend.db_for_test();
+        for t in [
+            "entities_history",
+            "edges_history",
+            "chunks_history",
+            "summaries_history",
+            "themes_history",
+            "entity_purposes_history",
+            "entity_contracts_history",
+            "entity_blocks_history",
+            "embeddings_history",
+        ] {
+            let n: i64 = guard
+                .conn()
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {t} WHERE corpus_id = 'c1'"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "{t} must be empty after migrate_fresh");
+        }
     }
 }
