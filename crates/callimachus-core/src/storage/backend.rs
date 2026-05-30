@@ -478,6 +478,13 @@ pub trait StorageBackend: Send + Sync {
         superseded_at_version: &str,
     ) -> Result<u64>;
 
+    /// Delete a single theme and its corresponding `kind = "theme"` entity row
+    /// from head. Called by the theme pass after deriving the authoritative
+    /// theme set, to purge stale entries that the cascade already archived into
+    /// `themes_history` (the archive is `INSERT OR IGNORE` and does not delete
+    /// from head, so an explicit delete is required here).
+    fn theme_delete(&self, theme_id: &str, corpus_id: &str) -> Result<()>;
+
     /// Transactionally archive then delete all artifacts (entities, edges,
     /// purposes, contracts, blocks, summaries) associated with the given chunk
     /// IDs, plus the chunks themselves.
