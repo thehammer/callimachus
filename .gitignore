@@ -7,3 +7,11 @@ Cargo.lock
 !data/callimachus.db
 .env
 .DS_Store
+
+# Generated pinakes databases — never commit
+data/*.pinakes
+data/*.pinakes-shm
+data/*.pinakes-wal
+data/*.pinakes.bak-*
+# Exempt the bundled demo pinakes (shipped with the repo)
+!data/callimachus.pinakes
