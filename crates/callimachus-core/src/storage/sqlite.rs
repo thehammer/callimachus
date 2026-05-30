@@ -606,6 +606,10 @@ impl StorageBackend for SqliteBackend {
         theme_store::list(&db!(self), corpus_id)
     }
 
+    fn theme_delete(&self, theme_id: &str, corpus_id: &str) -> Result<()> {
+        theme_store::delete_one(&db!(self), theme_id, corpus_id)
+    }
+
     // ── History / Archive ─────────────────────────────────────────────────────
 
     fn archive_entity(

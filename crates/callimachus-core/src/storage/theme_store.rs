@@ -72,6 +72,20 @@ pub fn delete_for_corpus(db: &Database, corpus_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Delete a single theme and its corresponding `kind = "theme"` entity row.
+pub fn delete_one(db: &Database, theme_id: &str, corpus_id: &str) -> Result<()> {
+    let conn = db.conn();
+    conn.execute(
+        "DELETE FROM themes WHERE id = ?1 AND corpus_id = ?2",
+        params![theme_id, corpus_id],
+    )?;
+    conn.execute(
+        "DELETE FROM entities WHERE id = ?1 AND corpus_id = ?2 AND kind = 'theme'",
+        params![theme_id, corpus_id],
+    )?;
+    Ok(())
+}
+
 fn row_to_theme(row: &rusqlite::Row<'_>) -> rusqlite::Result<Theme> {
     Ok(Theme {
         id: row.get(0)?,

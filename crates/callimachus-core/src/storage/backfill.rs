@@ -926,6 +926,10 @@ impl StorageBackend for BackfillStorageWrapper {
         Ok(vec![])
     }
 
+    fn theme_delete(&self, _theme_id: &str, _corpus_id: &str) -> Result<()> {
+        Ok(()) // NO-OP: backfill has no head rows to delete
+    }
+
     // ── History / Archive ─────────────────────────────────────────────────────
     // These are the existing archive helpers; they copy head rows to history.
     // In backfill mode they must not be invoked (they read from head tables

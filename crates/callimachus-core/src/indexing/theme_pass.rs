@@ -188,6 +188,27 @@ pub async fn run(
 
                 stats.processed += 1;
             }
+
+            // Authoritative writer: remove head themes not in the new derivation.
+            // The cascade already archived them (INSERT OR IGNORE into themes_history)
+            // before this pass ran, so we only need to delete from head.
+            let new_theme_ids: std::collections::HashSet<String> = extracted
+                .themes
+                .iter()
+                .map(|et| format!("{}:theme:{}", corpus.id, slugify(&et.title)))
+                .collect();
+            let current_themes = db.theme_list(&corpus.id)?;
+            for stale in current_themes
+                .iter()
+                .filter(|t| !new_theme_ids.contains(&t.id))
+            {
+                tracing::debug!(
+                    "[theme] purging stale theme '{}' superseded at {}",
+                    stale.id,
+                    sha
+                );
+                db.theme_delete(&stale.id, &corpus.id)?;
+            }
         }
         Ok(None) => {
             stats.skipped += 1;

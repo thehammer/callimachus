@@ -415,6 +415,9 @@ impl StorageBackend for PostgresBackend {
     fn theme_list(&self, _corpus_id: &str) -> Result<Vec<Theme>> {
         Err(unimplemented())
     }
+    fn theme_delete(&self, _theme_id: &str, _corpus_id: &str) -> Result<()> {
+        Err(unimplemented())
+    }
 
     // ── History / Archive ─────────────────────────────────────────────────────
 
