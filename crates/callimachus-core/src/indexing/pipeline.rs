@@ -331,7 +331,9 @@ impl IndexPipeline {
         // seed.  Default-off, so this is a no-op for existing callers.
         let mut embedder = self.embedder.clone();
         if opts.stable_sampling {
-            tracing::info!("[pipeline] stable-sampling: ENABLED (temperature=0, deterministic seed)");
+            tracing::info!(
+                "[pipeline] stable-sampling: ENABLED (temperature=0, deterministic seed)"
+            );
             tiers.haiku = StableSamplingProvider::wrap(tiers.haiku);
             tiers.sonnet = StableSamplingProvider::wrap(tiers.sonnet);
             tiers.opus = StableSamplingProvider::wrap(tiers.opus);

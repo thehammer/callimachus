@@ -146,8 +146,7 @@ pub async fn run(
                 Ok(Some(hit)) => Ok(Some(hit)),
                 Ok(None) => match adapter.summarize(&context_chunk, llm, level_kind).await {
                     Ok(Some(text)) => {
-                        if let Err(e) =
-                            layer2_cache::cache_put(db.as_ref(), &cache_key, &text, sha)
+                        if let Err(e) = layer2_cache::cache_put(db.as_ref(), &cache_key, &text, sha)
                         {
                             tracing::warn!("summary cache_put failed for {}: {e}", chunk.id);
                         }
@@ -289,7 +288,8 @@ pub async fn run(
         .as_ref()
         .map(|m| m.current_version.as_str())
         .unwrap_or("");
-    let corpus_summarized = match layer2_cache::cache_get::<String>(db.as_ref(), &corpus_cache_key) {
+    let corpus_summarized = match layer2_cache::cache_get::<String>(db.as_ref(), &corpus_cache_key)
+    {
         Ok(Some(hit)) => Ok(Some(hit)),
         Ok(None) => match adapter.summarize(&corpus_chunk, corpus_llm, "corpus").await {
             Ok(Some(text)) => {

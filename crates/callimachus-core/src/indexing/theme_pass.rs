@@ -86,25 +86,23 @@ pub async fn run(
         .as_ref()
         .map(|m| m.current_version.clone())
         .unwrap_or_default();
-    let derived = match layer2_cache::cache_get::<crate::adapter::ExtractedThemes>(
-        db.as_ref(),
-        &cache_key,
-    ) {
-        Ok(Some(hit)) => Ok(Some(hit)),
-        Ok(None) => match adapter
-            .extract_themes(corpus, &all_entities, llm.as_ref())
-            .await
-        {
-            Ok(Some(fresh)) => {
-                if let Err(e) = layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, &sha) {
-                    tracing::warn!("theme cache_put failed for corpus {}: {e}", corpus.id);
+    let derived =
+        match layer2_cache::cache_get::<crate::adapter::ExtractedThemes>(db.as_ref(), &cache_key) {
+            Ok(Some(hit)) => Ok(Some(hit)),
+            Ok(None) => match adapter
+                .extract_themes(corpus, &all_entities, llm.as_ref())
+                .await
+            {
+                Ok(Some(fresh)) => {
+                    if let Err(e) = layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, &sha) {
+                        tracing::warn!("theme cache_put failed for corpus {}: {e}", corpus.id);
+                    }
+                    Ok(Some(fresh))
                 }
-                Ok(Some(fresh))
-            }
-            other => other,
-        },
-        Err(e) => Err(e),
-    };
+                other => other,
+            },
+            Err(e) => Err(e),
+        };
 
     match derived {
         Ok(Some(extracted)) => {

@@ -13,7 +13,9 @@ use crate::{
     types::{Corpus, Entity, EntityBlock, EntityPurpose, Layer2CacheKey},
 };
 
-use super::{change_manifest::file_path_from_uri, file_shape, layer2_cache, pipeline::IndexOptions};
+use super::{
+    change_manifest::file_path_from_uri, file_shape, layer2_cache, pipeline::IndexOptions,
+};
 
 const MAX_RETRIES: u32 = 8;
 
@@ -288,8 +290,14 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
     ) {
         Ok(Some(hit)) => Ok(Some(hit)),
         Ok(None) => {
-            match extract_with_retry(adapter.as_ref(), entity, &content, summary_opt.as_deref(), llm)
-                .await
+            match extract_with_retry(
+                adapter.as_ref(),
+                entity,
+                &content,
+                summary_opt.as_deref(),
+                llm,
+            )
+            .await
             {
                 Ok(Some(fresh)) => {
                     let sha = ctx.current_version.as_deref().unwrap_or("");

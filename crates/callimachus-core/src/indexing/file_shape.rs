@@ -83,7 +83,10 @@ mod tests {
     #[test]
     fn changes_on_add_remove_rename() {
         let base = file_shape_hash(&["a".into(), "b".into()]).0;
-        assert_ne!(base, file_shape_hash(&["a".into(), "b".into(), "c".into()]).0); // add
+        assert_ne!(
+            base,
+            file_shape_hash(&["a".into(), "b".into(), "c".into()]).0
+        ); // add
         assert_ne!(base, file_shape_hash(&["a".into()]).0); // remove
         assert_ne!(base, file_shape_hash(&["a".into(), "b2".into()]).0); // rename
     }

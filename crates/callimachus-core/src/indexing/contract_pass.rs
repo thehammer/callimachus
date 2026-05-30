@@ -13,7 +13,9 @@ use crate::{
     types::{Corpus, Edge, Entity, EntityContract, Layer2CacheKey},
 };
 
-use super::{change_manifest::file_path_from_uri, file_shape, layer2_cache, pipeline::IndexOptions};
+use super::{
+    change_manifest::file_path_from_uri, file_shape, layer2_cache, pipeline::IndexOptions,
+};
 
 const MAX_RETRIES: u32 = 8;
 
@@ -351,35 +353,36 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
         model: model_name.to_string(),
         stable_sampling: ctx.stable_sampling,
     };
-    let derived = match layer2_cache::cache_get::<crate::adapter::ExtractedContract>(
-        db.as_ref(),
-        &cache_key,
-    ) {
-        Ok(Some(hit)) => Ok(Some(hit)),
-        Ok(None) => {
-            match extract_with_retry(
-                adapter.as_ref(),
-                entity,
-                &content,
-                summary_opt.as_deref(),
-                purpose_opt.as_deref(),
-                &signals_json,
-                llm,
-            )
-            .await
-            {
-                Ok(Some(fresh)) => {
-                    let sha = ctx.current_version.as_deref().unwrap_or("");
-                    if let Err(e) = layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, sha) {
-                        tracing::warn!("contract cache_put failed for {}: {e}", entity.id);
+    let derived =
+        match layer2_cache::cache_get::<crate::adapter::ExtractedContract>(db.as_ref(), &cache_key)
+        {
+            Ok(Some(hit)) => Ok(Some(hit)),
+            Ok(None) => {
+                match extract_with_retry(
+                    adapter.as_ref(),
+                    entity,
+                    &content,
+                    summary_opt.as_deref(),
+                    purpose_opt.as_deref(),
+                    &signals_json,
+                    llm,
+                )
+                .await
+                {
+                    Ok(Some(fresh)) => {
+                        let sha = ctx.current_version.as_deref().unwrap_or("");
+                        if let Err(e) =
+                            layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, sha)
+                        {
+                            tracing::warn!("contract cache_put failed for {}: {e}", entity.id);
+                        }
+                        Ok(Some(fresh))
                     }
-                    Ok(Some(fresh))
+                    other => other,
                 }
-                other => other,
             }
-        }
-        Err(e) => Err(e),
-    };
+            Err(e) => Err(e),
+        };
 
     match derived {
         Ok(Some(extracted)) => {

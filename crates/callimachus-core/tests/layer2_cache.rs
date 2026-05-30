@@ -190,7 +190,10 @@ impl SourceAdapter for TwoFileAdapter {
                 ..Default::default()
             })
             .await?;
-        Ok(Some(format!("Summary of {}: {}", chunk.location.path, resp.text)))
+        Ok(Some(format!(
+            "Summary of {}: {}",
+            chunk.location.path, resp.text
+        )))
     }
 
     async fn resolve_aliases(
@@ -222,7 +225,10 @@ impl SourceAdapter for TwoFileAdapter {
         // Call the LLM so DryRunProvider::call_count() increments.
         use callimachus_llm::CompletionRequest;
         llm.complete(CompletionRequest {
-            prompt: format!("explain purpose of {} in: {}", entity.canonical_name, content),
+            prompt: format!(
+                "explain purpose of {} in: {}",
+                entity.canonical_name, content
+            ),
             kind: "purpose".to_string(),
             pass: "purpose".to_string(),
             ..Default::default()
@@ -346,8 +352,12 @@ impl SourceAdapter for ShapeChangeAdapter {
                 "alpha"
             };
             let entity_id = format!("{cid}:{name}");
-            let mut entity =
-                Entity::new(entity_id, cid.clone(), name.to_string(), "function".to_string());
+            let mut entity = Entity::new(
+                entity_id,
+                cid.clone(),
+                name.to_string(),
+                "function".to_string(),
+            );
             entity.first_location = Some(chunk.location.clone());
             Ok(Some(ExtractedSemantic {
                 entities: vec![entity],
@@ -356,8 +366,12 @@ impl SourceAdapter for ShapeChangeAdapter {
             }))
         } else {
             let entity_id = format!("{cid}:beta");
-            let mut entity =
-                Entity::new(entity_id, cid.clone(), "beta".to_string(), "function".to_string());
+            let mut entity = Entity::new(
+                entity_id,
+                cid.clone(),
+                "beta".to_string(),
+                "function".to_string(),
+            );
             entity.first_location = Some(chunk.location.clone());
             Ok(Some(ExtractedSemantic {
                 entities: vec![entity],
@@ -404,7 +418,10 @@ impl SourceAdapter for ShapeChangeAdapter {
     ) -> anyhow::Result<Option<ExtractedPurpose>> {
         use callimachus_llm::CompletionRequest;
         llm.complete(CompletionRequest {
-            prompt: format!("explain purpose of {} in: {}", entity.canonical_name, content),
+            prompt: format!(
+                "explain purpose of {} in: {}",
+                entity.canonical_name, content
+            ),
             kind: "purpose".to_string(),
             pass: "purpose".to_string(),
             ..Default::default()
@@ -600,7 +617,10 @@ async fn purpose_cache_hit_skips_llm() {
     // The semantic pass calls the LLM for each chunk; the purpose pass calls it
     // once per qualifying entity. With 2 function entities we expect at least 2
     // purpose LLM calls (plus semantic calls). Sanity-check > 0.
-    assert!(run1_calls > 0, "expected LLM calls in run 1; got {run1_calls}");
+    assert!(
+        run1_calls > 0,
+        "expected LLM calls in run 1; got {run1_calls}"
+    );
 
     // Run 2: same corpus, full=true bypasses head-idempotency but cache is consulted.
     dry.reset_usage();
@@ -726,7 +746,12 @@ async fn summarize_cache_hit_skips_llm() {
         Arc::clone(&adapter) as Arc<dyn SourceAdapter>,
         Arc::clone(&dry),
         None,
-        vec![Pass::Chunk, Pass::Structure, Pass::Semantic, Pass::Summarize],
+        vec![
+            Pass::Chunk,
+            Pass::Structure,
+            Pass::Semantic,
+            Pass::Summarize,
+        ],
         false,
         false,
     )
@@ -741,7 +766,12 @@ async fn summarize_cache_hit_skips_llm() {
         Arc::clone(&adapter) as Arc<dyn SourceAdapter>,
         Arc::clone(&dry),
         None,
-        vec![Pass::Chunk, Pass::Structure, Pass::Semantic, Pass::Summarize],
+        vec![
+            Pass::Chunk,
+            Pass::Structure,
+            Pass::Semantic,
+            Pass::Summarize,
+        ],
         true,
         false,
     )
@@ -811,7 +841,10 @@ async fn theme_cache_hit_skips_llm() {
 
     // A theme row exists.
     let themes = db.theme_list(cid).unwrap();
-    assert!(!themes.is_empty(), "expected at least one theme after run 1");
+    assert!(
+        !themes.is_empty(),
+        "expected at least one theme after run 1"
+    );
 
     // Theme run 2: the entity-set hash must match run 1's for a cache hit.
     // The theme pass writes `kind="theme"` rows into the entity table, but the
@@ -928,12 +961,21 @@ async fn cache_miss_on_shape_change() {
     .await;
 
     let alpha_purpose = db.purpose_get(cid, &format!("{cid}:alpha")).unwrap();
-    assert!(alpha_purpose.is_some(), "alpha purpose should exist after run 1");
+    assert!(
+        alpha_purpose.is_some(),
+        "alpha purpose should exist after run 1"
+    );
     let beta_purpose = db.purpose_get(cid, &format!("{cid}:beta")).unwrap();
-    assert!(beta_purpose.is_some(), "beta purpose should exist after run 1");
+    assert!(
+        beta_purpose.is_some(),
+        "beta purpose should exist after run 1"
+    );
 
     let run1_calls = dry.call_count();
-    assert!(run1_calls > 0, "expected LLM calls in run 1; got {run1_calls}");
+    assert!(
+        run1_calls > 0,
+        "expected LLM calls in run 1; got {run1_calls}"
+    );
 
     // Inject a new entity into file A, changing its file-shape hash.
     // `alpha2` lives at `src/alpha.rs` — the same file as `alpha`.
