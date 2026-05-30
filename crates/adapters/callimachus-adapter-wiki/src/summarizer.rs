@@ -26,6 +26,7 @@ pub async fn summarize_section(
             chunk_id: Some(chunk.id.clone()),
             kind: "section".to_string(),
             pass: "summarize".to_string(),
+            ..Default::default()
         })
         .await?;
 
@@ -60,6 +61,7 @@ pub async fn summarize_page(
             chunk_id: None,
             kind: "page".to_string(),
             pass: "summarize".to_string(),
+            ..Default::default()
         })
         .await?;
 
@@ -98,6 +100,7 @@ pub async fn summarize_corpus(
             chunk_id: None,
             kind: "corpus".to_string(),
             pass: "summarize".to_string(),
+            ..Default::default()
         })
         .await?;
 

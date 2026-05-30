@@ -137,6 +137,14 @@ impl StorageBackend for PostgresBackend {
     fn chunk_set_source_hash(&self, _chunk_id: &str, _hash: &str) -> Result<()> {
         Err(unimplemented())
     }
+    fn chunk_set_file_shape(
+        &self,
+        _chunk_id: &str,
+        _file_shape_hash: &str,
+        _entity_id_list: &str,
+    ) -> Result<()> {
+        Err(unimplemented())
+    }
     fn chunk_set_history(
         &self,
         _chunk_id: &str,

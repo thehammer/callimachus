@@ -6,10 +6,10 @@ use uuid::Uuid;
 use crate::{
     adapter::SourceAdapter,
     storage::{StorageBackend, run_log::PassStats},
-    types::{Corpus, Edge, Entity, Theme},
+    types::{Corpus, Edge, Entity, Layer2CacheKey, Theme},
 };
 
-use super::pipeline::IndexOptions;
+use super::{file_shape, layer2_cache, pipeline::IndexOptions};
 
 const MIN_ENTITIES_FOR_THEMES: u64 = 20;
 
@@ -60,10 +60,53 @@ pub async fn run(
         db.entity_list(&corpus.id)?
     };
 
-    match adapter
-        .extract_themes(corpus, &all_entities, llm.as_ref())
-        .await
-    {
+    // Layer-2 cache: themes are corpus-level, keyed by the corpus entity-set
+    // hash (sorted hash of all source entity IDs) + model. A hit reuses the
+    // whole ExtractedThemes set without calling the LLM.
+    //
+    // The theme pass writes its own `kind = "theme"` entity rows; those must be
+    // excluded from the entity-set hash, otherwise the pass's own output would
+    // change the key on the next run and the cache would always miss.
+    let entity_ids: Vec<String> = all_entities
+        .iter()
+        .filter(|e| e.kind != "theme")
+        .map(|e| e.id.clone())
+        .collect();
+    let (entity_set_hash, _) = file_shape::file_shape_hash(&entity_ids);
+    let cache_key = Layer2CacheKey {
+        artifact_kind: "theme".to_string(),
+        entity_id: None,
+        content_hash: entity_set_hash,
+        file_shape_hash: String::new(),
+        model: llm.name().to_string(),
+        stable_sampling: opts.stable_sampling,
+    };
+    let sha = opts
+        .change_manifest
+        .as_ref()
+        .map(|m| m.current_version.clone())
+        .unwrap_or_default();
+    let derived = match layer2_cache::cache_get::<crate::adapter::ExtractedThemes>(
+        db.as_ref(),
+        &cache_key,
+    ) {
+        Ok(Some(hit)) => Ok(Some(hit)),
+        Ok(None) => match adapter
+            .extract_themes(corpus, &all_entities, llm.as_ref())
+            .await
+        {
+            Ok(Some(fresh)) => {
+                if let Err(e) = layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, &sha) {
+                    tracing::warn!("theme cache_put failed for corpus {}: {e}", corpus.id);
+                }
+                Ok(Some(fresh))
+            }
+            other => other,
+        },
+        Err(e) => Err(e),
+    };
+
+    match derived {
         Ok(Some(extracted)) => {
             let now = chrono::Utc::now().to_rfc3339();
             let version = opts

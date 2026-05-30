@@ -186,6 +186,15 @@ impl StorageBackend for SqliteBackend {
         chunk_store::set_source_hash(&db!(self), chunk_id, hash)
     }
 
+    fn chunk_set_file_shape(
+        &self,
+        chunk_id: &str,
+        file_shape_hash: &str,
+        entity_id_list: &str,
+    ) -> Result<()> {
+        chunk_store::set_file_shape(&db!(self), chunk_id, file_shape_hash, entity_id_list)
+    }
+
     fn chunk_set_history(
         &self,
         chunk_id: &str,

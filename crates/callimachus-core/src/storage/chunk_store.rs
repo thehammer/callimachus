@@ -11,8 +11,9 @@ pub fn upsert(db: &Database, chunk: &Chunk) -> Result<()> {
     db.conn().execute(
         "INSERT OR IGNORE INTO chunks
          (id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at,
-          source_hash, introduced_at_version, last_modified_at_version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+          source_hash, introduced_at_version, last_modified_at_version, file_shape_hash,
+          entity_id_list)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             chunk.id,
             chunk.corpus_id,
@@ -25,6 +26,8 @@ pub fn upsert(db: &Database, chunk: &Chunk) -> Result<()> {
             chunk.source_hash,
             chunk.introduced_at_version,
             chunk.last_modified_at_version,
+            chunk.file_shape_hash,
+            chunk.entity_id_list,
         ],
     )?;
     Ok(())
@@ -41,7 +44,7 @@ pub fn has(db: &Database, id: &str) -> Result<bool> {
 
 pub fn get(db: &Database, uri: &str) -> Result<Option<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list
          FROM chunks WHERE location_uri = ?1",
     )?;
     let mut rows = stmt.query_map(params![uri], row_to_chunk)?;
@@ -53,7 +56,7 @@ pub fn get(db: &Database, uri: &str) -> Result<Option<Chunk>> {
 
 pub fn get_by_id(db: &Database, id: &str) -> Result<Option<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list
          FROM chunks WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], row_to_chunk)?;
@@ -65,7 +68,7 @@ pub fn get_by_id(db: &Database, id: &str) -> Result<Option<Chunk>> {
 
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list
          FROM chunks WHERE corpus_id = ?1 ORDER BY location_uri ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_chunk)?;
@@ -85,7 +88,7 @@ pub fn count(db: &Database, corpus_id: &str) -> Result<u64> {
 /// Return chunks that have not yet been semantically processed.
 pub fn list_unprocessed(db: &Database, corpus_id: &str) -> Result<Vec<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list
          FROM chunks WHERE corpus_id = ?1 AND semantic_processed = 0
          ORDER BY location_uri ASC",
     )?;
@@ -228,5 +231,21 @@ fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
         source_hash: row.get(8)?,
         introduced_at_version: row.get(9)?,
         last_modified_at_version: row.get(10)?,
+        file_shape_hash: row.get(11)?,
+        entity_id_list: row.get(12)?,
     })
+}
+
+/// Store the file-shape hash and its entity-id-list JSON on a chunk.
+pub fn set_file_shape(
+    db: &Database,
+    chunk_id: &str,
+    file_shape_hash: &str,
+    entity_id_list: &str,
+) -> Result<()> {
+    db.conn().execute(
+        "UPDATE chunks SET file_shape_hash = ?1, entity_id_list = ?2 WHERE id = ?3",
+        params![file_shape_hash, entity_id_list, chunk_id],
+    )?;
+    Ok(())
 }

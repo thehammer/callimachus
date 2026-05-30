@@ -467,6 +467,21 @@ impl StorageBackend for BackfillStorageWrapper {
         Ok(())
     }
 
+    fn chunk_set_file_shape(
+        &self,
+        chunk_id: &str,
+        file_shape_hash: &str,
+        entity_id_list: &str,
+    ) -> Result<()> {
+        self.inner
+            .chunk_set_file_shape(chunk_id, file_shape_hash, entity_id_list)?;
+        if let Some(c) = self.written_chunks.lock().unwrap().get_mut(chunk_id) {
+            c.file_shape_hash = file_shape_hash.to_string();
+            c.entity_id_list = entity_id_list.to_string();
+        }
+        Ok(())
+    }
+
     fn chunk_set_history(
         &self,
         chunk_id: &str,

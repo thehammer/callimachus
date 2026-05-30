@@ -27,6 +27,19 @@ pub struct Chunk {
     /// seen dirty (i.e. was processed in a change-detection run).
     #[serde(default)]
     pub last_modified_at_version: Option<String>,
+    /// `sha256_hex(sorted(entity_ids in this file))` — the file-grain shape
+    /// hash used as the Layer-2 cache invalidation boundary. Empty string until
+    /// the structure pass populates it.
+    #[serde(default)]
+    pub file_shape_hash: String,
+    /// The sorted JSON array of entity IDs that `file_shape_hash` is computed
+    /// from, retained for debuggability. Defaults to `"[]"`.
+    #[serde(default = "default_entity_id_list")]
+    pub entity_id_list: String,
+}
+
+fn default_entity_id_list() -> String {
+    "[]".to_string()
 }
 
 impl Chunk {
@@ -51,6 +64,8 @@ impl Chunk {
             source_hash: None,
             introduced_at_version: None,
             last_modified_at_version: None,
+            file_shape_hash: String::new(),
+            entity_id_list: default_entity_id_list(),
         }
     }
 }

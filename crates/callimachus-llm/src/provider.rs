@@ -159,7 +159,7 @@ impl LlmProvider for Box<dyn LlmProvider> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CompletionRequest {
     pub prompt: String,
     pub model: Option<String>,
@@ -173,6 +173,12 @@ pub struct CompletionRequest {
     /// Pipeline pass name (e.g. `"purpose"`, `"contract"`, `"summarize"`).
     /// Used as part of the [`crate::budget::EstimatorKey`].
     pub pass: String,
+    /// Sampling temperature. `None` lets the provider choose its default.
+    /// Set to `Some(0.0)` by the stable-sampling decorator for determinism.
+    pub temperature: Option<f32>,
+    /// Deterministic sampling seed. `None` lets the provider choose. Providers
+    /// that don't support seeding record it but ignore it on the wire.
+    pub seed: Option<u64>,
 }
 
 #[derive(Debug)]

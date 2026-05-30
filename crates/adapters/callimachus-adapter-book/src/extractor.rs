@@ -42,6 +42,7 @@ pub async fn extract(chunk: &Chunk, llm: &dyn LlmProvider) -> anyhow::Result<Ext
             chunk_id: Some(chunk.id.clone()),
             kind: "book".to_string(),
             pass: "semantic".to_string(),
+            ..Default::default()
         })
         .await
         .map_err(|e| anyhow::anyhow!("LLM error: {e}"))?;

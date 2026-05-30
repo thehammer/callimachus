@@ -23,6 +23,7 @@ pub async fn run(
     full: bool,
     no_git_filter: bool,
     concurrency: Option<usize>,
+    stable_sampling: bool,
     provider_override: Option<String>,
     db: Arc<dyn StorageBackend>,
     config: &GlobalConfig,
@@ -54,6 +55,7 @@ pub async fn run(
         full,
         no_git_filter,
         concurrency,
+        stable_sampling,
         tier_config: config.model_tiers.clone(),
         change_manifest: None,
         ..IndexOptions::default()
@@ -204,6 +206,7 @@ mod tests {
             false,
             false,
             None,
+            false, // stable_sampling
             Some("dry-run".to_string()),
             db,
             &GlobalConfig::default(),
@@ -220,6 +223,7 @@ mod tests {
             true, // full
             false,
             None,
+            false, // stable_sampling
             Some("dry-run".to_string()),
             db,
             &GlobalConfig::default(),
@@ -288,6 +292,7 @@ mod tests {
             false,
             false,
             None,
+            false, // stable_sampling
             Some("dry-run".to_string()),
             Arc::clone(&db),
             &GlobalConfig::default(),
