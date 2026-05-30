@@ -35,9 +35,10 @@ use crate::{
     indexing::{
         cascade,
         change_manifest::ChangeManifest,
+        history_layer::{self, CommitPlan, RemovedArtifact, WalkDirection},
         pipeline::{IndexMode, IndexOptions, IndexPipeline, IndexResult, ReadView},
     },
-    storage::{BackfillStorageWrapper, BackfillSupersession, StorageBackend, VirtualHead},
+    storage::{BackfillStorageWrapper, BackfillSupersession, VirtualHead},
     types::Corpus,
 };
 
@@ -137,19 +138,31 @@ pub async fn walk_history_forward(
         // previously-processed (older) commit and re-derive only the changed
         // files, copying every unchanged file's artifacts forward instead.
         let neighbour = (i > 0).then(|| format!("git:{}", commits[i - 1]));
-        let (manifest, dirty_paths) = match &neighbour {
-            None => (ChangeManifest::all_dirty(version.clone()), Vec::new()),
+        let manifest = match &neighbour {
+            None => ChangeManifest::all_dirty(version.clone()),
             Some(neighbour) => {
                 let changed =
                     pipeline
                         .adapter
                         .changed_sources(&corpus.source, Some(neighbour), &version)?;
-                let dirty_paths: Vec<String> = changed.iter().map(|c| c.path.clone()).collect();
-                (
-                    ChangeManifest::from_changed(version.clone(), changed),
-                    dirty_paths,
-                )
+                ChangeManifest::from_changed(version.clone(), changed)
             }
+        };
+
+        // Snapshot the head chunks on dirty paths *before* the cascade sweeps
+        // them, so we can tombstone the ones that don't come back (deleted
+        // files / removed content). Content-addressed chunk ids that are
+        // re-derived keep the same id; ones that vanish are genuine removals.
+        let pre_dirty_chunks: Vec<String> = if neighbour.is_some() {
+            pipeline
+                .db
+                .chunk_list(&corpus.id)?
+                .into_iter()
+                .filter(|c| manifest.is_dirty_for_chunk(c))
+                .map(|c| c.id)
+                .collect()
+        } else {
+            Vec::new()
         };
 
         let mut commit_opts = opts.clone();
@@ -159,32 +172,46 @@ pub async fn walk_history_forward(
             .retain(|p| *p != crate::types::Pass::History);
         commit_opts.change_manifest = Some(manifest.clone());
 
-        // Run cascade invalidation explicitly (normally done inside History pass).
+        // Archive + delete the dirty subtree (and supersede themes) via the
+        // history layer — the sole writer of provenance + tombstones. No
+        // copy-forward of unchanged artifacts: rows untouched by this commit's
+        // diff keep their existing (older, honest) provenance tag.
         cascade::run(Arc::clone(&pipeline.db), corpus, &manifest).await?;
 
-        // Run the pipeline (History excluded; manifest pre-supplied).
+        // Run the pipeline (History excluded; manifest pre-supplied). The passes
+        // re-derive only the dirty subtree and stamp it at this commit.
         let result = pipeline.run(&commit_corpus, commit_opts).await?;
 
-        // Copy every unchanged file's artifacts forward from the neighbour so
-        // this commit ends with a complete, exact-SHA-stamped artifact set
-        // without re-deriving the unchanged files via the LLM.
-        if let Some(neighbour) = &neighbour {
-            let themes_recomputed = manifest.dirty_count() > 0;
-            let unchanged = unchanged_entity_ids(
-                pipeline.db.as_ref(),
-                &corpus.id,
-                neighbour,
-                &manifest,
-                themes_recomputed,
-            )?;
-            pipeline.db.copy_unchanged_artifacts(
-                &corpus.id,
-                neighbour,
-                &version,
-                &version,
-                &unchanged,
-                &dirty_paths,
-            )?;
+        // Tombstone chunks present before the diff but absent after re-derivation.
+        if !pre_dirty_chunks.is_empty() {
+            let after: std::collections::HashSet<String> = pipeline
+                .db
+                .chunk_list(&corpus.id)?
+                .into_iter()
+                .map(|c| c.id)
+                .collect();
+            let removed: Vec<RemovedArtifact> = pre_dirty_chunks
+                .iter()
+                .filter(|id| !after.contains(*id))
+                .map(|id| RemovedArtifact {
+                    kind: "chunk",
+                    id: id.clone(),
+                    reason: Some("absent_in_substrate".to_string()),
+                })
+                .collect();
+            if !removed.is_empty() {
+                history_layer::commit(
+                    pipeline.db.as_ref(),
+                    &corpus.id,
+                    &version,
+                    WalkDirection::Forward,
+                    &CommitPlan {
+                        dirty_chunk_ids: Vec::new(),
+                        archive_themes: false,
+                        tombstones: removed,
+                    },
+                )?;
+            }
         }
 
         // Persist the version anchor for this commit so the next iteration
@@ -310,11 +337,41 @@ pub async fn walk_history_backward(
         &corpus.id,
     )?);
 
+    // ── Resume cursor ──────────────────────────────────────────────────────────
+    //
+    // The next commit to process is determined purely from the in-memory
+    // `backfill_targets` vector and the persisted cursor — never inferred from
+    // on-disk history (the root cause of the resume-stuck bug). The cursor holds
+    // the version of the next target to process; on entry we skip every target
+    // newer than it (already completed in a prior run). A `None` cursor means
+    // "start from the newest target". Re-processing the cursor's own target is
+    // safe and intended: writes are idempotent (`INSERT OR IGNORE`), so a run
+    // that died mid-iteration is simply re-attempted and then advances.
+    let start_index = match pipeline.db.corpus_get_backfill_cursor(&corpus.id)? {
+        Some(cursor) => backfill_targets
+            .iter()
+            .position(|oid| format!("git:{oid}") == cursor)
+            .unwrap_or(0),
+        None => 0,
+    };
+    if start_index > 0 {
+        tracing::info!(
+            "[backfill] resuming at target {}/{} (cursor {})",
+            start_index + 1,
+            backfill_targets.len(),
+            &backfill_targets[start_index].to_string()[..8],
+        );
+    }
+
     // ── Walk ──────────────────────────────────────────────────────────────────
 
     let mut stats = WalkStats::default();
 
     for (i, oid) in backfill_targets.iter().enumerate() {
+        // Skip targets completed by a previous (interrupted) run.
+        if i < start_index {
+            continue;
+        }
         let version = format!("git:{oid}");
         tracing::info!(
             "[backfill] {}/{} → {}",
@@ -363,14 +420,15 @@ pub async fn walk_history_backward(
 
         // Diff this commit against the neighbour we just processed (the
         // next-newer commit, or HEAD on the first step) and re-derive only the
-        // changed files. Every unchanged file's artifacts are copied from the
-        // neighbour instead of being re-derived via the LLM.
+        // changed files. Artifacts untouched by this commit's diff are NOT
+        // copied forward — under honest provenance their existing (newer) rows
+        // already carry the right tag, and a backward walk never fabricates a
+        // duplicate row for unchanged substrate.
         let changed = pipeline.adapter.changed_sources(
             &corpus.source,
             Some(&next_newer_version),
             &version,
         )?;
-        let dirty_paths: Vec<String> = changed.iter().map(|c| c.path.clone()).collect();
         let manifest = ChangeManifest::from_changed(version.clone(), changed);
 
         let mut commit_opts = opts.clone();
@@ -392,33 +450,15 @@ pub async fn walk_history_backward(
         // corpus_set_last_indexed_version is a NO-OP on the wrapper.
         let result = commit_pipeline.run(&commit_corpus, commit_opts).await?;
 
-        // Copy every unchanged file's artifacts from the neighbour (next-newer
-        // commit, or HEAD on the first step) into `*_history`, re-stamped at this
-        // commit's SHA and superseded by the neighbour. Reads of the neighbour
-        // state and the copy writes both go through the wrapper, which routes
-        // them to the real backend / `*_history` and never touches head tables.
-        let themes_recomputed = manifest.dirty_count() > 0;
-        let unchanged = unchanged_entity_ids(
-            commit_pipeline.db.as_ref(),
-            &corpus.id,
-            &next_newer_version,
-            &manifest,
-            themes_recomputed,
-        )?;
-        commit_pipeline.db.copy_unchanged_artifacts(
-            &corpus.id,
-            &next_newer_version,
-            &version,
-            &next_newer_version,
-            &unchanged,
-            &dirty_paths,
-        )?;
-        // Keep the supersession map coherent for older steps: record the copied
-        // entities at this commit's version so a later (older) step that
-        // re-derives one of them stamps the correct next-newer supersession.
-        for id in &unchanged {
-            supersession.record_write_entity(id, &version);
-        }
+        // Advance the resume cursor to the *next* target (older) commit, or
+        // clear it when this was the last one. Written via the real backend
+        // (not the wrapper) so it persists across runs. This is the resume-bug
+        // fix: the next commit to process is recorded explicitly, never inferred
+        // from on-disk history.
+        let next_cursor = backfill_targets.get(i + 1).map(|o| format!("git:{o}"));
+        pipeline
+            .db
+            .corpus_set_backfill_cursor(&corpus.id, next_cursor.as_deref())?;
 
         stats.commits_processed += 1;
         stats.absorb(result);
@@ -438,44 +478,6 @@ pub async fn walk_history_backward(
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
-
-/// Compute the set of entity ids that are UNCHANGED at the commit being
-/// processed relative to `neighbour_version`: every entity present at the
-/// neighbour whose source-file location is not marked dirty by `manifest`.
-///
-/// When `themes_recomputed` is true the theme pass re-derives the corpus-level
-/// `kind = "theme"` entities at this commit, so they are excluded from the copy
-/// set (they would otherwise be written twice). When false (an empty diff) the
-/// theme pass is skipped and the theme entities are carried forward by the copy.
-fn unchanged_entity_ids(
-    db: &dyn StorageBackend,
-    corpus_id: &str,
-    neighbour_version: &str,
-    manifest: &ChangeManifest,
-    themes_recomputed: bool,
-) -> Result<Vec<String>> {
-    use crate::indexing::change_manifest::file_path_from_uri;
-
-    let entities = db.entity_list_at_version(corpus_id, neighbour_version)?;
-    let mut ids = Vec::with_capacity(entities.len());
-    for e in entities {
-        if themes_recomputed && e.kind == "theme" {
-            continue;
-        }
-        let path = e
-            .last_location
-            .as_ref()
-            .or(e.first_location.as_ref())
-            .map(|l| file_path_from_uri(&l.uri).to_string())
-            .unwrap_or_default();
-        // Entities with no source path (e.g. themes) and entities on unchanged
-        // paths are carried forward; entities on dirty paths are re-derived.
-        if path.is_empty() || !manifest.is_dirty(&path) {
-            ids.push(e.id);
-        }
-    }
-    Ok(ids)
-}
 
 /// Resolve `--back N` to an `Oid` by walking HEAD's first-parent ancestry
 /// N steps backward.
@@ -2067,14 +2069,19 @@ mod tests {
         );
     }
 
-    // ── Test 6: backward first step reads HEAD ────────────────────────────────
+    // ── Test 6: backward walk does not fabricate history for unchanged files ──
     //
     // Repo: C0 adds a.txt + b.txt; C1 (HEAD) modifies a.txt (b unchanged).
     // Forward-ingest to HEAD, then walk_history_backward from C0.
-    // Assert C0's chunk for b.txt was copied from HEAD state with
-    // introduced_at_version = git:C0. Head tables untouched.
+    //
+    // Under honest provenance the backward walk only re-derives files touched by
+    // each commit's diff; it never copies unchanged substrate forward. So:
+    //   * a.txt (changed C0→C1) IS superseded and has a chunks_history row at C0;
+    //   * b.txt (unchanged) is NOT duplicated into history — its single head row
+    //     already carries the honest provenance for every commit it spans;
+    //   * head tables are untouched.
     #[tokio::test]
-    async fn backward_first_step_reads_head() {
+    async fn backward_walk_does_not_fabricate_history_for_unchanged() {
         let td = TempDir::new().unwrap();
         let repo = Repository::init(td.path()).unwrap();
         let sig = Signature::now("Test", "t@t.com").unwrap();
@@ -2165,24 +2172,38 @@ mod tests {
             "head chunk count should not change after backward walk"
         );
 
-        // b.txt chunk should appear in chunks_history at C0's SHA
-        // with introduced_at_version = git:<c0>.
         let v_c0 = format!("git:{c0}");
         let g = db.db_for_test();
         let conn = g.conn();
 
-        let b_history: i64 = conn
+        // a.txt changed between C0 and C1, so its C0 content is superseded and
+        // recorded in chunks_history at introduced_at_version = git:<c0>.
+        let a_history: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM chunks_history \
-                 WHERE corpus_id=?1 AND location_uri LIKE '%b.txt%' AND introduced_at_version=?2",
+                 WHERE corpus_id=?1 AND location_uri LIKE '%a.txt%' AND introduced_at_version=?2",
                 rusqlite::params![corpus_id, v_c0],
                 |r| r.get(0),
             )
             .unwrap();
-
         assert!(
-            b_history >= 1,
-            "b.txt should have a chunks_history row at introduced_at_version={v_c0}, got {b_history}"
+            a_history >= 1,
+            "a.txt (changed) should have a chunks_history row at {v_c0}, got {a_history}"
+        );
+
+        // b.txt was never touched, so honest provenance leaves it as a single
+        // head row — it must NOT be fabricated into chunks_history.
+        let b_history: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks_history \
+                 WHERE corpus_id=?1 AND location_uri LIKE '%b.txt%'",
+                rusqlite::params![corpus_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            b_history, 0,
+            "b.txt (unchanged) must not be copied into chunks_history, got {b_history}"
         );
     }
 
@@ -2598,66 +2619,107 @@ mod tests {
         .await
         .expect("(c) backward walk to root failed");
 
-        // ── Compare per-SHA chunk sets ────────────────────────────────────────
+        // ── Convergence under honest provenance ───────────────────────────────
         //
-        // For every commit SHA, the set of (chunk_id, introduced_at_version, content)
-        // from chunks_history must match across (a), (b), (c).
+        // PR #34's copy-forward model materialised a complete chunk set at every
+        // SHA (keyed on a re-stamped `introduced_at_version`), so the original
+        // test compared per-SHA reconstructions. Honest provenance deletes that
+        // copy-forward: a chunk untouched across many commits is a *single* row
+        // stamped at its real introduction point, and the introduction point a
+        // walk records depends on where that walk started (forward-from-root
+        // sees `alpha v2` introduced at C1; middle-out-from-C4 sees it introduced
+        // at C4). So per-SHA reconstruction keyed on `introduced_at_version` no
+        // longer converges by construction — the honest per-SHA query is the
+        // tagged-union + tombstone read layer landing in PR 4.
         //
-        // We compare chunks_history rows, which is where all historical states live.
-        // For HEAD commits (last entry) we also include head chunks for completeness.
-        //
-        // Excluded columns: superseded_at_version, superseded_at, history_id, created_at.
-        //
-        // NOTE: introduced_at_version in chunks_history is stamped at the commit
-        // that first introduced (or copied) the chunk. Two walks may produce the same
-        // logical chunk at slightly different introduced_at_version values when copy
-        // paths differ — so we compare by (chunk_id, content) per SHA rather than
-        // including introduced_at_version in the key.
+        // What MUST converge regardless of walk order is the *lineage*: the full
+        // set of distinct (chunk_id, content) every walk discovers across head +
+        // history. All three strategies eventually process every commit's diff,
+        // so they must agree on the complete content lineage and on the final
+        // HEAD state. (The toy DryRunProvider + TrackingAdapter emit no
+        // entities/edges, so chunks carry the convergence proof.)
 
         type ChunkRow = (String, String); // (chunk_id, content)
 
-        let chunks_at_version = |db: &Arc<SqliteBackend>,
-                                 corpus_id: &str,
-                                 sha: &str|
-         -> std::collections::BTreeSet<ChunkRow> {
-            let v = format!("git:{sha}");
-            let g = db.db_for_test();
-            let conn = g.conn();
-            // All chunks present at or introduced at this version in history,
-            // plus head chunks for HEAD version.
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content FROM chunks_history WHERE corpus_id=?1 AND introduced_at_version=?2
+        let head_chunks =
+            |db: &Arc<SqliteBackend>, corpus_id: &str| -> std::collections::BTreeSet<ChunkRow> {
+                let g = db.db_for_test();
+                let conn = g.conn();
+                let mut stmt = conn
+                    .prepare("SELECT id, content FROM chunks WHERE corpus_id=?1")
+                    .unwrap();
+                stmt.query_map(rusqlite::params![corpus_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+            };
+
+        let lineage =
+            |db: &Arc<SqliteBackend>, corpus_id: &str| -> std::collections::BTreeSet<ChunkRow> {
+                let g = db.db_for_test();
+                let conn = g.conn();
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, content FROM chunks_history WHERE corpus_id=?1
                      UNION
                      SELECT id, content FROM chunks WHERE corpus_id=?1",
+                    )
+                    .unwrap();
+                stmt.query_map(rusqlite::params![corpus_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+            };
+
+        // 1. All three strategies converge on the same final HEAD state.
+        let head_a = head_chunks(&db_a, "conv-fwd");
+        let head_b = head_chunks(&db_b, "conv-bwd");
+        let head_c = head_chunks(&db_c, "conv-mid");
+        assert_eq!(head_a, head_b, "HEAD chunk state differs: (a) vs (b)");
+        assert_eq!(head_a, head_c, "HEAD chunk state differs: (a) vs (c)");
+        assert!(!head_a.is_empty(), "expected a non-empty HEAD chunk set");
+
+        // 2. All three strategies discover the identical full chunk lineage.
+        let lin_a = lineage(&db_a, "conv-fwd");
+        let lin_b = lineage(&db_b, "conv-bwd");
+        let lin_c = lineage(&db_c, "conv-mid");
+        assert_eq!(
+            lin_a, lin_b,
+            "chunk lineage differs between (a) forward-only and (b) forward+backward"
+        );
+        assert_eq!(
+            lin_a, lin_c,
+            "chunk lineage differs between (a) forward-only and (c) middle-out"
+        );
+
+        // 3. No walk fabricates a duplicate history row for the same identity at
+        //    the same provenance SHA (the middle-out duplicate-row regression).
+        for (db, cid) in [
+            (&db_a, "conv-fwd"),
+            (&db_b, "conv-bwd"),
+            (&db_c, "conv-mid"),
+        ] {
+            let g = db.db_for_test();
+            let conn = g.conn();
+            let dupes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM (
+                       SELECT id, derived_at_kind, derived_at_sha, COUNT(*) c
+                       FROM chunks_history WHERE corpus_id=?1
+                       GROUP BY id, derived_at_kind, derived_at_sha
+                       HAVING c > 1
+                     )",
+                    rusqlite::params![cid],
+                    |r| r.get(0),
                 )
                 .unwrap();
-            stmt.query_map(rusqlite::params![corpus_id, v], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect()
-        };
-
-        // For every commit SHA in the fixture, compare (a), (b), (c).
-        for oid in &oids {
-            let sha = oid.to_string();
-            let set_a = chunks_at_version(&db_a, "conv-fwd", &sha);
-            let set_b = chunks_at_version(&db_b, "conv-bwd", &sha);
-            let set_c = chunks_at_version(&db_c, "conv-mid", &sha);
-
             assert_eq!(
-                set_a,
-                set_b,
-                "chunk sets for SHA {} differ between (a) forward-only and (b) forward+backward",
-                &sha[..8]
-            );
-            assert_eq!(
-                set_a,
-                set_c,
-                "chunk sets for SHA {} differ between (a) forward-only and (c) middle-out",
-                &sha[..8]
+                dupes, 0,
+                "{cid}: chunks_history has duplicate (id, kind, sha) rows"
             );
         }
     }
@@ -2687,6 +2749,357 @@ mod tests {
         assert!(
             err.contains("--from <sha> is required"),
             "expected '--from <sha> is required' in error, got: {err}"
+        );
+    }
+
+    // ── Test: no duplicate history rows after middle-out walk ─────────────────
+    //
+    // After a middle-out walk (forward from mid → HEAD, then backward to root),
+    // every *_history table must have zero groups where the same
+    // (corpus_id, id/entity_id, derived_at_kind, derived_at_sha) tuple appears
+    // more than once.  The uniqueness indexes enforce this at the DB level, but
+    // this test makes the invariant observable as a behavioral assertion.
+    #[tokio::test]
+    async fn walk_produces_no_duplicate_history_rows() {
+        let corpus_id = "no-dup-test";
+
+        // 3 commits on one file: v1, v2, v3.  HEAD = oids[2].
+        let (_td, _repo, oids) =
+            build_linear_repo(&[("greet.py", "v1"), ("greet.py", "v2"), ("greet.py", "v3")]);
+        let repo_path = _td.path().to_string_lossy().into_owned();
+
+        let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let corpus = Corpus::new(
+            corpus_id.to_string(),
+            "No Dup Test".to_string(),
+            "code".to_string(),
+            repo_path.clone(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        let (adapter, _calls) = TrackingAdapter::new(corpus_id);
+        let pipeline = IndexPipeline {
+            db: db.clone(),
+            adapter: Arc::new(adapter),
+            llm: Arc::new(DryRunProvider::new()),
+            embedder: None,
+        };
+
+        let opts = || IndexOptions {
+            passes: vec![Pass::Chunk, Pass::Structure],
+            ..IndexOptions::default()
+        };
+
+        // Middle-out: forward from oids[1] (mid) to HEAD, then backward to root.
+        walk_history_forward(
+            &pipeline,
+            &corpus,
+            opts(),
+            WalkOptions {
+                from_sha: Some(oids[1].to_string()),
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("middle-out forward walk failed");
+
+        walk_history_backward(
+            &pipeline,
+            &corpus,
+            opts(),
+            WalkOptions {
+                from_sha: Some(oids[0].to_string()),
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("middle-out backward walk failed");
+
+        let g = db.db_for_test();
+        let conn = g.conn();
+
+        // For each *_history table assert zero duplicate (id, kind, sha) groups.
+        // entity_purposes_history and entity_contracts_history key on entity_id
+        // rather than id.
+        let checks: &[(&str, &str)] = &[
+            (
+                "chunks_history",
+                "SELECT COUNT(*) FROM (
+                   SELECT id, derived_at_kind, derived_at_sha, COUNT(*) c
+                   FROM chunks_history WHERE corpus_id=?1
+                   GROUP BY id, derived_at_kind, derived_at_sha HAVING c > 1
+                 )",
+            ),
+            (
+                "entities_history",
+                "SELECT COUNT(*) FROM (
+                   SELECT id, derived_at_kind, derived_at_sha, COUNT(*) c
+                   FROM entities_history WHERE corpus_id=?1
+                   GROUP BY id, derived_at_kind, derived_at_sha HAVING c > 1
+                 )",
+            ),
+            (
+                "edges_history",
+                "SELECT COUNT(*) FROM (
+                   SELECT id, derived_at_kind, derived_at_sha, COUNT(*) c
+                   FROM edges_history WHERE corpus_id=?1
+                   GROUP BY id, derived_at_kind, derived_at_sha HAVING c > 1
+                 )",
+            ),
+            (
+                "entity_purposes_history",
+                "SELECT COUNT(*) FROM (
+                   SELECT entity_id, derived_at_kind, derived_at_sha, COUNT(*) c
+                   FROM entity_purposes_history WHERE corpus_id=?1
+                   GROUP BY entity_id, derived_at_kind, derived_at_sha HAVING c > 1
+                 )",
+            ),
+            (
+                "entity_contracts_history",
+                "SELECT COUNT(*) FROM (
+                   SELECT entity_id, derived_at_kind, derived_at_sha, COUNT(*) c
+                   FROM entity_contracts_history WHERE corpus_id=?1
+                   GROUP BY entity_id, derived_at_kind, derived_at_sha HAVING c > 1
+                 )",
+            ),
+            (
+                "entity_blocks_history",
+                "SELECT COUNT(*) FROM (
+                   SELECT id, derived_at_kind, derived_at_sha, COUNT(*) c
+                   FROM entity_blocks_history WHERE corpus_id=?1
+                   GROUP BY id, derived_at_kind, derived_at_sha HAVING c > 1
+                 )",
+            ),
+            (
+                "summaries_history",
+                "SELECT COUNT(*) FROM (
+                   SELECT id, derived_at_kind, derived_at_sha, COUNT(*) c
+                   FROM summaries_history WHERE corpus_id=?1
+                   GROUP BY id, derived_at_kind, derived_at_sha HAVING c > 1
+                 )",
+            ),
+            (
+                "themes_history",
+                "SELECT COUNT(*) FROM (
+                   SELECT id, derived_at_kind, derived_at_sha, COUNT(*) c
+                   FROM themes_history WHERE corpus_id=?1
+                   GROUP BY id, derived_at_kind, derived_at_sha HAVING c > 1
+                 )",
+            ),
+        ];
+
+        for (table, sql) in checks {
+            let dupes: i64 = conn
+                .query_row(sql, rusqlite::params![corpus_id], |r| r.get(0))
+                .unwrap_or_else(|e| panic!("query failed on {table}: {e}"));
+            assert_eq!(
+                dupes, 0,
+                "{corpus_id}: {table} has duplicate (id/entity_id, kind, sha) rows after middle-out walk"
+            );
+        }
+    }
+
+    // ── Test: backward backfill resumes past a partial-SHA cursor ─────────────
+    //
+    // A backward backfill stores a per-corpus cursor after each completed
+    // iteration so a subsequent run can skip already-processed targets.
+    //
+    // This test verifies the cursor-resume contract:
+    //   (a) A cursor planted mid-way through the target list is honoured on
+    //       the next walk_history_backward call — only the remaining (older)
+    //       targets are processed.
+    //   (b) The cursor is cleared when the walk completes to root.
+    //   (c) The root commit's dirty chunks appear in chunks_history.
+    //   (d) HEAD tables are untouched throughout.
+    //
+    // We simulate "an interrupted prior run" by planting the cursor directly
+    // via corpus_set_backfill_cursor — exactly what the real walker writes
+    // after each completed iteration.  setup_ingested_corpus (shared fixture
+    // helper) provides the HEAD-ingested state.
+    #[tokio::test]
+    async fn walk_resumes_past_partial_sha() {
+        // 5-commit fixture. setup_ingested_corpus does a full forward walk
+        // (root→HEAD) and returns the DB + corpus + pipeline already ingested.
+        let (db, corpus, pipeline, _td, oids) = setup_ingested_corpus(&[
+            ("a.txt", "a1"),
+            ("a.txt", "a2"),
+            ("a.txt", "a3"),
+            ("a.txt", "a4"),
+            ("a.txt", "a5"), // HEAD = oids[4]
+        ])
+        .await;
+
+        let corpus_id = &corpus.id;
+        let head_chunk_count = db.chunk_count(corpus_id).unwrap();
+
+        // Step 1: plant a cursor at oids[2] — simulating a prior backfill that
+        // completed oids[3] (wrote its history row, advanced cursor) and then died.
+        // The cursor value is the NEXT target the walker should process = oids[2].
+        //
+        // Backfill target order (newest-older first): oids[3], oids[2], oids[1], oids[0].
+        // Cursor at oids[2] means start_index=1 — skip oids[3], resume from oids[2].
+        let cursor_sha = format!("git:{}", oids[2]);
+        db.corpus_set_backfill_cursor(corpus_id, Some(&cursor_sha))
+            .unwrap();
+        assert_eq!(
+            db.corpus_get_backfill_cursor(corpus_id).unwrap(),
+            Some(cursor_sha.clone()),
+            "pre-condition: cursor must be planted before resume walk"
+        );
+
+        // Step 2: resume walk from root — walker reads the cursor, starts at
+        // oids[2], processes oids[2], oids[1], oids[0], then clears the cursor.
+        let chunk_opts = IndexOptions {
+            passes: vec![Pass::Chunk, Pass::Structure],
+            ..IndexOptions::default()
+        };
+        let stats = walk_history_backward(
+            &pipeline,
+            &corpus,
+            chunk_opts,
+            WalkOptions {
+                from_sha: Some(oids[0].to_string()),
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("step 2: resumed backfill failed");
+
+        // Cursor at oids[2] → start_index=1 in [oids[3], oids[2], oids[1], oids[0]].
+        // Processed: oids[2], oids[1], oids[0] = 3 commits.
+        assert_eq!(
+            stats.commits_processed, 3,
+            "step 2: expected 3 commits processed (oids[2]..oids[0]), got {}",
+            stats.commits_processed
+        );
+
+        // Root commit's dirty chunks must appear in chunks_history.
+        // Use a scoped block so the MutexGuard is dropped before calling
+        // corpus_get_backfill_cursor (which also acquires the same mutex).
+        let root_version = format!("git:{}", oids[0]);
+        {
+            let g = db.db_for_test();
+            let conn = g.conn();
+            let root_rows: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM chunks_history \
+                     WHERE corpus_id=?1 AND introduced_at_version=?2",
+                    rusqlite::params![corpus_id.as_str(), root_version],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                root_rows >= 1,
+                "step 2: expected chunks_history rows at root version {root_version}, got 0"
+            );
+        } // guard dropped here
+
+        // Cursor must be cleared after a complete run.
+        let cursor_after = db.corpus_get_backfill_cursor(corpus_id).unwrap();
+        assert_eq!(
+            cursor_after, None,
+            "step 2: backfill cursor should be cleared after full completion, got {cursor_after:?}"
+        );
+
+        // HEAD chunk count must be unchanged throughout.
+        let head_chunk_count_after = db.chunk_count(corpus_id).unwrap();
+        assert_eq!(
+            head_chunk_count, head_chunk_count_after,
+            "head chunk count changed after backfill"
+        );
+    }
+
+    // ── Test: head-mode incremental archives prior themes ─────────────────────
+    //
+    // Regression for head-mode-theme-archival-missing: after a HEAD-mode
+    // incremental at a commit that changes a source file, the prior theme(s)
+    // must appear in themes_history with superseded_at_sha = <new version>.
+    #[tokio::test]
+    async fn head_mode_incremental_archives_prior_themes() {
+        use crate::indexing::cascade;
+        use crate::indexing::change_manifest::{ChangeKind, ChangeManifest, ChangedSource};
+        use crate::types::Theme;
+
+        let corpus_id = "theme-archival-test";
+
+        // 2-commit repo: C0 adds a.txt, C1 modifies it.
+        let (_td, _repo, oids) = build_linear_repo(&[("a.txt", "a1"), ("a.txt", "a2")]);
+        let repo_path = _td.path().to_string_lossy().into_owned();
+
+        let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let corpus = Corpus::new(
+            corpus_id.to_string(),
+            "Theme Archival Test".to_string(),
+            "code".to_string(),
+            repo_path.clone(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        let v_c0 = format!("git:{}", oids[0]);
+        let v_c1 = format!("git:{}", oids[1]);
+
+        // Simulate "indexed at C0": set last_indexed_version to C0.
+        db.corpus_set_last_indexed_version(corpus_id, &v_c0)
+            .unwrap();
+
+        // Insert a chunk for a.txt at C0 so the cascade has something to sweep.
+        let mut chunk = crate::types::Chunk::new(
+            corpus_id.to_string(),
+            None,
+            "file".to_string(),
+            crate::types::Location::new(corpus_id, "a.txt"),
+            "a1".to_string(),
+        );
+        chunk.introduced_at_version = Some(v_c0.clone());
+        db.chunk_upsert(&chunk).unwrap();
+
+        // Insert a theme at C0 so there is something to archive.
+        let theme = Theme {
+            id: "theme-1".to_string(),
+            corpus_id: corpus_id.to_string(),
+            title: "Test Theme".to_string(),
+            statement: "A recurring pattern".to_string(),
+            confidence: 0.9,
+            model: "dry-run".to_string(),
+            model_tier: "unknown".to_string(),
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            derived_at_version: Some(v_c0.clone()),
+        };
+        db.theme_upsert(&theme).unwrap();
+
+        // Run a HEAD-mode incremental at C1 by calling cascade::run directly
+        // with a manifest that marks a.txt dirty at v_c1.
+        let manifest = ChangeManifest::from_changed(
+            v_c1.clone(),
+            vec![ChangedSource {
+                path: "a.txt".to_string(),
+                kind: ChangeKind::Modified,
+                commit_meta: None,
+            }],
+        );
+        cascade::run(
+            Arc::clone(&db) as Arc<dyn crate::storage::StorageBackend>,
+            &corpus,
+            &manifest,
+        )
+        .await
+        .expect("cascade::run failed");
+
+        // The prior theme must now appear in themes_history with
+        // superseded_at_sha = v_c1 (same value as superseded_at_version).
+        let g = db.db_for_test();
+        let conn = g.conn();
+        let archived: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM themes_history \
+                 WHERE corpus_id=?1 AND id='theme-1' AND superseded_at_sha=?2",
+                rusqlite::params![corpus_id, v_c1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            archived >= 1,
+            "themes_history must contain a row for theme-1 with superseded_at_sha={v_c1}, got {archived}"
         );
     }
 }

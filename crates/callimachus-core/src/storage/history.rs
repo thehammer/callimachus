@@ -79,13 +79,16 @@ pub(crate) fn snapshot_if_version_changed_entity(
             // Version changed — snapshot the head row.
             let now = Utc::now().to_rfc3339();
             let rows = conn.execute(
-                "INSERT INTO entities_history
+                "INSERT OR IGNORE INTO entities_history
                    (id, corpus_id, canonical_name, kind, aliases, description,
                     first_location_uri, last_location_uri, appearance_count, confidence,
-                    derived_at_version, superseded_at_version, superseded_at)
+                    derived_at_version, derived_at_kind, derived_at_sha,
+                    superseded_at_version, superseded_at_sha, superseded_at)
                  SELECT id, corpus_id, canonical_name, kind, aliases, description,
                         first_location_uri, last_location_uri, appearance_count, confidence,
-                        derived_at_version, ?3, ?4
+                        derived_at_version, derived_at_kind,
+                        COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                        ?3, ?3, ?4
                  FROM entities
                  WHERE id = ?1 AND corpus_id = ?2",
                 params![entity_id, corpus_id, superseded_at_version, now],
@@ -130,13 +133,16 @@ pub(crate) fn snapshot_if_version_changed_edge(
         Some(_) => {
             let now = Utc::now().to_rfc3339();
             let rows = conn.execute(
-                "INSERT INTO edges_history
+                "INSERT OR IGNORE INTO edges_history
                    (id, corpus_id, from_entity_id, to_entity_id, kind,
                     location_uri, confidence, derived_at_version,
-                    superseded_at_version, superseded_at)
+                    derived_at_kind, derived_at_sha,
+                    superseded_at_version, superseded_at_sha, superseded_at)
                  SELECT id, corpus_id, from_entity_id, to_entity_id, kind,
                         location_uri, confidence, derived_at_version,
-                        ?3, ?4
+                        derived_at_kind,
+                        COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                        ?3, ?3, ?4
                  FROM edges
                  WHERE id = ?1 AND corpus_id = ?2",
                 params![edge_id, corpus_id, superseded_at_version, now],
@@ -180,11 +186,14 @@ pub(crate) fn snapshot_if_version_changed_purpose(
         Some(_) => {
             let now = Utc::now().to_rfc3339();
             let rows = conn.execute(
-                "INSERT INTO entity_purposes_history
+                "INSERT OR IGNORE INTO entity_purposes_history
                    (entity_id, corpus_id, purpose, model, model_tier, generated_at,
-                    derived_at_version, superseded_at_version, superseded_at)
+                    derived_at_version, derived_at_kind, derived_at_sha,
+                    superseded_at_version, superseded_at_sha, superseded_at)
                  SELECT entity_id, corpus_id, purpose, model, model_tier, generated_at,
-                        derived_at_version, ?4, ?5
+                        derived_at_version, derived_at_kind,
+                        COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                        ?4, ?4, ?5
                  FROM entity_purposes
                  WHERE entity_id = ?1 AND corpus_id = ?2 AND model = ?3",
                 params![entity_id, corpus_id, model, superseded_at_version, now],
@@ -227,19 +236,22 @@ pub(crate) fn snapshot_if_version_changed_contract(
         Some(_) => {
             let now = Utc::now().to_rfc3339();
             let rows = conn.execute(
-                "INSERT INTO entity_contracts_history
+                "INSERT OR IGNORE INTO entity_contracts_history
                    (entity_id, corpus_id,
                     is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
                     is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
                     panic_call_count, debt_markers, assumptions, risks,
                     intent_gap, caller_notes, model, model_tier, generated_at,
-                    derived_at_version, superseded_at_version, superseded_at)
+                    derived_at_version, derived_at_kind, derived_at_sha,
+                    superseded_at_version, superseded_at_sha, superseded_at)
                  SELECT entity_id, corpus_id,
                         is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
                         is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
                         panic_call_count, debt_markers, assumptions, risks,
                         intent_gap, caller_notes, model, model_tier, generated_at,
-                        derived_at_version, ?4, ?5
+                        derived_at_version, derived_at_kind,
+                        COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                        ?4, ?4, ?5
                  FROM entity_contracts
                  WHERE entity_id = ?1 AND corpus_id = ?2 AND model = ?3",
                 params![entity_id, corpus_id, model, superseded_at_version, now],
@@ -280,11 +292,14 @@ pub(crate) fn snapshot_if_version_changed_block(
         Some(_) => {
             let now = Utc::now().to_rfc3339();
             let rows = conn.execute(
-                "INSERT INTO entity_blocks_history
+                "INSERT OR IGNORE INTO entity_blocks_history
                    (id, entity_id, corpus_id, label, description, position,
-                    derived_at_version, superseded_at_version, superseded_at)
+                    derived_at_version, derived_at_kind, derived_at_sha,
+                    superseded_at_version, superseded_at_sha, superseded_at)
                  SELECT id, entity_id, corpus_id, label, description, position,
-                        derived_at_version, ?3, ?4
+                        derived_at_version, derived_at_kind,
+                        COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                        ?3, ?3, ?4
                  FROM entity_blocks
                  WHERE id = ?1 AND corpus_id = ?2",
                 params![block_id, corpus_id, superseded_at_version, now],
@@ -329,13 +344,16 @@ pub(crate) fn snapshot_if_version_changed_summary(
         Some(_) => {
             let now = Utc::now().to_rfc3339();
             let rows = conn.execute(
-                "INSERT INTO summaries_history
+                "INSERT OR IGNORE INTO summaries_history
                    (id, corpus_id, target_kind, target_id, depth, text,
                     model, model_tier, generated_at,
-                    derived_at_version, superseded_at_version, superseded_at)
+                    derived_at_version, derived_at_kind, derived_at_sha,
+                    superseded_at_version, superseded_at_sha, superseded_at)
                  SELECT id, corpus_id, target_kind, target_id, depth, text,
                         model, model_tier, generated_at,
-                        derived_at_version, ?5, ?6
+                        derived_at_version, derived_at_kind,
+                        COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                        ?5, ?5, ?6
                  FROM summaries
                  WHERE corpus_id = ?1 AND target_kind = ?2 AND target_id = ?3 AND model = ?4",
                 params![
@@ -383,13 +401,16 @@ pub(crate) fn snapshot_if_version_changed_theme(
         Some(_) => {
             let now = Utc::now().to_rfc3339();
             let rows = conn.execute(
-                "INSERT INTO themes_history
+                "INSERT OR IGNORE INTO themes_history
                    (id, corpus_id, title, statement, confidence,
                     model, model_tier, generated_at,
-                    derived_at_version, superseded_at_version, superseded_at)
+                    derived_at_version, derived_at_kind, derived_at_sha,
+                    superseded_at_version, superseded_at_sha, superseded_at)
                  SELECT id, corpus_id, title, statement, confidence,
                         model, model_tier, generated_at,
-                        derived_at_version, ?3, ?4
+                        derived_at_version, derived_at_kind,
+                        COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                        ?3, ?3, ?4
                  FROM themes
                  WHERE id = ?1 AND corpus_id = ?2",
                 params![theme_id, corpus_id, superseded_at_version, now],
@@ -417,13 +438,16 @@ pub(crate) fn archive_entity(
 ) -> Result<bool> {
     let now = Utc::now().to_rfc3339();
     let rows = conn.execute(
-        "INSERT INTO entities_history
+        "INSERT OR IGNORE INTO entities_history
            (id, corpus_id, canonical_name, kind, aliases, description,
             first_location_uri, last_location_uri, appearance_count, confidence,
-            derived_at_version, superseded_at_version, superseded_at)
+            derived_at_version, derived_at_kind, derived_at_sha,
+            superseded_at_version, superseded_at_sha, superseded_at)
          SELECT id, corpus_id, canonical_name, kind, aliases, description,
                 first_location_uri, last_location_uri, appearance_count, confidence,
-                derived_at_version, ?3, ?4
+                derived_at_version, derived_at_kind,
+                COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                ?3, ?3, ?4
          FROM entities
          WHERE id = ?1 AND corpus_id = ?2",
         params![entity_id, corpus_id, superseded_at_version, now],
@@ -440,13 +464,16 @@ pub(crate) fn archive_edges_for_entity(
 ) -> Result<u64> {
     let now = Utc::now().to_rfc3339();
     let rows = conn.execute(
-        "INSERT INTO edges_history
+        "INSERT OR IGNORE INTO edges_history
            (id, corpus_id, from_entity_id, to_entity_id, kind,
             location_uri, confidence, derived_at_version,
-            superseded_at_version, superseded_at)
+            derived_at_kind, derived_at_sha,
+            superseded_at_version, superseded_at_sha, superseded_at)
          SELECT id, corpus_id, from_entity_id, to_entity_id, kind,
                 location_uri, confidence, derived_at_version,
-                ?2, ?3
+                derived_at_kind,
+                COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                ?2, ?2, ?3
          FROM edges
          WHERE from_entity_id = ?1 OR to_entity_id = ?1",
         params![entity_id, superseded_at_version, now],
@@ -463,11 +490,14 @@ pub(crate) fn archive_purposes_for_entity(
 ) -> Result<u64> {
     let now = Utc::now().to_rfc3339();
     let rows = conn.execute(
-        "INSERT INTO entity_purposes_history
+        "INSERT OR IGNORE INTO entity_purposes_history
            (entity_id, corpus_id, purpose, model, model_tier, generated_at,
-            derived_at_version, superseded_at_version, superseded_at)
+            derived_at_version, derived_at_kind, derived_at_sha,
+            superseded_at_version, superseded_at_sha, superseded_at)
          SELECT entity_id, corpus_id, purpose, model, model_tier, generated_at,
-                derived_at_version, ?2, ?3
+                derived_at_version, derived_at_kind,
+                COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                ?2, ?2, ?3
          FROM entity_purposes
          WHERE entity_id = ?1",
         params![entity_id, superseded_at_version, now],
@@ -484,19 +514,22 @@ pub(crate) fn archive_contracts_for_entity(
 ) -> Result<u64> {
     let now = Utc::now().to_rfc3339();
     let rows = conn.execute(
-        "INSERT INTO entity_contracts_history
+        "INSERT OR IGNORE INTO entity_contracts_history
            (entity_id, corpus_id,
             is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
             is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
             panic_call_count, debt_markers, assumptions, risks,
             intent_gap, caller_notes, model, model_tier, generated_at,
-            derived_at_version, superseded_at_version, superseded_at)
+            derived_at_version, derived_at_kind, derived_at_sha,
+            superseded_at_version, superseded_at_sha, superseded_at)
          SELECT entity_id, corpus_id,
                 is_public, is_must_use, is_deprecated, is_fallible, is_nullable,
                 is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
                 panic_call_count, debt_markers, assumptions, risks,
                 intent_gap, caller_notes, model, model_tier, generated_at,
-                derived_at_version, ?2, ?3
+                derived_at_version, derived_at_kind,
+                COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                ?2, ?2, ?3
          FROM entity_contracts
          WHERE entity_id = ?1",
         params![entity_id, superseded_at_version, now],
@@ -513,11 +546,14 @@ pub(crate) fn archive_blocks_for_entity(
 ) -> Result<u64> {
     let now = Utc::now().to_rfc3339();
     let rows = conn.execute(
-        "INSERT INTO entity_blocks_history
+        "INSERT OR IGNORE INTO entity_blocks_history
            (id, entity_id, corpus_id, label, description, position,
-            derived_at_version, superseded_at_version, superseded_at)
+            derived_at_version, derived_at_kind, derived_at_sha,
+            superseded_at_version, superseded_at_sha, superseded_at)
          SELECT id, entity_id, corpus_id, label, description, position,
-                derived_at_version, ?2, ?3
+                derived_at_version, derived_at_kind,
+                COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                ?2, ?2, ?3
          FROM entity_blocks
          WHERE entity_id = ?1",
         params![entity_id, superseded_at_version, now],
@@ -535,13 +571,16 @@ pub(crate) fn archive_summaries_for_target(
 ) -> Result<u64> {
     let now = Utc::now().to_rfc3339();
     let rows = conn.execute(
-        "INSERT INTO summaries_history
+        "INSERT OR IGNORE INTO summaries_history
            (id, corpus_id, target_kind, target_id, depth, text,
             model, model_tier, generated_at,
-            derived_at_version, superseded_at_version, superseded_at)
+            derived_at_version, derived_at_kind, derived_at_sha,
+            superseded_at_version, superseded_at_sha, superseded_at)
          SELECT id, corpus_id, target_kind, target_id, depth, text,
                 model, model_tier, generated_at,
-                derived_at_version, ?3, ?4
+                derived_at_version, derived_at_kind,
+                COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                ?3, ?3, ?4
          FROM summaries
          WHERE corpus_id = ?1 AND target_id = ?2",
         params![corpus_id, target_id, superseded_at_version, now],
@@ -558,17 +597,20 @@ pub(crate) fn archive_chunk(
 ) -> Result<bool> {
     let now = Utc::now().to_rfc3339();
     let rows = conn.execute(
-        "INSERT INTO chunks_history
+        "INSERT OR IGNORE INTO chunks_history
            (id, corpus_id, parent_path, kind, location_uri, content,
             byte_length, created_at, semantic_processed, source_hash,
             introduced_at_version, last_modified_at_version,
             last_modified_commit_message, last_modified_author,
-            superseded_at_version, superseded_at)
+            derived_at_kind, derived_at_sha,
+            superseded_at_version, superseded_at_sha, superseded_at)
          SELECT id, corpus_id, parent_path, kind, location_uri, content,
                 byte_length, created_at, semantic_processed, source_hash,
                 introduced_at_version, last_modified_at_version,
                 last_modified_commit_message, last_modified_author,
-                ?2, ?3
+                derived_at_kind,
+                COALESCE(NULLIF(derived_at_sha,''), last_modified_at_version, introduced_at_version, ''),
+                ?2, ?2, ?3
          FROM chunks
          WHERE id = ?1",
         params![chunk_id, superseded_at_version, now],
@@ -586,13 +628,16 @@ pub(crate) fn archive_theme(
 ) -> Result<bool> {
     let now = Utc::now().to_rfc3339();
     let rows = conn.execute(
-        "INSERT INTO themes_history
+        "INSERT OR IGNORE INTO themes_history
            (id, corpus_id, title, statement, confidence,
             model, model_tier, generated_at,
-            derived_at_version, superseded_at_version, superseded_at)
+            derived_at_version, derived_at_kind, derived_at_sha,
+            superseded_at_version, superseded_at_sha, superseded_at)
          SELECT id, corpus_id, title, statement, confidence,
                 model, model_tier, generated_at,
-                derived_at_version, ?3, ?4
+                derived_at_version, derived_at_kind,
+                COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
+                ?3, ?3, ?4
          FROM themes
          WHERE id = ?1 AND corpus_id = ?2",
         params![theme_id, corpus_id, superseded_at_version, now],

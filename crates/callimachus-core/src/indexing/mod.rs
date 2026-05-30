@@ -5,6 +5,7 @@ pub mod change_manifest;
 pub mod chunk_pass;
 pub mod contract_pass;
 pub mod embed_pass;
+pub mod history_layer;
 pub mod history_pass;
 pub mod history_walk;
 pub mod model_tier;
