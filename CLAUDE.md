@@ -42,3 +42,36 @@ calli index my-project
 
 See `docs/codebase-analysis.md` for a structural analysis of this codebase
 produced by indexing itself.
+
+## Honest provenance model
+
+Every artifact carries a [`Provenance`](crates/callimachus-core/src/types/provenance.rs)
+tagged-union stamp that records *when* it was derived:
+
+- **`Concrete(sha)`** — the artifact's substrate was proven touched at this SHA
+  (the diff against the neighbour commit changed it).
+- **`RangePredating(sha)`** — the artifact predates this SHA, but its exact
+  most-recent-modification commit is not (yet) known. A one-sided upper bound.
+
+Provenance only ever narrows: `RangePredating` can be refined to `Concrete`;
+`Concrete` is already maximally specific and never widens. This monotonicity
+invariant is enforced by `Provenance::refine` and `StorageBackend::refine_provenance`.
+
+### Storage encoding
+
+The `(derived_at_kind, derived_at_sha)` column pair on every head and history
+table encodes the tagged union. Migration 013 introduced these columns.
+
+### Writing provenance — the history_layer pattern
+
+All provenance writes go through `crates/callimachus-core/src/indexing/history_layer.rs`.
+The `history_layer::commit` function is the single writer: it snapshots the
+current head row into `*_history` (if one exists), then upserts the head row
+with the new provenance. This guarantees history tables are populated consistently
+regardless of which walk path produced the artifact.
+
+### Full design
+
+See [`docs/plans/honest-provenance.md`](docs/plans/honest-provenance.md) for the
+complete PRD, and [`docs/plans/honest-provenance-implementation.md`](docs/plans/honest-provenance-implementation.md)
+for the phased implementation plan (PRs #36, #38, #39, #40).
