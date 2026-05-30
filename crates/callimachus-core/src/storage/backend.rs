@@ -8,6 +8,7 @@
 
 use crate::corrections::types::{Correction, CorrectionKind};
 use crate::error::Result;
+use crate::storage::ancestry::AncestryReader;
 use crate::storage::edge_store::EdgeDirection;
 use crate::storage::embedding_store::StoredEmbedding;
 use crate::storage::fts::FtsResult;
@@ -29,6 +30,24 @@ pub struct CascadeStats {
     pub chunks_archived: u64,
     /// Number of entity rows moved to `entities_history` and deleted.
     pub entities_archived: u64,
+}
+
+/// Row counts wiped by [`StorageBackend::migrate_fresh`].
+///
+/// Every count is the number of rows deleted from the corresponding table (or
+/// group of tables) for the targeted corpus. The `corpora` row itself is
+/// preserved and is never counted here.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct MigrateFreshStats {
+    /// Rows removed across all head tables (entities, edges, chunks, summaries,
+    /// themes, purposes, contracts, blocks, embeddings).
+    pub head_rows_deleted: u64,
+    /// Rows removed across all `*_history` tables.
+    pub history_rows_deleted: u64,
+    /// Rows removed from `artifact_tombstones`.
+    pub tombstones_deleted: u64,
+    /// Rows removed from `layer2_cache`.
+    pub layer2_cache_deleted: u64,
 }
 
 /// A swappable storage backend. `SqliteBackend` is the default implementation.
@@ -513,9 +532,58 @@ pub trait StorageBackend: Send + Sync {
     /// Entities present at `target_sha` under tagged-union + tombstone
     /// semantics.
     ///
-    /// **Naive in this PR:** delegates to [`Self::entity_list_at_version`], i.e.
-    /// exact-SHA match. The proper SHA-aware reconstruction lands in a later PR.
-    fn entity_list_at_sha(&self, corpus_id: &str, target_sha: &str) -> Result<Vec<Entity>>;
+    /// An entity is *present* at `target_sha` when:
+    /// 1. some version stamp it carries (head or archived) is valid at
+    ///    `target_sha` per [`Provenance::is_valid_at`] — i.e. a `Concrete(x)`
+    ///    whose `x` is an ancestor-or-equal of `target_sha`, or a
+    ///    `RangePredating(x)` whose `target_sha` is an ancestor-or-equal of `x`;
+    ///    **and**
+    /// 2. it is not [tombstoned ancestrally](Self::is_tombstoned_at) at
+    ///    `target_sha`.
+    ///
+    /// `ancestry` supplies the commit-graph oracle. Pass `None` for corpora with
+    /// no attached git repo (book / wiki adapters); the backend then falls back
+    /// to literal SHA equality.
+    fn entity_list_at_sha(
+        &self,
+        corpus_id: &str,
+        target_sha: &str,
+        ancestry: Option<&dyn AncestryReader>,
+    ) -> Result<Vec<Entity>>;
+
+    /// Whether `artifact_id` has a tombstone whose death SHA is an
+    /// ancestor-or-equal of `target_sha` — i.e. the artifact had already died at
+    /// or before the query point.
+    ///
+    /// `ancestry` supplies the commit-graph oracle (see
+    /// [`Self::entity_list_at_sha`]); `None` falls back to literal SHA equality.
+    fn is_tombstoned_at(
+        &self,
+        corpus_id: &str,
+        artifact_kind: &str,
+        artifact_id: &str,
+        target_sha: &str,
+        ancestry: Option<&dyn AncestryReader>,
+    ) -> Result<bool>;
+
+    /// Write an embedding as the head row for its `(chunk_id, model)` pair,
+    /// stamping `provenance`. If a head embedding already exists for that pair
+    /// with a *different* derivation SHA, it is first archived into
+    /// `embeddings_history` with `superseded_at_sha = provenance.sha()`.
+    ///
+    /// This is the history-aware replacement for [`Self::embedding_upsert`]; the
+    /// embed pass routes through it so embeddings receive the same provenance +
+    /// supersession treatment as every other artifact.
+    fn commit_embedding(&self, embedding: &StoredEmbedding, provenance: &Provenance) -> Result<()>;
+
+    /// Wipe all derived content for `corpus_id` — every head table, every
+    /// `*_history` table, its tombstones, and the (global) Layer-2 cache — and
+    /// reset `backfill_cursor` and `last_indexed_version` to `NULL`. The
+    /// `corpora` row itself is **preserved** so the corpus stays registered.
+    ///
+    /// This is the destructive engine behind `calli history migrate-fresh`. The
+    /// next `calli index` rebuilds the corpus from scratch against current HEAD.
+    fn migrate_fresh(&self, corpus_id: &str) -> Result<MigrateFreshStats>;
 
     /// Archive a set of head artifacts into their `*_history` tables, stamping
     /// the archived rows with `provenance`.

@@ -149,20 +149,40 @@ pub async fn walk_history_forward(
             }
         };
 
-        // Snapshot the head chunks on dirty paths *before* the cascade sweeps
-        // them, so we can tombstone the ones that don't come back (deleted
-        // files / removed content). Content-addressed chunk ids that are
-        // re-derived keep the same id; ones that vanish are genuine removals.
-        let pre_dirty_chunks: Vec<String> = if neighbour.is_some() {
-            pipeline
-                .db
-                .chunk_list(&corpus.id)?
-                .into_iter()
-                .filter(|c| manifest.is_dirty_for_chunk(c))
-                .map(|c| c.id)
-                .collect()
+        // Snapshot the head artifacts *before* the cascade sweeps them, so we
+        // can tombstone the ones that don't come back (deleted files, removed
+        // functions, dropped edges). Artifact ids that are re-derived keep the
+        // same id; ones that vanish between the pre- and post-pipeline states
+        // are genuine removals. Captured corpus-wide: unchanged artifacts are
+        // never deleted under the diff-based walk, so they appear in both
+        // snapshots and are not tombstoned — only true disappearances are.
+        let (pre_chunks, pre_entities, pre_edges): (
+            std::collections::HashSet<String>,
+            std::collections::HashSet<String>,
+            std::collections::HashSet<String>,
+        ) = if neighbour.is_some() {
+            (
+                pipeline
+                    .db
+                    .chunk_list(&corpus.id)?
+                    .into_iter()
+                    .map(|c| c.id)
+                    .collect(),
+                pipeline
+                    .db
+                    .entity_list(&corpus.id)?
+                    .into_iter()
+                    .map(|e| e.id)
+                    .collect(),
+                pipeline
+                    .db
+                    .edge_list(&corpus.id)?
+                    .into_iter()
+                    .map(|e| e.id)
+                    .collect(),
+            )
         } else {
-            Vec::new()
+            Default::default()
         };
 
         let mut commit_opts = opts.clone();
@@ -182,23 +202,34 @@ pub async fn walk_history_forward(
         // re-derive only the dirty subtree and stamp it at this commit.
         let result = pipeline.run(&commit_corpus, commit_opts).await?;
 
-        // Tombstone chunks present before the diff but absent after re-derivation.
-        if !pre_dirty_chunks.is_empty() {
-            let after: std::collections::HashSet<String> = pipeline
+        // Tombstone artifacts present before the diff but absent after
+        // re-derivation (deleted files, removed functions, dropped edges).
+        if neighbour.is_some() {
+            let post_chunks: std::collections::HashSet<String> = pipeline
                 .db
                 .chunk_list(&corpus.id)?
                 .into_iter()
                 .map(|c| c.id)
                 .collect();
-            let removed: Vec<RemovedArtifact> = pre_dirty_chunks
-                .iter()
-                .filter(|id| !after.contains(*id))
-                .map(|id| RemovedArtifact {
-                    kind: "chunk",
-                    id: id.clone(),
-                    reason: Some("absent_in_substrate".to_string()),
-                })
+            let post_entities: std::collections::HashSet<String> = pipeline
+                .db
+                .entity_list(&corpus.id)?
+                .into_iter()
+                .map(|e| e.id)
                 .collect();
+            let post_edges: std::collections::HashSet<String> = pipeline
+                .db
+                .edge_list(&corpus.id)?
+                .into_iter()
+                .map(|e| e.id)
+                .collect();
+
+            let removed: Vec<RemovedArtifact> =
+                removed_artifacts("chunk", &pre_chunks, &post_chunks)
+                    .chain(removed_artifacts("entity", &pre_entities, &post_entities))
+                    .chain(removed_artifacts("edge", &pre_edges, &post_edges))
+                    .collect();
+
             if !removed.is_empty() {
                 history_layer::commit(
                     pipeline.db.as_ref(),
@@ -478,6 +509,22 @@ pub async fn walk_history_backward(
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
+
+/// Build [`RemovedArtifact`] tombstone entries for ids present in `pre` but
+/// absent from `post` — the artifacts a commit's diff removed.
+fn removed_artifacts<'a>(
+    kind: &'static str,
+    pre: &'a std::collections::HashSet<String>,
+    post: &'a std::collections::HashSet<String>,
+) -> impl Iterator<Item = RemovedArtifact> + 'a {
+    pre.iter()
+        .filter(move |id| !post.contains(*id))
+        .map(move |id| RemovedArtifact {
+            kind,
+            id: id.clone(),
+            reason: Some("absent_in_substrate".to_string()),
+        })
+}
 
 /// Resolve `--back N` to an `Oid` by walking HEAD's first-parent ancestry
 /// N steps backward.
@@ -3100,6 +3147,167 @@ mod tests {
         assert!(
             archived >= 1,
             "themes_history must contain a row for theme-1 with superseded_at_sha={v_c1}, got {archived}"
+        );
+    }
+
+    /// A forward walk tombstones an entity that exists at one commit but is gone
+    /// at the next. Fixture: `a.txt` holds entity "Alpha" at C1, then is rewritten
+    /// to "Beta" at C2 — Alpha's identity disappears and must be tombstoned at C2.
+    #[tokio::test]
+    async fn forward_walk_tombstones_removed_entity() {
+        use crate::adapter::{
+            DiscoveredSource, EntityMerge, ExtractedSemantic, ExtractedStructure, LocationRef,
+            SourceAdapter,
+        };
+        use crate::types::{Chunk, Entity, Location};
+
+        // One chunk + one structural entity per .txt file. The entity's identity
+        // is its trimmed content, so rewriting the file "renames" the entity.
+        struct EntityAdapter;
+
+        #[async_trait::async_trait]
+        impl SourceAdapter for EntityAdapter {
+            fn kind(&self) -> &str {
+                "code"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            async fn discover(&self, source: &str) -> anyhow::Result<Vec<DiscoveredSource>> {
+                let mut sources = Vec::new();
+                if let Ok(rd) = std::fs::read_dir(source) {
+                    for entry in rd.flatten() {
+                        let p = entry.path();
+                        if p.extension().and_then(|e| e.to_str()) == Some("txt") {
+                            sources.push(DiscoveredSource {
+                                path: p.to_string_lossy().into_owned(),
+                                kind: "text".to_string(),
+                                meta: serde_json::Value::Null,
+                            });
+                        }
+                    }
+                }
+                Ok(sources)
+            }
+            async fn chunk(&self, source: &DiscoveredSource) -> anyhow::Result<Vec<Chunk>> {
+                let rel = std::path::Path::new(&source.path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                Ok(vec![Chunk::new(
+                    "tomb-test".to_string(),
+                    None,
+                    "file".to_string(),
+                    Location::new("tomb-test", &rel),
+                    std::fs::read_to_string(&source.path).unwrap_or_default(),
+                )])
+            }
+            async fn extract_structure(&self, chunk: &Chunk) -> anyhow::Result<ExtractedStructure> {
+                let name = chunk.content.trim().to_string();
+                let mut entity = Entity::new(
+                    format!("ent-{name}"),
+                    "tomb-test".to_string(),
+                    name,
+                    "function".to_string(),
+                );
+                entity.first_location = Some(chunk.location.clone());
+                Ok(ExtractedStructure {
+                    parent_path: None,
+                    child_paths: vec![],
+                    structural_entities: vec![entity],
+                    structural_edges: vec![],
+                })
+            }
+            async fn extract_with_llm(
+                &self,
+                _c: &Chunk,
+                _llm: &dyn callimachus_llm::LlmProvider,
+            ) -> anyhow::Result<Option<ExtractedSemantic>> {
+                Ok(Some(ExtractedSemantic {
+                    entities: vec![],
+                    edges: vec![],
+                    summary_text: None,
+                }))
+            }
+            async fn summarize(
+                &self,
+                _c: &Chunk,
+                _llm: &dyn callimachus_llm::LlmProvider,
+                _depth: &str,
+            ) -> anyhow::Result<Option<String>> {
+                Ok(None)
+            }
+            async fn resolve_aliases(
+                &self,
+                _e: &[Entity],
+                _llm: &dyn callimachus_llm::LlmProvider,
+            ) -> anyhow::Result<Vec<EntityMerge>> {
+                Ok(vec![])
+            }
+            fn format_location(&self, chunk: &Chunk) -> String {
+                chunk.location.path.clone()
+            }
+            fn parse_location(&self, uri: &str) -> anyhow::Result<LocationRef> {
+                Ok(LocationRef {
+                    corpus_id: "tomb-test".to_string(),
+                    path: uri.to_string(),
+                })
+            }
+        }
+
+        // C1: a.txt = "Alpha"; C2: a.txt rewritten to "Beta".
+        let (_td, _repo, oids) = build_linear_repo(&[("a.txt", "Alpha"), ("a.txt", "Beta")]);
+        let repo_path = _td.path().to_string_lossy().into_owned();
+
+        let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let corpus = Corpus::new(
+            "tomb-test".to_string(),
+            "Tomb Test".to_string(),
+            "code".to_string(),
+            repo_path,
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        let pipeline = IndexPipeline {
+            db: db.clone(),
+            adapter: Arc::new(EntityAdapter),
+            llm: Arc::new(DryRunProvider::new()),
+            embedder: None,
+        };
+
+        walk_history_forward(
+            &pipeline,
+            &corpus,
+            IndexOptions {
+                passes: vec![Pass::History, Pass::Chunk, Pass::Structure],
+                ..IndexOptions::default()
+            },
+            WalkOptions {
+                from_sha: None,
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("forward walk failed");
+
+        // Alpha (present at C1, gone at C2) must be tombstoned at git:<C2>.
+        let g = db.db_for_test();
+        let died: String = g
+            .conn()
+            .query_row(
+                "SELECT derived_at_sha FROM artifact_tombstones
+                 WHERE corpus_id = 'tomb-test'
+                   AND artifact_kind = 'entity'
+                   AND artifact_id = 'ent-Alpha'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("entity ent-Alpha must have a tombstone after it is removed");
+        assert_eq!(
+            died,
+            format!("git:{}", oids[1]),
+            "tombstone died_at_sha must be the C2 commit"
         );
     }
 }

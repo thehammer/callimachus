@@ -1,3 +1,4 @@
+pub mod ancestry;
 pub mod backend;
 pub mod backfill;
 pub mod block_store;
@@ -22,7 +23,8 @@ pub mod summary_store;
 pub mod theme_store;
 pub mod virtual_head;
 
-pub use backend::StorageBackend;
+pub use ancestry::{AncestryReader, Git2Ancestry};
+pub use backend::{MigrateFreshStats, StorageBackend};
 pub use backfill::{BackfillStorageWrapper, BackfillSupersession};
 pub use db::Database;
 pub use edge_store::EdgeDirection;

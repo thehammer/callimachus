@@ -5,7 +5,7 @@ use callimachus_llm::LlmProvider;
 use crate::{
     indexing::{layer2_cache, pipeline::IndexOptions},
     storage::{StorageBackend, embedding_store::StoredEmbedding, run_log::PassStats},
-    types::{Corpus, Layer2CacheKey},
+    types::{Corpus, Layer2CacheKey, Provenance},
 };
 
 const PROGRESS_EVERY: u64 = 25;
@@ -104,8 +104,10 @@ pub async fn run(
             },
         };
 
+        // Route through the history layer so the embedding is stamped with
+        // provenance and any prior vector for this (chunk, model) is archived.
         let emb = StoredEmbedding::new(&corpus.id, &chunk.id, embedder.name(), vector);
-        db.embedding_upsert(&emb)?;
+        db.commit_embedding(&emb, &Provenance::concrete(&version))?;
         stats.processed += 1;
 
         if stats.processed % PROGRESS_EVERY == 0 {

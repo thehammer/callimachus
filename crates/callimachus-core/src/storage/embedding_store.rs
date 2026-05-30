@@ -1,5 +1,6 @@
-use crate::{error::Result, storage::Database};
+use crate::{error::Result, storage::Database, types::provenance::Provenance};
 use chrono::Utc;
+use rusqlite::{Connection, OptionalExtension};
 
 /// A stored embedding record.
 ///
@@ -75,6 +76,106 @@ pub fn upsert(db: &Database, emb: &StoredEmbedding) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+
+/// Commit an embedding as the head row for its `(chunk_id, model)` pair,
+/// stamping `provenance`, and archive any prior head row whose derivation SHA
+/// differs into `embeddings_history` (superseded at `provenance.sha()`).
+///
+/// This is the history-aware path used by the embed pass. Re-committing an
+/// identical embedding (same `(chunk_id, model)` and same provenance SHA) is a
+/// no-op archival — the head row is simply rewritten.
+pub fn commit(db: &Database, emb: &StoredEmbedding, provenance: &Provenance) -> Result<()> {
+    let (kind, sha) = provenance.to_columns();
+
+    // Archive the about-to-be-superseded head row when the derivation SHA
+    // changes (e.g. a re-embed under a new commit). When the SHA is unchanged
+    // the existing row is just overwritten in place — no history churn.
+    let existing_sha: Option<String> = db
+        .conn()
+        .query_row(
+            "SELECT derived_at_sha FROM embeddings WHERE chunk_id = ?1 AND model = ?2",
+            rusqlite::params![emb.chunk_id, emb.model],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(prev_sha) = existing_sha
+        && prev_sha != sha
+    {
+        archive_for_chunk_model(db.conn(), &emb.chunk_id, &emb.model, sha)?;
+    }
+
+    let blob = encode(&emb.vector);
+    db.conn().execute(
+        "INSERT OR REPLACE INTO embeddings
+         (id, corpus_id, chunk_id, model, vector, dimensions, created_at,
+          derived_at_kind, derived_at_sha)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            emb.id,
+            emb.corpus_id,
+            emb.chunk_id,
+            emb.model,
+            blob,
+            emb.dimensions as i64,
+            Utc::now().to_rfc3339(),
+            kind,
+            sha,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Archive every head embedding for `chunk_id` into `embeddings_history`,
+/// stamped `superseded_at_sha = superseded_at_version`. Called by the cascade
+/// just before a dirty chunk (and, by FK cascade, its embeddings) is deleted, so
+/// the vector survives in history with honest supersession provenance.
+///
+/// Returns the number of history rows written.
+pub(crate) fn archive_for_chunk(
+    conn: &Connection,
+    chunk_id: &str,
+    superseded_at_version: &str,
+) -> Result<u64> {
+    let now = Utc::now().to_rfc3339();
+    let rows = conn.execute(
+        "INSERT OR IGNORE INTO embeddings_history
+           (id, corpus_id, chunk_id, model, vector, dimensions,
+            surrounding_context_hash, created_at,
+            derived_at_kind, derived_at_sha, superseded_at_sha, superseded_at)
+         SELECT id, corpus_id, chunk_id, model, vector, dimensions,
+                surrounding_context_hash, created_at,
+                derived_at_kind, derived_at_sha, ?2, ?3
+         FROM embeddings
+         WHERE chunk_id = ?1",
+        rusqlite::params![chunk_id, superseded_at_version, now],
+    )?;
+    Ok(rows as u64)
+}
+
+/// Archive only the head embedding for a specific `(chunk_id, model)` pair.
+/// Used by [`commit`] when a re-embed supersedes a prior vector for the same
+/// chunk identity (rather than the chunk dying entirely).
+fn archive_for_chunk_model(
+    conn: &Connection,
+    chunk_id: &str,
+    model: &str,
+    superseded_at_sha: &str,
+) -> Result<u64> {
+    let now = Utc::now().to_rfc3339();
+    let rows = conn.execute(
+        "INSERT OR IGNORE INTO embeddings_history
+           (id, corpus_id, chunk_id, model, vector, dimensions,
+            surrounding_context_hash, created_at,
+            derived_at_kind, derived_at_sha, superseded_at_sha, superseded_at)
+         SELECT id, corpus_id, chunk_id, model, vector, dimensions,
+                surrounding_context_hash, created_at,
+                derived_at_kind, derived_at_sha, ?3, ?4
+         FROM embeddings
+         WHERE chunk_id = ?1 AND model = ?2",
+        rusqlite::params![chunk_id, model, superseded_at_sha, now],
+    )?;
+    Ok(rows as u64)
 }
 
 /// Fetch the embedding for a specific chunk, if one exists.
