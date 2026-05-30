@@ -357,6 +357,8 @@ mod tests {
             source_hash: None,
             introduced_at_version: None,
             last_modified_at_version: None,
+            file_shape_hash: String::new(),
+            entity_id_list: "[]".into(),
         };
         db.chunk_upsert(&chunk).unwrap();
     }

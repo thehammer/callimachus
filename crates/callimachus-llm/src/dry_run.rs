@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 use crate::{
     error::Result,
@@ -9,13 +12,31 @@ use crate::{
 /// Useful for tests and offline development.
 pub struct DryRunProvider {
     usage: Arc<Mutex<ProviderUsage>>,
+    /// Total LLM calls served (`complete` + `embed`). The linchpin for
+    /// cache-hit-skips-LLM tests: a cache hit must not increment this.
+    calls: Arc<AtomicU64>,
+    /// Last sampling parameters seen by `complete`, recorded for tests that
+    /// assert stable-sampling plumbing reached the provider.
+    last_sampling: Arc<Mutex<(Option<f32>, Option<u64>)>>,
 }
 
 impl DryRunProvider {
     pub fn new() -> Self {
         DryRunProvider {
             usage: Arc::new(Mutex::new(ProviderUsage::default())),
+            calls: Arc::new(AtomicU64::new(0)),
+            last_sampling: Arc::new(Mutex::new((None, None))),
         }
+    }
+
+    /// Total LLM calls served since the last [`LlmProvider::reset_usage`].
+    pub fn call_count(&self) -> u64 {
+        self.calls.load(Ordering::SeqCst)
+    }
+
+    /// The temperature/seed of the most recent `complete` call.
+    pub fn last_sampling(&self) -> (Option<f32>, Option<u64>) {
+        *self.last_sampling.lock().unwrap()
     }
 }
 
@@ -34,6 +55,8 @@ impl LlmProvider for DryRunProvider {
             "[dry-run]".to_string()
         };
 
+        *self.last_sampling.lock().unwrap() = (req.temperature, req.seed);
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let mut u = self.usage.lock().unwrap();
         u.calls += 1;
 
@@ -59,10 +82,12 @@ impl LlmProvider for DryRunProvider {
 
     fn reset_usage(&self) {
         *self.usage.lock().unwrap() = ProviderUsage::default();
+        self.calls.store(0, Ordering::SeqCst);
     }
 
     /// Returns a deterministic unit vector for dry-run/test usage.
     async fn embed(&self, _text: &str) -> Result<Vec<f32>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         // 8-dimensional unit vector along first axis.
         let mut v = vec![0.0f32; 8];
         v[0] = 1.0;
@@ -89,6 +114,7 @@ mod tests {
                 chunk_id: None,
                 kind: "test".to_string(),
                 pass: "test".to_string(),
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -107,6 +133,7 @@ mod tests {
                 chunk_id: None,
                 kind: "test".to_string(),
                 pass: "test".to_string(),
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -124,6 +151,7 @@ mod tests {
                 chunk_id: None,
                 kind: "test".to_string(),
                 pass: "test".to_string(),
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -141,6 +169,7 @@ mod tests {
             chunk_id: None,
             kind: "test".to_string(),
             pass: "test".to_string(),
+            ..Default::default()
         })
         .await
         .unwrap();

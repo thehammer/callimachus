@@ -65,6 +65,7 @@ Return ONLY the summary text, no JSON, no preamble."#,
         chunk_id: Some(chunk.id.clone()),
         kind: chunk.kind.clone(),
         pass: "summarize".to_string(),
+        ..Default::default()
     };
 
     let response = llm.complete(req).await?;
@@ -118,6 +119,7 @@ Return ONLY the summary text, no JSON, no preamble."#,
         chunk_id: Some(chunk.id.clone()),
         kind: "file".to_string(),
         pass: "summarize".to_string(),
+        ..Default::default()
     };
 
     let response = llm.complete(req).await?;
@@ -164,6 +166,7 @@ Return ONLY the summary text, no JSON, no preamble."#,
         chunk_id: None,
         kind: "corpus".to_string(),
         pass: "summarize".to_string(),
+        ..Default::default()
     };
 
     let response = llm.complete(req).await?;

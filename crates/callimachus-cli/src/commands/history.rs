@@ -82,6 +82,12 @@ pub enum HistoryCommand {
         /// When omitted, the default seven-pass list runs.
         #[arg(long)]
         passes: Option<String>,
+
+        /// Pin Layer-2 LLM calls to deterministic sampling (temperature 0 +
+        /// derived seed). Combined with the Layer-2 cache, an unchanged corpus
+        /// backfills with zero LLM work.
+        #[arg(long)]
+        stable_sampling: bool,
     },
 
     /// Prune history rows older than the N most-recent supersession SHAs.
@@ -124,6 +130,7 @@ pub async fn run(
             provider,
             concurrency,
             passes,
+            stable_sampling,
         } => {
             let corpus = db.corpus_require(&corpus_id)?;
 
@@ -165,6 +172,7 @@ pub async fn run(
             let opts = IndexOptions {
                 passes: pass_list,
                 concurrency,
+                stable_sampling,
                 tier_config: config.model_tiers.clone(),
                 ..IndexOptions::default()
             };

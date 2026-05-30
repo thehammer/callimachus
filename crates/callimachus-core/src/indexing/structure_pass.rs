@@ -6,7 +6,7 @@ use crate::{
     types::Corpus,
 };
 
-use super::pipeline::IndexOptions;
+use super::{file_shape, pipeline::IndexOptions};
 
 pub async fn run(
     db: Arc<dyn StorageBackend>,
@@ -89,6 +89,27 @@ pub async fn run(
     // Phase 2: write edges — all referenced entity IDs now exist.
     for edge in &all_edges {
         db.edge_upsert(edge)?;
+    }
+
+    // Phase 3: stamp each file chunk with its file-shape hash — the Layer-2
+    // cache's invalidation boundary (see `indexing::file_shape`). Grouped by the
+    // entity's `first_location` URI, which for code corpora is the file chunk's
+    // location URI.
+    let mut ids_by_uri: std::collections::HashMap<&str, Vec<String>> =
+        std::collections::HashMap::new();
+    for entity in &all_entities {
+        if let Some(loc) = entity.first_location.as_ref() {
+            ids_by_uri
+                .entry(loc.uri.as_str())
+                .or_default()
+                .push(entity.id.clone());
+        }
+    }
+    for chunk in &chunks {
+        if let Some(ids) = ids_by_uri.get(chunk.location.uri.as_str()) {
+            let (hash, json) = file_shape::file_shape_hash(ids);
+            db.chunk_set_file_shape(&chunk.id, &hash, &json)?;
+        }
     }
 
     tracing::info!(

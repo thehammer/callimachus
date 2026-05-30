@@ -96,6 +96,7 @@ mod tests {
             chunk_id: None,
             kind: "test".to_string(),
             pass: "test".to_string(),
+            ..Default::default()
         }
     }
 

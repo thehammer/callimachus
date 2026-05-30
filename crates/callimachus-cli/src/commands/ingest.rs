@@ -34,6 +34,7 @@ pub async fn run(
     dry_run: bool,
     concurrency: Option<usize>,
     passes: Option<String>,
+    stable_sampling: bool,
     provider_override: Option<String>,
     db: Arc<dyn StorageBackend>,
     config: &GlobalConfig,
@@ -75,6 +76,7 @@ pub async fn run(
         passes: pass_list,
         dry_run,
         concurrency,
+        stable_sampling,
         tier_config: config.model_tiers.clone(),
         ..IndexOptions::default()
     };

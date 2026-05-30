@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use callimachus_llm::LlmProvider;
+use callimachus_llm::{LlmProvider, StableSamplingProvider};
 
 use crate::{
     adapter::SourceAdapter,
@@ -146,6 +146,11 @@ pub struct IndexOptions {
     /// this layer instead of the live head tables.  When `None` (the default),
     /// passes read from the head tables as normal.
     pub read_view: Option<Arc<ReadView>>,
+    /// Opt-in deterministic sampling.  When `true`, Layer-2 LLM calls are routed
+    /// through a `StableSamplingProvider` (temperature 0 + deterministic seed)
+    /// so identical inputs yield byte-identical outputs where the provider
+    /// supports it.  Default `false` (preserves pre-PR-3 behaviour).
+    pub stable_sampling: bool,
 }
 
 impl Default for IndexOptions {
@@ -173,6 +178,7 @@ impl Default for IndexOptions {
             tier_config: TierConfig::default(),
             change_manifest: None,
             read_view: None,
+            stable_sampling: false,
         }
     }
 }
@@ -318,7 +324,21 @@ impl IndexPipeline {
         let mut result = IndexResult::default();
 
         // Build tier providers once for the whole run.
-        let tiers = build_tier_providers(Arc::clone(&self.llm), &opts.tier_config);
+        let mut tiers = build_tier_providers(Arc::clone(&self.llm), &opts.tier_config);
+
+        // Opt-in deterministic sampling: wrap each tier (and the embedder) so
+        // every Layer-2 LLM call is pinned to temperature 0 + a deterministic
+        // seed.  Default-off, so this is a no-op for existing callers.
+        let mut embedder = self.embedder.clone();
+        if opts.stable_sampling {
+            tracing::info!(
+                "[pipeline] stable-sampling: ENABLED (temperature=0, deterministic seed)"
+            );
+            tiers.haiku = StableSamplingProvider::wrap(tiers.haiku);
+            tiers.sonnet = StableSamplingProvider::wrap(tiers.sonnet);
+            tiers.opus = StableSamplingProvider::wrap(tiers.opus);
+            embedder = embedder.map(StableSamplingProvider::wrap);
+        }
 
         // ── Run-time visibility: log the resolved provider + tier + concurrency
         // configuration so it's obvious from the log how this run is wired.
@@ -474,8 +494,7 @@ impl IndexPipeline {
                     .await?
                 }
                 Pass::Embed => {
-                    embed_pass::run(self.db.as_ref(), corpus, self.embedder.clone(), &opts_local)
-                        .await?
+                    embed_pass::run(self.db.as_ref(), corpus, embedder.clone(), &opts_local).await?
                 }
                 Pass::Purpose => {
                     purpose_pass::run(

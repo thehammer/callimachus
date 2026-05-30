@@ -3,9 +3,9 @@ use std::sync::Arc;
 use callimachus_llm::LlmProvider;
 
 use crate::{
-    indexing::pipeline::IndexOptions,
+    indexing::{layer2_cache, pipeline::IndexOptions},
     storage::{StorageBackend, embedding_store::StoredEmbedding, run_log::PassStats},
-    types::Corpus,
+    types::{Corpus, Layer2CacheKey},
 };
 
 const PROGRESS_EVERY: u64 = 25;
@@ -57,6 +57,12 @@ pub async fn run(
 
     let mut stats = PassStats::default();
 
+    let version = opts
+        .change_manifest
+        .as_ref()
+        .map(|m| m.current_version.clone())
+        .unwrap_or_default();
+
     for chunk in &chunks {
         // Skip if already embedded (unless --full).
         if !opts.full && db.embedding_get_for_chunk(&chunk.id)?.is_some() {
@@ -64,30 +70,50 @@ pub async fn run(
             continue;
         }
 
-        // Generate embedding.
-        match embedder.embed(&chunk.content).await {
-            Ok(vector) => {
-                let emb = StoredEmbedding::new(&corpus.id, &chunk.id, embedder.name(), vector);
-                db.embedding_upsert(&emb)?;
-                stats.processed += 1;
+        // Layer-2 cache: chunks are content-addressed (chunk.id is the content
+        // hash), so embeddings key off (chunk.id, model) with no file-shape
+        // context. A hit reuses the stored vector without calling the embedder.
+        let cache_key = Layer2CacheKey {
+            artifact_kind: "embedding".to_string(),
+            entity_id: Some(chunk.id.clone()),
+            content_hash: String::new(),
+            file_shape_hash: String::new(),
+            model: embedder.name().to_string(),
+            stable_sampling: opts.stable_sampling,
+        };
 
-                if stats.processed % PROGRESS_EVERY == 0 {
-                    tracing::info!(
-                        corpus_id = %corpus.id,
-                        processed = stats.processed,
-                        "embed pass: progress"
-                    );
+        let vector = match layer2_cache::cache_get::<Vec<f32>>(db, &cache_key)? {
+            Some(cached) => cached,
+            None => match embedder.embed(&chunk.content).await {
+                Ok(vector) => {
+                    if let Err(e) = layer2_cache::cache_put(db, &cache_key, &vector, &version) {
+                        tracing::warn!("embedding cache_put failed for {}: {e}", chunk.id);
+                    }
+                    vector
                 }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    corpus_id = %corpus.id,
-                    chunk_id = %chunk.id,
-                    error = %e,
-                    "embed pass: failed to embed chunk"
-                );
-                stats.failed += 1;
-            }
+                Err(e) => {
+                    tracing::warn!(
+                        corpus_id = %corpus.id,
+                        chunk_id = %chunk.id,
+                        error = %e,
+                        "embed pass: failed to embed chunk"
+                    );
+                    stats.failed += 1;
+                    continue;
+                }
+            },
+        };
+
+        let emb = StoredEmbedding::new(&corpus.id, &chunk.id, embedder.name(), vector);
+        db.embedding_upsert(&emb)?;
+        stats.processed += 1;
+
+        if stats.processed % PROGRESS_EVERY == 0 {
+            tracing::info!(
+                corpus_id = %corpus.id,
+                processed = stats.processed,
+                "embed pass: progress"
+            );
         }
     }
 

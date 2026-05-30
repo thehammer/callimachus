@@ -10,6 +10,7 @@ mod pricing;
 mod provider;
 mod rate_limit;
 mod resolve;
+mod stable_sampling;
 
 pub use anthropic::AnthropicApiProvider;
 pub use budget::{CallSizeEstimator, EstimatorKey, ModelFamily, TokenBudget, model_family_of};
@@ -21,3 +22,4 @@ pub use failing::FailingProvider;
 pub use openai_embed::OpenAiEmbeddingProvider;
 pub use provider::{CompletionRequest, CompletionResponse, LlmProvider, ProviderUsage, model_tier};
 pub use resolve::{ProviderConfig, auto_detect, build as build_provider};
+pub use stable_sampling::{StableSamplingProvider, seed_from_prompt};

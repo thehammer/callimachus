@@ -4,14 +4,18 @@ use callimachus_llm::{LlmError, LlmProvider, model_tier};
 use futures::StreamExt;
 use uuid::Uuid;
 
+use std::collections::HashMap;
+
 use crate::{
     adapter::SourceAdapter,
     indexing::model_tier::{ModelTier, ModelTierRouter, TierConfig},
     storage::{StorageBackend, run_log::PassStats},
-    types::{Corpus, Entity, EntityBlock, EntityPurpose},
+    types::{Corpus, Entity, EntityBlock, EntityPurpose, Layer2CacheKey},
 };
 
-use super::{change_manifest::file_path_from_uri, pipeline::IndexOptions};
+use super::{
+    change_manifest::file_path_from_uri, file_shape, layer2_cache, pipeline::IndexOptions,
+};
 
 const MAX_RETRIES: u32 = 8;
 
@@ -63,6 +67,9 @@ pub async fn run(
     let concurrency = opts.concurrency.unwrap_or(64);
 
     let all_entities = db.entity_list(&corpus.id)?;
+    // Authoritative file-shape map for cache keys, computed from live entity
+    // state (covers entities created by the semantic pass, not only structural).
+    let file_shapes = file_shape::file_shapes_by_uri(&all_entities);
     let candidates: Vec<Entity> = all_entities
         .into_iter()
         .filter(|e| PURPOSE_KINDS.contains(&e.kind.as_str()))
@@ -97,6 +104,8 @@ pub async fn run(
         tier_config,
         full: opts.full,
         current_version,
+        file_shapes,
+        stable_sampling: opts.stable_sampling,
     });
 
     // ── Interleaved concurrent LLM + per-entity DB writes ────────────────────
@@ -181,6 +190,9 @@ struct PassContext {
     tier_config: TierConfig,
     full: bool,
     current_version: Option<String>,
+    /// `file_location_uri -> file_shape_hash`, the Layer-2 cache key boundary.
+    file_shapes: HashMap<String, String>,
+    stable_sampling: bool,
 }
 
 async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
@@ -255,16 +267,53 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
         .flatten()
         .map(|s| s.text);
 
+    // Layer-2 cache: keyed by (entity, file-shape, model). On a hit, the LLM
+    // call is skipped entirely; on a miss, derive then store. Consulted even
+    // under `--full` (which only bypasses the head-idempotency guard above).
+    let file_shape_hash = entity
+        .first_location
+        .as_ref()
+        .and_then(|loc| ctx.file_shapes.get(&loc.uri))
+        .cloned()
+        .unwrap_or_default();
+    let cache_key = Layer2CacheKey {
+        artifact_kind: "purpose".to_string(),
+        entity_id: Some(entity.id.clone()),
+        content_hash: String::new(),
+        file_shape_hash,
+        model: model_name.to_string(),
+        stable_sampling: ctx.stable_sampling,
+    };
+    let derived = match layer2_cache::cache_get::<crate::adapter::ExtractedPurpose>(
+        db.as_ref(),
+        &cache_key,
+    ) {
+        Ok(Some(hit)) => Ok(Some(hit)),
+        Ok(None) => {
+            match extract_with_retry(
+                adapter.as_ref(),
+                entity,
+                &content,
+                summary_opt.as_deref(),
+                llm,
+            )
+            .await
+            {
+                Ok(Some(fresh)) => {
+                    let sha = ctx.current_version.as_deref().unwrap_or("");
+                    if let Err(e) = layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, sha) {
+                        tracing::warn!("purpose cache_put failed for {}: {e}", entity.id);
+                    }
+                    Ok(Some(fresh))
+                }
+                other => other,
+            }
+        }
+        Err(e) => Err(e),
+    };
+
     // Call adapter with retry.
-    match extract_with_retry(
-        adapter.as_ref(),
-        entity,
-        &content,
-        summary_opt.as_deref(),
-        llm,
-    )
-    .await
-    {
+    match derived {
         Ok(Some(extracted)) => {
             let now = chrono::Utc::now().to_rfc3339();
             let model = llm.name().to_string();

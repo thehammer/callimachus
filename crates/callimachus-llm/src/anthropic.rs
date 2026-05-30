@@ -84,6 +84,10 @@ struct ApiRequest {
     model: String,
     max_tokens: u32,
     messages: Vec<ApiMessage>,
+    /// Forwarded from [`CompletionRequest::temperature`]. Omitted from the wire
+    /// when `None` so the API applies its own default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 #[derive(Serialize)]
@@ -144,6 +148,7 @@ impl LlmProvider for AnthropicApiProvider {
                 role: "user".to_string(),
                 content: req.prompt.clone(),
             }],
+            temperature: req.temperature,
         };
 
         let mut last_err = LlmError::Other("no attempts made".to_string());
@@ -314,6 +319,7 @@ impl LlmProvider for AnthropicApiProvider {
             chunk_id: None,
             kind: "probe".to_string(),
             pass: "probe".to_string(),
+            ..Default::default()
         };
         match self.complete(req).await {
             Ok(_) => {
@@ -419,6 +425,7 @@ mod tests {
             chunk_id: None,
             kind: "test".to_string(),
             pass: "test".to_string(),
+            ..Default::default()
         }
     }
 

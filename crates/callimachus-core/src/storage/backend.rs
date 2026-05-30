@@ -81,6 +81,14 @@ pub trait StorageBackend: Send + Sync {
     fn chunk_delete_by_id(&self, chunk_id: &str) -> Result<bool>;
     /// Update the source_hash column for a chunk written by chunk_pass.
     fn chunk_set_source_hash(&self, chunk_id: &str, hash: &str) -> Result<()>;
+    /// Store the file-shape hash and its entity-id-list JSON on a chunk.
+    /// Written by the structure pass for debuggability/inspection.
+    fn chunk_set_file_shape(
+        &self,
+        chunk_id: &str,
+        file_shape_hash: &str,
+        entity_id_list: &str,
+    ) -> Result<()>;
     /// Write history metadata (version + optional commit info) for a chunk.
     /// Sets `last_modified_at_version`; also sets `introduced_at_version` if
     /// the chunk row does not yet have one.

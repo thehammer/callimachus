@@ -2,6 +2,7 @@ use crate::indexing::change_manifest::{ChangeKind, ChangedSource};
 use crate::indexing::model_tier::RoutingInputs;
 use crate::types::{Chunk, Corpus, Edge, Entity};
 use callimachus_llm::LlmProvider;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// A discovered concrete input, ready for chunking.
@@ -44,12 +45,14 @@ pub struct LocationRef {
 // ── Phase 12 extracted types ─────────────────────────────────────────────────
 
 /// Result of `extract_purpose`: why an entity exists and optional block blurbs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedPurpose {
     pub purpose: String,
     pub blocks: Vec<ExtractedBlock>,
 }
 
 /// A named subsection of a complex function.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedBlock {
     pub label: String,
     pub description: String,
@@ -61,7 +64,7 @@ pub struct ExtractedBlock {
 /// (tree-sitter / regex) before the LLM call; they should always be accurate
 /// regardless of whether the LLM succeeds.  LLM-inferred fields may be empty
 /// when the model returns nothing useful.
-#[derive(Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExtractedContract {
     // ── Static signals (adapter-populated, no LLM) ───────────────────────────
     pub is_public: bool,
@@ -88,11 +91,13 @@ pub struct ExtractedContract {
 }
 
 /// Result of `extract_themes`: corpus-level architectural invariants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedThemes {
     pub themes: Vec<ExtractedTheme>,
 }
 
 /// One architectural theme.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedTheme {
     pub title: String,
     pub statement: String,

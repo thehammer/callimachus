@@ -279,6 +279,7 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
             chunk_id: None,
             kind: entity.kind.clone(),
             pass: "purpose".to_string(),
+            ..Default::default()
         };
 
         let response = llm.complete(req).await?;
@@ -436,6 +437,7 @@ Return JSON matching this schema exactly:
             chunk_id: None,
             kind: entity.kind.clone(),
             pass: "contract".to_string(),
+            ..Default::default()
         };
 
         let response = llm.complete(req).await?;
@@ -564,6 +566,7 @@ Return JSON:
             chunk_id: None,
             kind: "corpus".to_string(),
             pass: "theme".to_string(),
+            ..Default::default()
         };
 
         let response = llm.complete(req).await?;

@@ -56,6 +56,7 @@ Merges:"#
             chunk_id: None,
             kind: "entity".to_string(),
             pass: "aliases".to_string(),
+            ..Default::default()
         })
         .await
         .map_err(|e| anyhow::anyhow!("LLM error: {e}"))?;

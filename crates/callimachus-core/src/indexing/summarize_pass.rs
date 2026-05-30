@@ -7,10 +7,10 @@ use crate::{
     adapter::SourceAdapter,
     indexing::model_tier::{ModelTier, ModelTierRouter, RoutingInputs},
     storage::{StorageBackend, run_log::PassStats},
-    types::{Corpus, Summary, SummaryTargetKind},
+    types::{Corpus, Layer2CacheKey, Summary, SummaryTargetKind, chunk::hash_content},
 };
 
-use super::pipeline::IndexOptions;
+use super::{layer2_cache, pipeline::IndexOptions};
 
 pub async fn run(
     db: Arc<dyn StorageBackend>,
@@ -126,7 +126,38 @@ pub async fn run(
                 ModelTier::Opus => Arc::clone(&llm_opus),
             };
 
-            match adapter.summarize(&context_chunk, llm, level_kind).await {
+            // Layer-2 cache: a chunk summary is a deterministic function of the
+            // (possibly rolled-up) input text, so we key on a hash of that
+            // exact input plus depth + model. A hit skips the LLM call.
+            let cache_key = Layer2CacheKey {
+                artifact_kind: "summary".to_string(),
+                entity_id: Some(format!("{level_kind}:{}", chunk.id)),
+                content_hash: hash_content(&context_chunk.content),
+                file_shape_hash: String::new(),
+                model: llm.name().to_string(),
+                stable_sampling: opts.stable_sampling,
+            };
+            let sha = opts
+                .change_manifest
+                .as_ref()
+                .map(|m| m.current_version.as_str())
+                .unwrap_or("");
+            let summarized = match layer2_cache::cache_get::<String>(db.as_ref(), &cache_key) {
+                Ok(Some(hit)) => Ok(Some(hit)),
+                Ok(None) => match adapter.summarize(&context_chunk, llm, level_kind).await {
+                    Ok(Some(text)) => {
+                        if let Err(e) = layer2_cache::cache_put(db.as_ref(), &cache_key, &text, sha)
+                        {
+                            tracing::warn!("summary cache_put failed for {}: {e}", chunk.id);
+                        }
+                        Ok(Some(text))
+                    }
+                    other => other,
+                },
+                Err(e) => Err(e),
+            };
+
+            match summarized {
                 Ok(Some(text)) => {
                     if !opts.dry_run {
                         let version = opts
@@ -244,7 +275,37 @@ pub async fn run(
         tier_counts[ModelTier::Opus as usize],
     );
 
-    match adapter.summarize(&corpus_chunk, corpus_llm, "corpus").await {
+    let corpus_cache_key = Layer2CacheKey {
+        artifact_kind: "summary".to_string(),
+        entity_id: Some(format!("corpus:{}", corpus.id)),
+        content_hash: hash_content(&corpus_chunk.content),
+        file_shape_hash: String::new(),
+        model: corpus_llm.name().to_string(),
+        stable_sampling: opts.stable_sampling,
+    };
+    let corpus_sha = opts
+        .change_manifest
+        .as_ref()
+        .map(|m| m.current_version.as_str())
+        .unwrap_or("");
+    let corpus_summarized = match layer2_cache::cache_get::<String>(db.as_ref(), &corpus_cache_key)
+    {
+        Ok(Some(hit)) => Ok(Some(hit)),
+        Ok(None) => match adapter.summarize(&corpus_chunk, corpus_llm, "corpus").await {
+            Ok(Some(text)) => {
+                if let Err(e) =
+                    layer2_cache::cache_put(db.as_ref(), &corpus_cache_key, &text, corpus_sha)
+                {
+                    tracing::warn!("corpus summary cache_put failed: {e}");
+                }
+                Ok(Some(text))
+            }
+            other => other,
+        },
+        Err(e) => Err(e),
+    };
+
+    match corpus_summarized {
         Ok(Some(text)) => {
             if !opts.dry_run {
                 let model = corpus_llm.name().to_string();

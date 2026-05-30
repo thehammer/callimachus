@@ -69,6 +69,10 @@ enum Command {
         /// When omitted, the Anthropic rate-limit headers drive adaptive sizing.
         #[arg(long)]
         concurrency: Option<usize>,
+        /// Pin Layer-2 LLM calls to deterministic sampling (temperature 0 +
+        /// derived seed) so identical inputs yield byte-identical output.
+        #[arg(long)]
+        stable_sampling: bool,
     },
 
     /// Incremental reindex since a commit or date.
@@ -80,6 +84,9 @@ enum Command {
         dry_run: bool,
         #[arg(long)]
         provider: Option<String>,
+        /// Pin Layer-2 LLM calls to deterministic sampling.
+        #[arg(long)]
+        stable_sampling: bool,
     },
 
     /// Watch a corpus source and reindex on changes.
@@ -179,6 +186,9 @@ enum Command {
         /// When omitted, the default eight-pass list runs.
         #[arg(long)]
         passes: Option<String>,
+        /// Pin Layer-2 LLM calls to deterministic sampling.
+        #[arg(long)]
+        stable_sampling: bool,
     },
 
     /// Show pipeline version status for all corpora.
@@ -415,6 +425,7 @@ async fn main() -> Result<()> {
             full,
             no_git_filter,
             concurrency,
+            stable_sampling,
         } => {
             let db = open_db(&db_path)?;
             commands::index::run(
@@ -425,6 +436,7 @@ async fn main() -> Result<()> {
                 full,
                 no_git_filter,
                 concurrency,
+                stable_sampling,
                 None,
                 db,
                 &global_config,
@@ -502,9 +514,19 @@ async fn main() -> Result<()> {
             since,
             dry_run,
             provider,
+            stable_sampling,
         } => {
             let db = open_db(&db_path)?;
-            commands::reindex::run(&corpus_id, since, dry_run, provider, db, &global_config).await
+            commands::reindex::run(
+                &corpus_id,
+                since,
+                dry_run,
+                provider,
+                stable_sampling,
+                db,
+                &global_config,
+            )
+            .await
         }
 
         Command::Watch {
@@ -529,6 +551,7 @@ async fn main() -> Result<()> {
             concurrency,
             dry_run,
             passes,
+            stable_sampling,
         } => {
             let db = open_db(&db_path)?;
             commands::ingest::run(
@@ -541,6 +564,7 @@ async fn main() -> Result<()> {
                 dry_run,
                 concurrency,
                 passes,
+                stable_sampling,
                 provider,
                 db,
                 &global_config,

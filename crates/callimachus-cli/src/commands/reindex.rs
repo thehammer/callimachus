@@ -11,11 +11,13 @@ use callimachus_llm::build_provider;
 
 use crate::{commands::index::resolve_provider, config::GlobalConfig};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     corpus_id: &str,
     since: Option<String>,
     dry_run: bool,
     provider_override: Option<String>,
+    stable_sampling: bool,
     db: Arc<dyn StorageBackend>,
     config: &GlobalConfig,
 ) -> Result<()> {
@@ -85,6 +87,7 @@ pub async fn run(
         &change_set,
         &IndexOptions {
             dry_run: false,
+            stable_sampling,
             ..Default::default()
         },
     )
