@@ -11,7 +11,7 @@
 
 use crate::corrections::types::{Correction, CorrectionKind};
 use crate::error::{CalError, Result};
-use crate::storage::backend::{CascadeStats, CopyStats, StorageBackend};
+use crate::storage::backend::{CascadeStats, StorageBackend};
 use crate::storage::edge_store::EdgeDirection;
 use crate::storage::embedding_store::StoredEmbedding;
 use crate::storage::fts::FtsResult;
@@ -86,6 +86,12 @@ impl StorageBackend for PostgresBackend {
         Err(unimplemented())
     }
     fn corpus_get_last_indexed_version(&self, _id: &str) -> Result<Option<String>> {
+        Err(unimplemented())
+    }
+    fn corpus_set_backfill_cursor(&self, _id: &str, _cursor: Option<&str>) -> Result<()> {
+        Err(unimplemented())
+    }
+    fn corpus_get_backfill_cursor(&self, _id: &str) -> Result<Option<String>> {
         Err(unimplemented())
     }
     fn corpus_delete(&self, _id: &str) -> Result<bool> {
@@ -472,18 +478,6 @@ impl StorageBackend for PostgresBackend {
         _dirty_chunk_ids: &[String],
         _superseded_at_version: &str,
     ) -> Result<CascadeStats> {
-        Err(unimplemented())
-    }
-
-    fn copy_unchanged_artifacts(
-        &self,
-        _corpus_id: &str,
-        _from_version: &str,
-        _to_version: &str,
-        _superseded_at_version: &str,
-        _entity_ids: &[String],
-        _dirty_paths: &[String],
-    ) -> Result<CopyStats> {
         Err(unimplemented())
     }
 

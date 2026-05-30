@@ -102,6 +102,23 @@ pub fn get_last_indexed_version(db: &Database, id: &str) -> Result<Option<String
     Ok(v)
 }
 
+pub fn set_backfill_cursor(db: &Database, id: &str, cursor: Option<&str>) -> Result<()> {
+    db.conn().execute(
+        "UPDATE corpora SET backfill_cursor = ?1 WHERE id = ?2",
+        params![cursor, id],
+    )?;
+    Ok(())
+}
+
+pub fn get_backfill_cursor(db: &Database, id: &str) -> Result<Option<String>> {
+    let v: Option<String> = db.conn().query_row(
+        "SELECT backfill_cursor FROM corpora WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    Ok(v)
+}
+
 pub fn set_pipeline_version(db: &Database, id: &str, version: u32) -> Result<()> {
     let updated = db.conn().execute(
         "UPDATE corpora SET pipeline_version = ?1 WHERE id = ?2",
