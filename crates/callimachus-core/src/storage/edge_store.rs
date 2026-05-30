@@ -2,6 +2,7 @@ use crate::error::{CalError, Result};
 use crate::storage::db::Database;
 use crate::types::edge::Edge;
 use crate::types::location::Location;
+use crate::types::provenance::Provenance;
 use rusqlite::params;
 
 pub fn upsert(db: &Database, edge: &Edge) -> Result<()> {
@@ -14,12 +15,14 @@ pub fn upsert(db: &Database, edge: &Edge) -> Result<()> {
     // Edge upsert uses INSERT OR IGNORE (not ON CONFLICT DO UPDATE) so existing
     // edge rows are never overwritten in-place. We therefore do NOT call a
     // snapshot helper here — cascade.rs handles archiving edges before deletion.
-    // derived_at_version is stamped on new rows only.
+    // derived_at_kind / derived_at_sha are stamped on new rows only.
+    let prov_kind = edge.provenance.as_ref().map(|p| p.kind_str());
+    let prov_sha = edge.provenance.as_ref().map(|p| p.sha());
     db.conn().execute(
         "INSERT OR IGNORE INTO edges
          (id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
-          derived_at_version)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+          derived_at_kind, derived_at_sha)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, COALESCE(?8, 'concrete'), COALESCE(?9, '')
          WHERE EXISTS (SELECT 1 FROM entities WHERE id = ?3)
            AND EXISTS (SELECT 1 FROM entities WHERE id = ?4)",
         params![
@@ -30,7 +33,8 @@ pub fn upsert(db: &Database, edge: &Edge) -> Result<()> {
             edge.kind,
             edge.location.uri,
             edge.confidence as f64,
-            edge.derived_at_version,
+            prov_kind,
+            prov_sha,
         ],
     )?;
     Ok(())
@@ -53,7 +57,7 @@ pub fn get_for_entity(
     if let Some(kind_val) = kind {
         let sql = format!(
             "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
-                    derived_at_version
+                    derived_at_kind, derived_at_sha
              FROM edges WHERE ({from_clause} OR {to_clause}) AND kind = ?3
              LIMIT ?2"
         );
@@ -64,7 +68,7 @@ pub fn get_for_entity(
     } else {
         let sql = format!(
             "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
-                    derived_at_version
+                    derived_at_kind, derived_at_sha
              FROM edges WHERE ({from_clause} OR {to_clause})
              LIMIT ?2"
         );
@@ -78,7 +82,7 @@ pub fn get_for_entity(
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Edge>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
-                derived_at_version
+                derived_at_kind, derived_at_sha
          FROM edges WHERE corpus_id = ?1 ORDER BY id ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_edge)?;
@@ -165,13 +169,19 @@ pub fn out_degree(db: &Database, corpus_id: &str, entity_id: &str) -> Result<u32
 
 fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
     // Column order: id(0), corpus_id(1), from_entity_id(2), to_entity_id(3),
-    //               kind(4), location_uri(5), confidence(6), derived_at_version(7)
+    //               kind(4), location_uri(5), confidence(6), derived_at_kind(7), derived_at_sha(8)
     let uri: String = row.get(5)?;
     let location = Location::parse(&uri).unwrap_or_else(|_| Location {
         corpus_id: String::new(),
         path: uri.clone(),
         uri,
     });
+    let prov_kind: Option<String> = row.get(7)?;
+    let prov_sha: Option<String> = row.get(8)?;
+    let provenance = match (prov_kind.as_deref(), prov_sha.as_deref()) {
+        (Some(k), Some(s)) if !s.is_empty() => Provenance::from_columns(k, s).ok(),
+        _ => None,
+    };
     Ok(Edge {
         id: row.get(0)?,
         corpus_id: row.get(1)?,
@@ -180,7 +190,7 @@ fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
         kind: row.get(4)?,
         location,
         confidence: row.get::<_, f64>(6)? as f32,
-        derived_at_version: row.get(7)?,
+        provenance,
     })
 }
 

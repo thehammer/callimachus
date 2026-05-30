@@ -11,6 +11,7 @@ use crate::{
     indexing::model_tier::{ModelTier, ModelTierRouter, TierConfig},
     storage::{StorageBackend, run_log::PassStats},
     types::{Corpus, Edge, Entity, EntityContract, Layer2CacheKey},
+    types::provenance::Provenance,
 };
 
 use super::{
@@ -159,7 +160,7 @@ pub async fn run(
                                 kind: spec.kind.clone(),
                                 location: crate::types::Location::new(&contract.corpus_id, ""),
                                 confidence: 0.5,
-                                derived_at_version: current_version.clone(),
+                                provenance: current_version.as_deref().map(Provenance::concrete),
                             };
                             db.edge_upsert(&edge)?;
                         }
@@ -183,7 +184,7 @@ pub async fn run(
                                     kind: spec.kind.clone(),
                                     location: crate::types::Location::new(&contract.corpus_id, ""),
                                     confidence: 0.5,
-                                    derived_at_version: current_version.clone(),
+                                    provenance: current_version.as_deref().map(Provenance::concrete),
                                 };
                                 db.edge_upsert(&edge)?;
                             }
@@ -411,7 +412,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
                 model,
                 model_tier: tier_str,
                 generated_at: now,
-                derived_at_version: ctx.current_version.clone(),
+                provenance: ctx.current_version.as_deref().map(Provenance::concrete),
             };
 
             let verified_by_edges = extracted

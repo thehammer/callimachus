@@ -1,9 +1,9 @@
-//! RED-phase behavioral tests for migration 013 (honest provenance schema).
+//! Schema-level tests covering migrations 013 and 015 (honest provenance).
 //!
-//! Opens a fresh in-memory database (which runs all migrations through 013)
-//! and asserts the resulting schema shape via `PRAGMA table_info(...)`,
+//! Opens a fresh in-memory database (which runs all migrations through the
+//! latest) and asserts the resulting schema shape via `PRAGMA table_info(...)`,
 //! `PRAGMA index_list(...)`, and `sqlite_master` queries. Also verifies the
-//! backfill-SQL contract and the history-table uniqueness constraint.
+//! history-table uniqueness constraint.
 //!
 //! All tests use `Database::open_in_memory()` directly so they can reach the
 //! raw `rusqlite::Connection` via `db.conn()`. No `StorageBackend` methods are
@@ -12,16 +12,16 @@
 //! # Coverage
 //!
 //! 1. `entities_head_table_has_provenance_and_content_hash_columns` — the three
-//!    new columns on `entities` exist after migration 013.
+//!    new columns on `entities` exist after migrations 013+015.
 //! 2. `chunks_head_table_has_new_columns` — `chunks` gained `derived_at_kind`,
 //!    `derived_at_sha`, `file_shape_hash`, and `entity_id_list`.
 //! 3. `embeddings_head_table_has_provenance_and_context_hash_columns` — the
 //!    three new columns on `embeddings` exist.
 //! 4. `all_head_tables_have_provenance_column_pair` — every head table that
-//!    participated in Part 1 of the migration has both `derived_at_kind` and
+//!    participated in Part 1 of migration 013 has both `derived_at_kind` and
 //!    `derived_at_sha`.
-//! 5. `legacy_derived_at_version_retained_on_entities` — `entities` still has
-//!    the backward-compat `derived_at_version` column from migration 012.
+//! 5. `legacy_derived_at_version_dropped` — migration 015 has dropped the
+//!    `derived_at_version` and `superseded_at_version` columns from all tables.
 //! 6. `new_tables_are_queryable_and_empty` — `layer2_cache`,
 //!    `artifact_tombstones`, and `embeddings_history` all exist and start empty.
 //! 7. `history_tables_have_provenance_and_superseded_at_sha_columns` —
@@ -32,13 +32,12 @@
 //!    `uq_entities_history_identity` index is present on `entities_history`.
 //! 9. `fresh_entities_row_defaults_concrete_kind` — a newly-inserted `entities`
 //!    row has `derived_at_kind='concrete'` (the DEFAULT) before any backfill.
-//! 10. `backfill_sql_copies_legacy_sha_into_derived_at_sha` — the exact UPDATE
-//!     SQL shape from Part 8 of the migration propagates `derived_at_version`
-//!     into `derived_at_sha` for rows that still have `derived_at_sha=''`.
-//! 11. `entities_history_unique_index_rejects_true_duplicate` — inserting two
+//! 10. `entities_history_unique_index_rejects_true_duplicate` — inserting two
 //!     `entities_history` rows with identical `(corpus_id, id, derived_at_kind,
 //!     derived_at_sha)` where `derived_at_sha` is non-empty fails with a
 //!     constraint error on the second insert.
+//! 11. `history_uniqueness_indexes_are_plain_column_only` — confirms that none
+//!     of the `uq_*_history_identity` indexes contain a COALESCE expression.
 
 use callimachus_core::Database;
 
@@ -180,17 +179,76 @@ fn all_head_tables_have_provenance_column_pair() {
     }
 }
 
-// ── Test 5: legacy derived_at_version is retained on entities ────────────────
+// ── Test 5: legacy derived_at_version and superseded_at_version are DROPPED ────
 
-/// Migration 013 retains `entities.derived_at_version` for backward compat.
-/// It must still be present after migration 013 runs.
+/// Migration 015 drops the `derived_at_version` and `superseded_at_version`
+/// columns from all head and history tables. After all migrations run neither
+/// column should appear on any table.
 #[test]
-fn legacy_derived_at_version_retained_on_entities() {
+fn legacy_derived_at_version_dropped() {
     let db = Database::open_in_memory().unwrap();
 
+    // Head tables that had derived_at_version before migration 015:
+    let head_tables = [
+        "entities",
+        "edges",
+        "entity_purposes",
+        "entity_contracts",
+        "entity_blocks",
+        "summaries",
+        "themes",
+    ];
+    for table in &head_tables {
+        assert!(
+            !has_column(&db, table, "derived_at_version"),
+            "{table} must NOT have derived_at_version after migration 015"
+        );
+    }
+
+    // History tables that had derived_at_version (chunks_history never had it):
+    let history_tables_with_derived = [
+        "entities_history",
+        "edges_history",
+        "entity_purposes_history",
+        "entity_contracts_history",
+        "entity_blocks_history",
+        "summaries_history",
+        "themes_history",
+    ];
+    for table in &history_tables_with_derived {
+        assert!(
+            !has_column(&db, table, "derived_at_version"),
+            "{table} must NOT have derived_at_version after migration 015"
+        );
+    }
+
+    // All history tables had superseded_at_version (embeddings_history is excluded
+    // — it was created fresh in migration 013 without it):
+    let history_tables_with_superseded = [
+        "entities_history",
+        "edges_history",
+        "entity_purposes_history",
+        "entity_contracts_history",
+        "entity_blocks_history",
+        "summaries_history",
+        "themes_history",
+        "chunks_history",
+    ];
+    for table in &history_tables_with_superseded {
+        assert!(
+            !has_column(&db, table, "superseded_at_version"),
+            "{table} must NOT have superseded_at_version after migration 015"
+        );
+    }
+
+    // embeddings_history was created fresh in 013 without either column — still clean.
     assert!(
-        has_column(&db, "entities", "derived_at_version"),
-        "entities must still have derived_at_version (legacy compat) after migration 013"
+        !has_column(&db, "embeddings_history", "derived_at_version"),
+        "embeddings_history must NOT have derived_at_version"
+    );
+    assert!(
+        !has_column(&db, "embeddings_history", "superseded_at_version"),
+        "embeddings_history must NOT have superseded_at_version"
     );
 }
 
@@ -301,99 +359,25 @@ fn fresh_entities_row_defaults_concrete_kind() {
     );
 }
 
-// ── Test 10: backfill SQL copies legacy SHA into derived_at_sha ───────────────
-
-/// The Part-8 backfill statement `UPDATE entities SET derived_at_sha =
-/// COALESCE(derived_at_version,'') WHERE derived_at_sha=''` must propagate
-/// `derived_at_version` into `derived_at_sha` for rows that still have the
-/// empty default.
-///
-/// On a fresh DB the migration has already run, so we simulate the pre-backfill
-/// state by inserting a row with an explicit `derived_at_sha=''` (overriding the
-/// default) and `derived_at_version='deadbeef'`, then re-running the backfill
-/// statement.
-#[test]
-fn backfill_sql_copies_legacy_sha_into_derived_at_sha() {
-    let db = Database::open_in_memory().unwrap();
-    let conn = db.conn();
-
-    conn.execute(
-        "INSERT INTO corpora (id, name, kind, source, status, created_at) \
-         VALUES ('corp-backfill', 'BF Corp', 'code', '/tmp', 'registered', datetime('now'))",
-        [],
-    )
-    .expect("insert corpus");
-
-    // Insert with explicit derived_at_sha='' and derived_at_version='deadbeef'
-    // to simulate a row written before the backfill ran.
-    conn.execute(
-        "INSERT INTO entities \
-         (id, corpus_id, canonical_name, kind, aliases, appearance_count, confidence, \
-          derived_at_version, derived_at_sha) \
-         VALUES ('ent-bf', 'corp-backfill', 'BFEntity', 'fn', '[]', 1, 1.0, 'deadbeef', '')",
-        [],
-    )
-    .expect("insert entity with blank derived_at_sha");
-
-    // Re-run the Part-8 backfill SQL from migration 013.
-    conn.execute(
-        "UPDATE entities SET derived_at_sha = COALESCE(derived_at_version, '') \
-         WHERE derived_at_sha = ''",
-        [],
-    )
-    .expect("backfill UPDATE must succeed");
-
-    let sha: String = conn
-        .query_row(
-            "SELECT derived_at_sha FROM entities WHERE id = 'ent-bf'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("query derived_at_sha after backfill");
-
-    assert_eq!(
-        sha, "deadbeef",
-        "derived_at_sha must equal the legacy derived_at_version after backfill"
-    );
-
-    let kind: String = conn
-        .query_row(
-            "SELECT derived_at_kind FROM entities WHERE id = 'ent-bf'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("query derived_at_kind after backfill");
-
-    assert_eq!(
-        kind, "concrete",
-        "derived_at_kind must remain 'concrete' (the default) after backfill"
-    );
-}
-
-// ── Test 11: entities_history unique index rejects true duplicate ─────────────
+// ── Test 10: entities_history unique index rejects true duplicate ─────────────
 
 /// Inserting two `entities_history` rows with identical
-/// `(corpus_id, id, derived_at_kind, derived_at_sha)` — where `derived_at_sha`
-/// is NON-empty — must fail with a constraint error on the second insert.
-/// The first insert must succeed.
+/// `(corpus_id, id, derived_at_kind, derived_at_sha)` must fail with a
+/// constraint error on the second insert. The first insert must succeed.
 ///
-/// The uniqueness index from migration 013 is
-/// `uq_entities_history_identity` keyed on
-/// `(corpus_id, id, derived_at_kind, COALESCE(NULLIF(derived_at_sha,''),
-/// derived_at_version, ''))`. For a non-empty `derived_at_sha` the COALESCE
-/// resolves to `derived_at_sha`, so duplicates are rejected.
+/// Migration 015 recreated the uniqueness index as a plain column-only index
+/// `(corpus_id, id, derived_at_kind, derived_at_sha)` — no COALESCE.
 #[test]
 fn entities_history_unique_index_rejects_true_duplicate() {
     let db = Database::open_in_memory().unwrap();
     let conn = db.conn();
 
-    // No FK on history tables (per migration 012 comments), so we can insert
-    // without seeding a corpus row.
+    // No FK on history tables, so we can insert without seeding a corpus row.
     let insert = |n: i32| -> rusqlite::Result<usize> {
         conn.execute(
             "INSERT INTO entities_history \
              (corpus_id, id, canonical_name, kind, aliases, appearance_count, confidence, \
-              derived_at_kind, derived_at_sha, superseded_at_version, superseded_at) \
+              derived_at_kind, derived_at_sha, superseded_at_sha, superseded_at) \
              VALUES ('c1', 'e1', 'EntityOne', 'fn', '[]', 1, 1.0, \
                      'concrete', 'abc', 'abc', datetime('now'))",
             rusqlite::params![],
@@ -411,4 +395,41 @@ fn entities_history_unique_index_rejects_true_duplicate() {
         "second entities_history insert with duplicate (corpus_id, id, derived_at_kind, \
          derived_at_sha) must fail with a constraint error"
     );
+}
+
+// ── Test 11: uniqueness indexes are plain column-only (no COALESCE) ───────────
+
+/// Migration 015 dropped the COALESCE-based indexes from 013 and recreated
+/// them as plain column-only indexes. Verify that none of the
+/// `uq_*_history_identity` indexes reference COALESCE in `sqlite_master`.
+#[test]
+fn history_uniqueness_indexes_are_plain_column_only() {
+    let db = Database::open_in_memory().unwrap();
+    let conn = db.conn();
+
+    let index_names = [
+        "uq_entities_history_identity",
+        "uq_edges_history_identity",
+        "uq_entity_purposes_history_identity",
+        "uq_entity_contracts_history_identity",
+        "uq_entity_blocks_history_identity",
+        "uq_summaries_history_identity",
+        "uq_themes_history_identity",
+        "uq_chunks_history_identity",
+    ];
+
+    for name in &index_names {
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                rusqlite::params![name],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("index {name} not found in sqlite_master: {e}"));
+
+        assert!(
+            !sql.to_uppercase().contains("COALESCE"),
+            "index {name} must not contain COALESCE after migration 015; got: {sql}"
+        );
+    }
 }

@@ -468,8 +468,8 @@ async fn convergence_dry_run() {
     // must return fewer entities from REF than from the history-aware paths.
     //
     // NOTE: entity_list_at_sha with ancestry=None uses each entity's effective
-    // provenance SHA (COALESCE of derived_at_sha and derived_at_version) to
-    // check validity.  Since REF's entities only have tags rooted at C3,
+    // provenance SHA (derived_at_sha) to check validity.
+    // Since REF's entities only have tags rooted at C3,
     // querying at C1 or C2 returns nothing from REF.
     let c1_sha = format!("git:{}", fix.c1);
     let c2_sha = format!("git:{}", fix.c2);
@@ -581,10 +581,6 @@ async fn convergence_dry_run() {
     // in the REF pinakes carries RangePredating(C3) because the indexer has not
     // walked history and cannot prove the entity was introduced at C3.
     //
-    // Currently entity_store.upsert does not write derived_at_sha or
-    // derived_at_kind for HEAD entities; they default to 'concrete' and ''
-    // respectively (resolved via COALESCE to derived_at_version).
-    //
     // TODO (future PR): implement HEAD-mode RangePredating stamping.  Once done:
     //   - REF greet_v2 should carry RangePredating(C3) (queried from derived_at_kind)
     //   - B greet_v2 should carry Concrete(C3) (forward walk diff proved it changed)
@@ -595,9 +591,9 @@ async fn convergence_dry_run() {
         .find(|e| e.canonical_name == "greet_v2");
     if let Some(e) = ref_greet_v2 {
         observe!(
-            "soft: REF greet_v2 derived_at_version={:?} \
+            "soft: REF greet_v2 provenance={:?} \
              (once HEAD-mode RangePredating is implemented, this should be RangePredating(C3))",
-            e.derived_at_version
+            e.provenance
         );
     }
 

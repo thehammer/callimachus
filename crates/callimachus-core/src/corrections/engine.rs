@@ -297,7 +297,7 @@ pub(crate) mod test_helpers {
             last_location: None,
             appearance_count: count,
             confidence,
-            derived_at_version: None,
+            provenance: None,
         }
     }
 }

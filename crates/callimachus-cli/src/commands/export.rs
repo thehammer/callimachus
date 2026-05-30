@@ -315,7 +315,7 @@ mod tests {
             last_location: None,
             appearance_count: 5,
             confidence: 0.8,
-            derived_at_version: None,
+            provenance: None,
         };
         db.entity_upsert(&e).unwrap();
         e
@@ -346,7 +346,7 @@ mod tests {
             model: "unknown".to_string(),
             model_tier: "unknown".to_string(),
             generated_at: chrono::Utc::now().to_rfc3339(),
-            derived_at_version: None,
+            provenance: None,
         };
         db.summary_upsert(&s).unwrap();
     }

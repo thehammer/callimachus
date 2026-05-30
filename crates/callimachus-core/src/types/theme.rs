@@ -1,3 +1,4 @@
+use crate::types::provenance::Provenance;
 use serde::{Deserialize, Serialize};
 
 /// A corpus-level architectural invariant or recurring pattern.
@@ -13,10 +14,10 @@ pub struct Theme {
     /// Coarse quality tier: "opus" > "sonnet" > "haiku" > "unknown".
     pub model_tier: String,
     pub generated_at: String,
-    /// The manifest `current_version` at which this theme was last written.
-    /// `None` for rows that pre-date migration 012.
+    /// The honest-provenance tag for this theme. `None` for rows that
+    /// pre-date migration 013.
     #[serde(default)]
-    pub derived_at_version: Option<String>,
+    pub provenance: Option<Provenance>,
 }
 
 impl Default for Theme {
@@ -30,7 +31,7 @@ impl Default for Theme {
             model: String::new(),
             model_tier: String::new(),
             generated_at: String::new(),
-            derived_at_version: None,
+            provenance: None,
         }
     }
 }

@@ -291,7 +291,7 @@ impl StorageBackend for SqliteBackend {
         entity_store::list_taxonomy(&db!(self))
     }
 
-    fn entity_list_at_version(&self, corpus_id: &str, version: &str) -> Result<Vec<Entity>> {
+    fn entity_list_by_sha(&self, corpus_id: &str, sha: &str) -> Result<Vec<Entity>> {
         let guard = db!(self);
         let conn = guard.conn();
         // entities_history lacks abstract_kind; substitute '' so row_to_entity's
@@ -300,36 +300,36 @@ impl StorageBackend for SqliteBackend {
             "SELECT id, corpus_id, canonical_name, kind, abstract_kind,
                     aliases, description,
                     first_location_uri, last_location_uri,
-                    appearance_count, confidence, derived_at_version
+                    appearance_count, confidence, derived_at_kind, derived_at_sha
              FROM entities
-             WHERE corpus_id = ?1 AND derived_at_version = ?2
+             WHERE corpus_id = ?1 AND derived_at_sha = ?2
              UNION ALL
              SELECT id, corpus_id, canonical_name, kind, '' AS abstract_kind,
                     aliases, description,
                     first_location_uri, last_location_uri,
-                    appearance_count, confidence, derived_at_version
+                    appearance_count, confidence, derived_at_kind, derived_at_sha
              FROM entities_history
-             WHERE corpus_id = ?1 AND derived_at_version = ?2",
+             WHERE corpus_id = ?1 AND derived_at_sha = ?2",
         )?;
         let rows = stmt.query_map(
-            rusqlite::params![corpus_id, version],
+            rusqlite::params![corpus_id, sha],
             entity_store::row_to_entity,
         )?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(crate::error::CalError::from)
     }
 
-    fn entity_count_at_version(&self, corpus_id: &str, version: &str) -> Result<u64> {
+    fn entity_count_by_sha(&self, corpus_id: &str, sha: &str) -> Result<u64> {
         let guard = db!(self);
         let n: i64 = guard.conn().query_row(
             "SELECT COUNT(*) FROM (
                SELECT id FROM entities
-                 WHERE corpus_id = ?1 AND derived_at_version = ?2
+                 WHERE corpus_id = ?1 AND derived_at_sha = ?2
                UNION ALL
                SELECT id FROM entities_history
-                 WHERE corpus_id = ?1 AND derived_at_version = ?2
+                 WHERE corpus_id = ?1 AND derived_at_sha = ?2
              )",
-            rusqlite::params![corpus_id, version],
+            rusqlite::params![corpus_id, sha],
             |r| r.get(0),
         )?;
         Ok(n as u64)
@@ -616,82 +616,82 @@ impl StorageBackend for SqliteBackend {
         &self,
         entity_id: &str,
         corpus_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<bool> {
         let guard = db!(self);
-        history::archive_entity(guard.conn(), entity_id, corpus_id, superseded_at_version)
+        history::archive_entity(guard.conn(), entity_id, corpus_id, superseded_at_sha)
     }
 
     fn archive_edges_for_entity(
         &self,
         entity_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<u64> {
         let guard = db!(self);
-        history::archive_edges_for_entity(guard.conn(), entity_id, superseded_at_version)
+        history::archive_edges_for_entity(guard.conn(), entity_id, superseded_at_sha)
     }
 
     fn archive_purposes_for_entity(
         &self,
         entity_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<u64> {
         let guard = db!(self);
-        history::archive_purposes_for_entity(guard.conn(), entity_id, superseded_at_version)
+        history::archive_purposes_for_entity(guard.conn(), entity_id, superseded_at_sha)
     }
 
     fn archive_contracts_for_entity(
         &self,
         entity_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<u64> {
         let guard = db!(self);
-        history::archive_contracts_for_entity(guard.conn(), entity_id, superseded_at_version)
+        history::archive_contracts_for_entity(guard.conn(), entity_id, superseded_at_sha)
     }
 
     fn archive_blocks_for_entity(
         &self,
         entity_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<u64> {
         let guard = db!(self);
-        history::archive_blocks_for_entity(guard.conn(), entity_id, superseded_at_version)
+        history::archive_blocks_for_entity(guard.conn(), entity_id, superseded_at_sha)
     }
 
     fn archive_summaries_for_target(
         &self,
         corpus_id: &str,
         target_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<u64> {
         let guard = db!(self);
         history::archive_summaries_for_target(
             guard.conn(),
             corpus_id,
             target_id,
-            superseded_at_version,
+            superseded_at_sha,
         )
     }
 
-    fn archive_chunk(&self, chunk_id: &str, superseded_at_version: &str) -> Result<bool> {
+    fn archive_chunk(&self, chunk_id: &str, superseded_at_sha: &str) -> Result<bool> {
         let guard = db!(self);
-        history::archive_chunk(guard.conn(), chunk_id, superseded_at_version)
+        history::archive_chunk(guard.conn(), chunk_id, superseded_at_sha)
     }
 
     fn archive_theme(
         &self,
         theme_id: &str,
         corpus_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<bool> {
         let guard = db!(self);
-        history::archive_theme(guard.conn(), theme_id, corpus_id, superseded_at_version)
+        history::archive_theme(guard.conn(), theme_id, corpus_id, superseded_at_sha)
     }
 
     fn archive_themes_for_corpus(
         &self,
         corpus_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<u64> {
         let guard = db!(self);
         let conn = guard.conn();
@@ -700,15 +700,14 @@ impl StorageBackend for SqliteBackend {
             "INSERT OR IGNORE INTO themes_history
                (id, corpus_id, title, statement, confidence,
                 model, model_tier, generated_at,
-                derived_at_version, derived_at_kind, derived_at_sha,
-                superseded_at_version, superseded_at_sha, superseded_at)
+                derived_at_kind, derived_at_sha,
+                superseded_at_sha, superseded_at)
              SELECT id, corpus_id, title, statement, confidence,
                     model, model_tier, generated_at,
-                    derived_at_version, derived_at_kind,
-                    COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
-                    ?2, ?2, ?3
+                    derived_at_kind, derived_at_sha,
+                    ?2, ?3
              FROM themes WHERE corpus_id = ?1",
-            rusqlite::params![corpus_id, superseded_at_version, now],
+            rusqlite::params![corpus_id, superseded_at_sha, now],
         )?;
         Ok(rows as u64)
     }
@@ -717,7 +716,7 @@ impl StorageBackend for SqliteBackend {
         &self,
         corpus_id: &str,
         dirty_chunk_ids: &[String],
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<CascadeStats> {
         self.with_write_tx(|tx| {
             let mut stats = CascadeStats::default();
@@ -748,21 +747,21 @@ impl StorageBackend for SqliteBackend {
 
                     for entity_id in &entity_ids {
                         // Archive before FK-cascade delete wipes the head rows.
-                        history::archive_edges_for_entity(tx, entity_id, superseded_at_version)?;
-                        history::archive_purposes_for_entity(tx, entity_id, superseded_at_version)?;
+                        history::archive_edges_for_entity(tx, entity_id, superseded_at_sha)?;
+                        history::archive_purposes_for_entity(tx, entity_id, superseded_at_sha)?;
                         history::archive_contracts_for_entity(
                             tx,
                             entity_id,
-                            superseded_at_version,
+                            superseded_at_sha,
                         )?;
-                        history::archive_blocks_for_entity(tx, entity_id, superseded_at_version)?;
+                        history::archive_blocks_for_entity(tx, entity_id, superseded_at_sha)?;
                         history::archive_summaries_for_target(
                             tx,
                             corpus_id,
                             entity_id,
-                            superseded_at_version,
+                            superseded_at_sha,
                         )?;
-                        history::archive_entity(tx, entity_id, corpus_id, superseded_at_version)?;
+                        history::archive_entity(tx, entity_id, corpus_id, superseded_at_sha)?;
 
                         // Delete entity — FK ON DELETE CASCADE removes edges/purposes/contracts/blocks.
                         tx.execute(
@@ -783,13 +782,13 @@ impl StorageBackend for SqliteBackend {
                     tx,
                     corpus_id,
                     chunk_id,
-                    superseded_at_version,
+                    superseded_at_sha,
                 )?;
                 // Archive this chunk's embeddings before the FK cascade wipes
                 // them, so they survive in embeddings_history with honest
                 // supersession provenance (closes embeddings-no-history-archival).
-                embedding_store::archive_for_chunk(tx, chunk_id, superseded_at_version)?;
-                history::archive_chunk(tx, chunk_id, superseded_at_version)?;
+                embedding_store::archive_for_chunk(tx, chunk_id, superseded_at_sha)?;
+                history::archive_chunk(tx, chunk_id, superseded_at_sha)?;
 
                 // Delete chunk — FK ON DELETE CASCADE removes embeddings.
                 tx.execute(
@@ -834,19 +833,12 @@ impl StorageBackend for SqliteBackend {
         // its provenance tags is valid at the target and it is not tombstoned
         // ancestrally. The head row's data is preferred for the returned entity;
         // otherwise a valid archived row is materialised.
-        //
-        // Effective SHA bridges the migration-013 transition: code that predates
-        // the history layer (e.g. the structure pass) still populates only
-        // `derived_at_version`, leaving `derived_at_sha` empty. We therefore read
-        // COALESCE(NULLIF(derived_at_sha,''), derived_at_version, '') — the same
-        // expression the history uniqueness indexes key off.
         let mut stmt = conn.prepare(
             "SELECT id, corpus_id, canonical_name, kind, abstract_kind,
                     aliases, description,
                     first_location_uri, last_location_uri,
-                    appearance_count, confidence, derived_at_version,
-                    derived_at_kind,
-                    COALESCE(NULLIF(derived_at_sha,''), derived_at_version, '') AS eff_sha,
+                    appearance_count, confidence,
+                    derived_at_kind, derived_at_sha,
                     1 AS is_head
              FROM entities
              WHERE corpus_id = ?1
@@ -854,21 +846,20 @@ impl StorageBackend for SqliteBackend {
              SELECT id, corpus_id, canonical_name, kind, '' AS abstract_kind,
                     aliases, description,
                     first_location_uri, last_location_uri,
-                    appearance_count, confidence, derived_at_version,
-                    derived_at_kind,
-                    COALESCE(NULLIF(derived_at_sha,''), derived_at_version, '') AS eff_sha,
+                    appearance_count, confidence,
+                    derived_at_kind, derived_at_sha,
                     0 AS is_head
              FROM entities_history
              WHERE corpus_id = ?1",
         )?;
 
         // Each row → (Entity, provenance, is_head). row_to_entity reads the
-        // first 12 columns; derived_at_kind/sha/is_head are columns 13/14/15.
+        // first 13 columns; is_head is column 13.
         let rows = stmt.query_map(rusqlite::params![corpus_id], |row| {
             let entity = entity_store::row_to_entity(row)?;
-            let kind: String = row.get(12)?;
-            let sha: String = row.get(13)?;
-            let is_head: i64 = row.get(14)?;
+            let kind: String = row.get(11)?;
+            let sha: String = row.get(12)?;
+            let is_head: i64 = row.get(13)?;
             Ok((entity, kind, sha, is_head != 0))
         })?;
 
@@ -1261,8 +1252,8 @@ impl StorageBackend for SqliteBackend {
     fn chunk_history_insert(
         &self,
         chunk: &Chunk,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         let guard = db!(self);
         let now = chrono::Utc::now().to_rfc3339();
@@ -1273,8 +1264,8 @@ impl StorageBackend for SqliteBackend {
               introduced_at_version, last_modified_at_version,
               last_modified_commit_message, last_modified_author,
               derived_at_kind, derived_at_sha,
-              superseded_at_version, superseded_at_sha, superseded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10,?11,NULL,NULL,'concrete',?10,?12,?12,?13)",
+              superseded_at_sha, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10,?11,NULL,NULL,'concrete',?10,?12,?13)",
             rusqlite::params![
                 chunk.id,
                 chunk.corpus_id,
@@ -1285,9 +1276,9 @@ impl StorageBackend for SqliteBackend {
                 chunk.byte_length as i64,
                 chunk.created_at,
                 chunk.source_hash,
-                derived_at_version,
-                derived_at_version,
-                superseded_at_version,
+                derived_at_sha,
+                derived_at_sha,
+                superseded_at_sha,
                 now,
             ],
         )?;
@@ -1297,14 +1288,14 @@ impl StorageBackend for SqliteBackend {
     fn chunk_history_update_source_hash(
         &self,
         chunk_id: &str,
-        derived_at_version: &str,
+        derived_at_sha: &str,
         source_hash: &str,
     ) -> Result<()> {
         let guard = db!(self);
         guard.conn().execute(
             "UPDATE chunks_history SET source_hash = ?1
              WHERE id = ?2 AND introduced_at_version = ?3",
-            rusqlite::params![source_hash, chunk_id, derived_at_version],
+            rusqlite::params![source_hash, chunk_id, derived_at_sha],
         )?;
         Ok(())
     }
@@ -1312,7 +1303,7 @@ impl StorageBackend for SqliteBackend {
     fn chunk_history_update_version(
         &self,
         chunk_id: &str,
-        derived_at_version: &str,
+        derived_at_sha: &str,
         last_modified_at_version: &str,
         commit_message: Option<&str>,
         author: Option<&str>,
@@ -1330,7 +1321,7 @@ impl StorageBackend for SqliteBackend {
                 commit_message,
                 author,
                 chunk_id,
-                derived_at_version,
+                derived_at_sha,
             ],
         )?;
         Ok(())
@@ -1339,8 +1330,8 @@ impl StorageBackend for SqliteBackend {
     fn entity_history_insert(
         &self,
         entity: &Entity,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         let guard = db!(self);
         let now = chrono::Utc::now().to_rfc3339();
@@ -1351,9 +1342,9 @@ impl StorageBackend for SqliteBackend {
             "INSERT OR IGNORE INTO entities_history
              (id, corpus_id, canonical_name, kind, aliases, description,
               first_location_uri, last_location_uri, appearance_count, confidence,
-              derived_at_version, derived_at_kind, derived_at_sha,
-              superseded_at_version, superseded_at_sha, superseded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'concrete',?11,?12,?12,?13)",
+              derived_at_kind, derived_at_sha,
+              superseded_at_sha, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'concrete',?11,?12,?13)",
             rusqlite::params![
                 entity.id,
                 entity.corpus_id,
@@ -1365,8 +1356,8 @@ impl StorageBackend for SqliteBackend {
                 last_uri,
                 entity.appearance_count as i64,
                 entity.confidence as f64,
-                derived_at_version,
-                superseded_at_version,
+                derived_at_sha,
+                superseded_at_sha,
                 now,
             ],
         )?;
@@ -1376,8 +1367,8 @@ impl StorageBackend for SqliteBackend {
     fn edge_history_insert(
         &self,
         edge: &Edge,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         let guard = db!(self);
         let now = chrono::Utc::now().to_rfc3339();
@@ -1385,10 +1376,10 @@ impl StorageBackend for SqliteBackend {
         guard.conn().execute(
             "INSERT OR IGNORE INTO edges_history
              (id, corpus_id, from_entity_id, to_entity_id, kind,
-              location_uri, confidence, derived_at_version,
+              location_uri, confidence,
               derived_at_kind, derived_at_sha,
-              superseded_at_version, superseded_at_sha, superseded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'concrete',?8,?9,?9,?10)",
+              superseded_at_sha, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,'concrete',?8,?9,?10)",
             rusqlite::params![
                 edge.id,
                 edge.corpus_id,
@@ -1397,8 +1388,8 @@ impl StorageBackend for SqliteBackend {
                 edge.kind,
                 edge.location.uri,
                 edge.confidence as f64,
-                derived_at_version,
-                superseded_at_version,
+                derived_at_sha,
+                superseded_at_sha,
                 now,
             ],
         )?;
@@ -1408,8 +1399,8 @@ impl StorageBackend for SqliteBackend {
     fn summary_history_insert(
         &self,
         summary: &Summary,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         let guard = db!(self);
         let now = chrono::Utc::now().to_rfc3339();
@@ -1418,9 +1409,9 @@ impl StorageBackend for SqliteBackend {
             "INSERT OR IGNORE INTO summaries_history
              (id, corpus_id, target_kind, target_id, depth, text,
               model, model_tier, generated_at,
-              derived_at_version, derived_at_kind, derived_at_sha,
-              superseded_at_version, superseded_at_sha, superseded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'concrete',?10,?11,?11,?12)",
+              derived_at_kind, derived_at_sha,
+              superseded_at_sha, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'concrete',?10,?11,?12)",
             rusqlite::params![
                 summary.id,
                 summary.corpus_id,
@@ -1431,8 +1422,8 @@ impl StorageBackend for SqliteBackend {
                 summary.model,
                 summary.model_tier,
                 summary.generated_at,
-                derived_at_version,
-                superseded_at_version,
+                derived_at_sha,
+                superseded_at_sha,
                 now,
             ],
         )?;
@@ -1442,17 +1433,17 @@ impl StorageBackend for SqliteBackend {
     fn purpose_history_insert(
         &self,
         purpose: &EntityPurpose,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         let guard = db!(self);
         let now = chrono::Utc::now().to_rfc3339();
         guard.conn().execute(
             "INSERT OR IGNORE INTO entity_purposes_history
              (entity_id, corpus_id, purpose, model, model_tier, generated_at,
-              derived_at_version, derived_at_kind, derived_at_sha,
-              superseded_at_version, superseded_at_sha, superseded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,'concrete',?7,?8,?8,?9)",
+              derived_at_kind, derived_at_sha,
+              superseded_at_sha, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,'concrete',?7,?8,?9)",
             rusqlite::params![
                 purpose.entity_id,
                 purpose.corpus_id,
@@ -1460,8 +1451,8 @@ impl StorageBackend for SqliteBackend {
                 purpose.model,
                 purpose.model_tier,
                 purpose.generated_at,
-                derived_at_version,
-                superseded_at_version,
+                derived_at_sha,
+                superseded_at_sha,
                 now,
             ],
         )?;
@@ -1471,8 +1462,8 @@ impl StorageBackend for SqliteBackend {
     fn contract_history_insert(
         &self,
         contract: &EntityContract,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         let guard = db!(self);
         let now = chrono::Utc::now().to_rfc3339();
@@ -1488,9 +1479,9 @@ impl StorageBackend for SqliteBackend {
               is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete,
               panic_call_count, debt_markers, assumptions, risks,
               intent_gap, caller_notes, model, model_tier, generated_at,
-              derived_at_version, derived_at_kind, derived_at_sha,
-              superseded_at_version, superseded_at_sha, superseded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,'concrete',?22,?23,?23,?24)",
+              derived_at_kind, derived_at_sha,
+              superseded_at_sha, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,'concrete',?22,?23,?24)",
             rusqlite::params![
                 contract.entity_id,
                 contract.corpus_id,
@@ -1513,8 +1504,8 @@ impl StorageBackend for SqliteBackend {
                 contract.model,
                 contract.model_tier,
                 contract.generated_at,
-                derived_at_version,
-                superseded_at_version,
+                derived_at_sha,
+                superseded_at_sha,
                 now,
             ],
         )?;
@@ -1524,17 +1515,17 @@ impl StorageBackend for SqliteBackend {
     fn block_history_insert(
         &self,
         block: &EntityBlock,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         let guard = db!(self);
         let now = chrono::Utc::now().to_rfc3339();
         guard.conn().execute(
             "INSERT OR IGNORE INTO entity_blocks_history
              (id, entity_id, corpus_id, label, description, position,
-              derived_at_version, derived_at_kind, derived_at_sha,
-              superseded_at_version, superseded_at_sha, superseded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,'concrete',?7,?8,?8,?9)",
+              derived_at_kind, derived_at_sha,
+              superseded_at_sha, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,'concrete',?7,?8,?9)",
             rusqlite::params![
                 block.id,
                 block.entity_id,
@@ -1542,8 +1533,8 @@ impl StorageBackend for SqliteBackend {
                 block.label,
                 block.description,
                 block.position,
-                derived_at_version,
-                superseded_at_version,
+                derived_at_sha,
+                superseded_at_sha,
                 now,
             ],
         )?;
@@ -1553,8 +1544,8 @@ impl StorageBackend for SqliteBackend {
     fn theme_history_insert(
         &self,
         theme: &Theme,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()> {
         let guard = db!(self);
         let now = chrono::Utc::now().to_rfc3339();
@@ -1562,9 +1553,9 @@ impl StorageBackend for SqliteBackend {
             "INSERT OR IGNORE INTO themes_history
              (id, corpus_id, title, statement, confidence,
               model, model_tier, generated_at,
-              derived_at_version, derived_at_kind, derived_at_sha,
-              superseded_at_version, superseded_at_sha, superseded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'concrete',?9,?10,?10,?11)",
+              derived_at_kind, derived_at_sha,
+              superseded_at_sha, superseded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'concrete',?9,?10,?11)",
             rusqlite::params![
                 theme.id,
                 theme.corpus_id,
@@ -1574,8 +1565,8 @@ impl StorageBackend for SqliteBackend {
                 theme.model,
                 theme.model_tier,
                 theme.generated_at,
-                derived_at_version,
-                superseded_at_version,
+                derived_at_sha,
+                superseded_at_sha,
                 now,
             ],
         )?;
@@ -1584,10 +1575,10 @@ impl StorageBackend for SqliteBackend {
 
     // ── Backfill seeding helpers ──────────────────────────────────────────────
 
-    fn entity_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn entity_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
         let guard = db!(self);
         let mut stmt = guard.conn().prepare(
-            "SELECT id, COALESCE(derived_at_version, '') FROM entities WHERE corpus_id = ?1",
+            "SELECT id, derived_at_sha FROM entities WHERE corpus_id = ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -1596,10 +1587,10 @@ impl StorageBackend for SqliteBackend {
             .map_err(crate::error::CalError::from)
     }
 
-    fn chunk_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn chunk_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
         let guard = db!(self);
         let mut stmt = guard.conn().prepare(
-            "SELECT id, COALESCE(last_modified_at_version, '') FROM chunks WHERE corpus_id = ?1",
+            "SELECT id, derived_at_sha FROM chunks WHERE corpus_id = ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -1608,10 +1599,10 @@ impl StorageBackend for SqliteBackend {
             .map_err(crate::error::CalError::from)
     }
 
-    fn edge_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn edge_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
         let guard = db!(self);
         let mut stmt = guard.conn().prepare(
-            "SELECT id, COALESCE(derived_at_version, '') FROM edges WHERE corpus_id = ?1",
+            "SELECT id, derived_at_sha FROM edges WHERE corpus_id = ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -1620,10 +1611,10 @@ impl StorageBackend for SqliteBackend {
             .map_err(crate::error::CalError::from)
     }
 
-    fn summary_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn summary_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
         let guard = db!(self);
         let mut stmt = guard.conn().prepare(
-            "SELECT target_id, COALESCE(derived_at_version, '') FROM summaries WHERE corpus_id = ?1",
+            "SELECT target_id, derived_at_sha FROM summaries WHERE corpus_id = ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -1632,10 +1623,10 @@ impl StorageBackend for SqliteBackend {
             .map_err(crate::error::CalError::from)
     }
 
-    fn purpose_head_versions(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>> {
+    fn purpose_head_shas(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>> {
         let guard = db!(self);
         let mut stmt = guard.conn().prepare(
-            "SELECT entity_id, model, COALESCE(derived_at_version, '') FROM entity_purposes WHERE corpus_id = ?1",
+            "SELECT entity_id, model, derived_at_sha FROM entity_purposes WHERE corpus_id = ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
             Ok((
@@ -1647,10 +1638,10 @@ impl StorageBackend for SqliteBackend {
             .map_err(crate::error::CalError::from)
     }
 
-    fn contract_head_versions(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>> {
+    fn contract_head_shas(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>> {
         let guard = db!(self);
         let mut stmt = guard.conn().prepare(
-            "SELECT entity_id, model, COALESCE(derived_at_version, '') FROM entity_contracts WHERE corpus_id = ?1",
+            "SELECT entity_id, model, derived_at_sha FROM entity_contracts WHERE corpus_id = ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
             Ok((
@@ -1662,11 +1653,11 @@ impl StorageBackend for SqliteBackend {
             .map_err(crate::error::CalError::from)
     }
 
-    fn block_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn block_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
         let guard = db!(self);
-        // Return one entry per entity_id (max derived_at_version across blocks).
+        // Return one entry per entity_id (max derived_at_sha across blocks).
         let mut stmt = guard.conn().prepare(
-            "SELECT entity_id, COALESCE(MAX(derived_at_version), '')
+            "SELECT entity_id, MAX(derived_at_sha)
              FROM entity_blocks WHERE corpus_id = ?1 GROUP BY entity_id",
         )?;
         let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
@@ -1676,10 +1667,10 @@ impl StorageBackend for SqliteBackend {
             .map_err(crate::error::CalError::from)
     }
 
-    fn theme_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
+    fn theme_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>> {
         let guard = db!(self);
         let mut stmt = guard.conn().prepare(
-            "SELECT id, COALESCE(derived_at_version, '') FROM themes WHERE corpus_id = ?1",
+            "SELECT id, derived_at_sha FROM themes WHERE corpus_id = ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![corpus_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -1698,45 +1689,45 @@ impl StorageBackend for SqliteBackend {
             let ordered_shas: Vec<String> = {
                 let mut stmt = tx.prepare(
                     "WITH all_events AS (
-                         SELECT superseded_at_version AS sha, MAX(superseded_at) AS ts
+                         SELECT superseded_at_sha AS sha, MAX(superseded_at) AS ts
                            FROM entities_history
                           WHERE corpus_id = ?1
-                          GROUP BY superseded_at_version
+                          GROUP BY superseded_at_sha
                          UNION ALL
-                         SELECT superseded_at_version, MAX(superseded_at)
+                         SELECT superseded_at_sha, MAX(superseded_at)
                            FROM edges_history
                           WHERE corpus_id = ?1
-                          GROUP BY superseded_at_version
+                          GROUP BY superseded_at_sha
                          UNION ALL
-                         SELECT superseded_at_version, MAX(superseded_at)
+                         SELECT superseded_at_sha, MAX(superseded_at)
                            FROM entity_purposes_history
                           WHERE corpus_id = ?1
-                          GROUP BY superseded_at_version
+                          GROUP BY superseded_at_sha
                          UNION ALL
-                         SELECT superseded_at_version, MAX(superseded_at)
+                         SELECT superseded_at_sha, MAX(superseded_at)
                            FROM entity_contracts_history
                           WHERE corpus_id = ?1
-                          GROUP BY superseded_at_version
+                          GROUP BY superseded_at_sha
                          UNION ALL
-                         SELECT superseded_at_version, MAX(superseded_at)
+                         SELECT superseded_at_sha, MAX(superseded_at)
                            FROM entity_blocks_history
                           WHERE corpus_id = ?1
-                          GROUP BY superseded_at_version
+                          GROUP BY superseded_at_sha
                          UNION ALL
-                         SELECT superseded_at_version, MAX(superseded_at)
+                         SELECT superseded_at_sha, MAX(superseded_at)
                            FROM summaries_history
                           WHERE corpus_id = ?1
-                          GROUP BY superseded_at_version
+                          GROUP BY superseded_at_sha
                          UNION ALL
-                         SELECT superseded_at_version, MAX(superseded_at)
+                         SELECT superseded_at_sha, MAX(superseded_at)
                            FROM chunks_history
                           WHERE corpus_id = ?1
-                          GROUP BY superseded_at_version
+                          GROUP BY superseded_at_sha
                          UNION ALL
-                         SELECT superseded_at_version, MAX(superseded_at)
+                         SELECT superseded_at_sha, MAX(superseded_at)
                            FROM themes_history
                           WHERE corpus_id = ?1
-                          GROUP BY superseded_at_version
+                          GROUP BY superseded_at_sha
                      )
                      SELECT sha, MAX(ts) AS ts
                        FROM all_events
@@ -1812,7 +1803,7 @@ impl StorageBackend for SqliteBackend {
                     let count_sql = format!(
                         "SELECT COUNT(*) FROM {table} \
                          WHERE corpus_id = ?1 \
-                           AND superseded_at_version IN ({placeholders})"
+                           AND superseded_at_sha IN ({placeholders})"
                     );
                     let count: usize = {
                         let mut stmt = tx.prepare(&count_sql)?;
@@ -1828,7 +1819,7 @@ impl StorageBackend for SqliteBackend {
                         let delete_sql = format!(
                             "DELETE FROM {table} \
                              WHERE corpus_id = ?1 \
-                               AND superseded_at_version IN ({placeholders})"
+                               AND superseded_at_sha IN ({placeholders})"
                         );
                         let mut stmt = tx.prepare(&delete_sql)?;
                         let params_iter =
@@ -1995,15 +1986,14 @@ mod tests {
         let backend = make_backend();
         seed_corpus(&backend, "c1");
 
-        // Entity derived at C1 (head row stamps derived_at_version; the read
-        // bridges the empty derived_at_sha via COALESCE).
+        // Entity derived at C1 — provenance carries the honest SHA.
         let mut e = Entity::new(
             "ent-1".into(),
             "c1".into(),
             "Alpha".into(),
             "function".into(),
         );
-        e.derived_at_version = Some("git:C1".into());
+        e.provenance = Some(Provenance::concrete("git:C1"));
         backend.entity_upsert(&e).unwrap();
 
         // It dies at C2.
@@ -2059,7 +2049,7 @@ mod tests {
             "Alpha".into(),
             "function".into(),
         );
-        e.derived_at_version = Some("git:C1".into());
+        e.provenance = Some(Provenance::concrete("git:C1"));
         backend.entity_upsert(&e).unwrap();
         let emb = StoredEmbedding::new("c1", &chunk.id, "m", vec![1.0, 2.0]);
         backend

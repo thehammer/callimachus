@@ -4,6 +4,7 @@ use crate::{
     adapter::SourceAdapter,
     storage::{StorageBackend, run_log::PassStats},
     types::Corpus,
+    types::provenance::Provenance,
 };
 
 use super::{file_shape, pipeline::IndexOptions};
@@ -66,16 +67,16 @@ pub async fn run(
         return Ok(stats);
     }
 
-    // Stamp derived_at_version from the change manifest before writing.
+    // Stamp provenance from the change manifest before writing.
     let version = opts
         .change_manifest
         .as_ref()
         .map(|m| m.current_version.clone());
     for entity in &mut all_entities {
-        entity.derived_at_version = version.clone();
+        entity.provenance = version.as_deref().map(Provenance::concrete);
     }
     for edge in &mut all_edges {
-        edge.derived_at_version = version.clone();
+        edge.provenance = version.as_deref().map(Provenance::concrete);
     }
 
     // Phase 1: write parent paths and all entities.

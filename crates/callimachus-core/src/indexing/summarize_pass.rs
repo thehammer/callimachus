@@ -8,6 +8,7 @@ use crate::{
     indexing::model_tier::{ModelTier, ModelTierRouter, RoutingInputs},
     storage::{StorageBackend, run_log::PassStats},
     types::{Corpus, Layer2CacheKey, Summary, SummaryTargetKind, chunk::hash_content},
+    types::provenance::Provenance,
 };
 
 use super::{layer2_cache, pipeline::IndexOptions};
@@ -310,10 +311,10 @@ pub async fn run(
             if !opts.dry_run {
                 let model = corpus_llm.name().to_string();
                 let tier = model_tier(&model).to_string();
-                let derived_at_version = opts
+                let provenance = opts
                     .change_manifest
                     .as_ref()
-                    .map(|m| m.current_version.clone());
+                    .map(|m| Provenance::concrete(m.current_version.as_str()));
                 let summary = Summary {
                     id: Uuid::new_v4().to_string(),
                     corpus_id: corpus.id.clone(),
@@ -324,7 +325,7 @@ pub async fn run(
                     model,
                     model_tier: tier,
                     generated_at: chrono::Utc::now().to_rfc3339(),
-                    derived_at_version,
+                    provenance,
                 };
                 db.summary_upsert(&summary)?;
             }
@@ -354,7 +355,7 @@ fn make_summary(
     depth: &str,
     text: String,
     llm: &Arc<dyn LlmProvider>,
-    derived_at_version: Option<&str>,
+    version: Option<&str>,
 ) -> Summary {
     let model = llm.name().to_string();
     let tier = model_tier(&model).to_string();
@@ -368,6 +369,6 @@ fn make_summary(
         model,
         model_tier: tier,
         generated_at: chrono::Utc::now().to_rfc3339(),
-        derived_at_version: derived_at_version.map(str::to_string),
+        provenance: version.map(Provenance::concrete),
     }
 }

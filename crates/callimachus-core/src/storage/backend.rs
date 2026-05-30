@@ -144,18 +144,18 @@ pub trait StorageBackend: Send + Sync {
     /// Returns all rows from kind_taxonomy as (concrete_kind, corpus_kind, abstract_kind).
     fn kind_taxonomy_list(&self) -> Result<Vec<(String, String, String)>>;
 
-    /// List entities whose `derived_at_version` equals `version`, from both the
+    /// List entities whose `derived_at_sha` equals `sha`, from both the
     /// head `entities` table and `entities_history`. Used by [`VirtualHead`] to
     /// present the entity state as it was at a specific commit during backfill.
     ///
     /// [`VirtualHead`]: crate::storage::VirtualHead
-    fn entity_list_at_version(&self, corpus_id: &str, version: &str) -> Result<Vec<Entity>>;
+    fn entity_list_by_sha(&self, corpus_id: &str, sha: &str) -> Result<Vec<Entity>>;
 
-    /// Count entities whose `derived_at_version` equals `version`, from both the
+    /// Count entities whose `derived_at_sha` equals `sha`, from both the
     /// head `entities` table and `entities_history`. Used by [`VirtualHead`].
     ///
     /// [`VirtualHead`]: crate::storage::VirtualHead
-    fn entity_count_at_version(&self, corpus_id: &str, version: &str) -> Result<u64>;
+    fn entity_count_by_sha(&self, corpus_id: &str, sha: &str) -> Result<u64>;
 
     // ── Edge ──────────────────────────────────────────────────────────────────
 
@@ -306,31 +306,31 @@ pub trait StorageBackend: Send + Sync {
     // called exclusively by `BackfillStorageWrapper`.
 
     /// Write a chunk row directly into `chunks_history`.
-    /// `derived_at_version` and `superseded_at_version` must be non-empty.
+    /// `derived_at_sha` and `superseded_at_sha` must be non-empty.
     fn chunk_history_insert(
         &self,
         chunk: &Chunk,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()>;
 
     /// Update `source_hash` on a `chunks_history` row identified by
-    /// `(chunk_id, derived_at_version)`. Used by the backfill wrapper when
+    /// `(chunk_id, derived_at_sha)`. Used by the backfill wrapper when
     /// `chunk_set_source_hash` is called after `chunk_upsert`.
     fn chunk_history_update_source_hash(
         &self,
         chunk_id: &str,
-        derived_at_version: &str,
+        derived_at_sha: &str,
         source_hash: &str,
     ) -> Result<()>;
 
     /// Update version fields on a `chunks_history` row identified by
-    /// `(chunk_id, derived_at_version)`. Used by the backfill wrapper when
+    /// `(chunk_id, derived_at_sha)`. Used by the backfill wrapper when
     /// `chunk_set_history` is called after `chunk_upsert`.
     fn chunk_history_update_version(
         &self,
         chunk_id: &str,
-        derived_at_version: &str,
+        derived_at_sha: &str,
         last_modified_at_version: &str,
         commit_message: Option<&str>,
         author: Option<&str>,
@@ -340,8 +340,8 @@ pub trait StorageBackend: Send + Sync {
     fn entity_history_insert(
         &self,
         entity: &Entity,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()>;
 
     /// Write an edge row directly into `edges_history`.
@@ -349,75 +349,75 @@ pub trait StorageBackend: Send + Sync {
     fn edge_history_insert(
         &self,
         edge: &Edge,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()>;
 
     /// Write a summary row directly into `summaries_history`.
     fn summary_history_insert(
         &self,
         summary: &Summary,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()>;
 
     /// Write a purpose row directly into `entity_purposes_history`.
     fn purpose_history_insert(
         &self,
         purpose: &EntityPurpose,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()>;
 
     /// Write a contract row directly into `entity_contracts_history`.
     fn contract_history_insert(
         &self,
         contract: &EntityContract,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()>;
 
     /// Write a block row directly into `entity_blocks_history`.
     fn block_history_insert(
         &self,
         block: &EntityBlock,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()>;
 
     /// Write a theme row directly into `themes_history`.
     fn theme_history_insert(
         &self,
         theme: &Theme,
-        derived_at_version: &str,
-        superseded_at_version: &str,
+        derived_at_sha: &str,
+        superseded_at_sha: &str,
     ) -> Result<()>;
 
     // ── Backfill seeding helpers ──────────────────────────────────────────────
     //
-    // These return (artifact_key, derived_at_version) for all head-table rows
+    // These return (artifact_key, derived_at_sha) for all head-table rows
     // in a corpus. Used by `BackfillSupersession::seeded_from` to pre-populate
     // the supersession maps before the backward walk begins.
 
-    /// `(entity_id, derived_at_version)` for every entity in `corpus_id`.
-    fn entity_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
-    /// `(chunk_id, derived_at_version)` for every chunk in `corpus_id`.
+    /// `(entity_id, derived_at_sha)` for every entity in `corpus_id`.
+    fn entity_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+    /// `(chunk_id, derived_at_sha)` for every chunk in `corpus_id`.
     /// Uses `last_modified_at_version` as the chunk's version anchor.
-    fn chunk_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
-    /// `(edge_id, derived_at_version)` for every edge in `corpus_id`.
-    fn edge_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
-    /// `(target_id, derived_at_version)` for every summary in `corpus_id`.
-    fn summary_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
-    /// `((entity_id, model), derived_at_version)` for every purpose in `corpus_id`.
-    fn purpose_head_versions(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>>;
-    /// `((entity_id, model), derived_at_version)` for every contract in `corpus_id`.
-    fn contract_head_versions(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>>;
-    /// `(entity_id, derived_at_version)` for every block in `corpus_id`
+    fn chunk_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+    /// `(edge_id, derived_at_sha)` for every edge in `corpus_id`.
+    fn edge_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+    /// `(target_id, derived_at_sha)` for every summary in `corpus_id`.
+    fn summary_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+    /// `((entity_id, model), derived_at_sha)` for every purpose in `corpus_id`.
+    fn purpose_head_shas(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>>;
+    /// `((entity_id, model), derived_at_sha)` for every contract in `corpus_id`.
+    fn contract_head_shas(&self, corpus_id: &str) -> Result<Vec<((String, String), String)>>;
+    /// `(entity_id, derived_at_sha)` for every block in `corpus_id`
     /// (one entry per entity; multiple blocks under the same entity share the
     ///  entity-level version).
-    fn block_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
-    /// `(theme_id, derived_at_version)` for every theme in `corpus_id`.
-    fn theme_head_versions(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+    fn block_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
+    /// `(theme_id, derived_at_sha)` for every theme in `corpus_id`.
+    fn theme_head_shas(&self, corpus_id: &str) -> Result<Vec<(String, String)>>;
 
     // ── History / Archive ─────────────────────────────────────────────────────
     //
@@ -432,50 +432,49 @@ pub trait StorageBackend: Send + Sync {
         &self,
         entity_id: &str,
         corpus_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<bool>;
     /// Archive all edges involving `entity_id` (both directions) into `edges_history`.
-    fn archive_edges_for_entity(&self, entity_id: &str, superseded_at_version: &str)
-    -> Result<u64>;
+    fn archive_edges_for_entity(&self, entity_id: &str, superseded_at_sha: &str) -> Result<u64>;
     /// Archive all purpose rows for `entity_id` into `entity_purposes_history`.
     fn archive_purposes_for_entity(
         &self,
         entity_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<u64>;
     /// Archive all contract rows for `entity_id` into `entity_contracts_history`.
     fn archive_contracts_for_entity(
         &self,
         entity_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<u64>;
     /// Archive all block rows for `entity_id` into `entity_blocks_history`.
     fn archive_blocks_for_entity(
         &self,
         entity_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<u64>;
     /// Archive all summary rows for `target_id` within `corpus_id` into `summaries_history`.
     fn archive_summaries_for_target(
         &self,
         corpus_id: &str,
         target_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<u64>;
     /// Archive a single chunk row into `chunks_history`.
-    fn archive_chunk(&self, chunk_id: &str, superseded_at_version: &str) -> Result<bool>;
+    fn archive_chunk(&self, chunk_id: &str, superseded_at_sha: &str) -> Result<bool>;
     /// Archive a single theme row into `themes_history`.
     fn archive_theme(
         &self,
         theme_id: &str,
         corpus_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<bool>;
     /// Archive all theme rows for `corpus_id` into `themes_history`.
     fn archive_themes_for_corpus(
         &self,
         corpus_id: &str,
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<u64>;
 
     /// Delete a single theme and its corresponding `kind = "theme"` entity row
@@ -494,13 +493,13 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// `dirty_chunk_ids` — chunk IDs to sweep (typically produced by filtering
     /// all corpus chunks against a `ChangeManifest`).
-    /// `superseded_at_version` — the incoming git SHA written to
-    /// `*_history.superseded_at_version` for every archived row.
+    /// `superseded_at_sha` — the incoming git SHA written to
+    /// `*_history.superseded_at_sha` for every archived row.
     fn cascade_delete_dirty_subtree(
         &self,
         corpus_id: &str,
         dirty_chunk_ids: &[String],
-        superseded_at_version: &str,
+        superseded_at_sha: &str,
     ) -> Result<CascadeStats>;
 
     // ── Graph helpers ─────────────────────────────────────────────────────────
@@ -512,7 +511,7 @@ pub trait StorageBackend: Send + Sync {
 
     // ── Pruning ───────────────────────────────────────────────────────────────
 
-    /// Delete history rows whose `superseded_at_version` is older than the
+    /// Delete history rows whose `superseded_at_sha` is older than the
     /// N-th most-recent supersession SHA (ordered by `MAX(superseded_at)` across
     /// all 8 `*_history` tables).
     ///
@@ -596,7 +595,7 @@ pub trait StorageBackend: Send + Sync {
     /// the archived rows with `provenance`.
     ///
     /// **Naive in this PR:** fans out to the existing per-artifact `archive_*`
-    /// methods, using `provenance`'s SHA as the `superseded_at_version`. The
+    /// methods, using `provenance`'s SHA as the `superseded_at_sha`. The
     /// unified single-writer implementation lands in a later PR.
     fn archive_to_history(
         &self,

@@ -1,38 +1,43 @@
 use crate::error::Result;
 use crate::storage::{db::Database, history};
+use crate::types::provenance::Provenance;
 use crate::types::summary::{Summary, SummaryTargetKind};
 use rusqlite::params;
 use std::str::FromStr;
 
 pub fn upsert(db: &Database, summary: &Summary) -> Result<()> {
     let conn = db.conn();
-    let new_ver = summary.derived_at_version.as_deref();
+    let new_sha = summary.provenance.as_ref().map(|p| p.sha());
     let target_kind_str = summary.target_kind.to_string();
 
     // Snapshot before overwrite.
-    if let Some(ver) = new_ver {
+    if let Some(sha) = new_sha {
         history::snapshot_if_version_changed_summary(
             conn,
             &summary.corpus_id,
             &target_kind_str,
             &summary.target_id,
             &summary.model,
-            Some(ver),
-            ver,
+            Some(sha),
+            sha,
         )?;
     }
+
+    let prov_kind = summary.provenance.as_ref().map(|p| p.kind_str());
+    let prov_sha = summary.provenance.as_ref().map(|p| p.sha());
 
     conn.execute(
         "INSERT INTO summaries
          (id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at,
-          derived_at_version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+          derived_at_kind, derived_at_sha)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, COALESCE(?10, 'concrete'), COALESCE(?11, ''))
          ON CONFLICT(corpus_id, target_kind, target_id, model) DO UPDATE SET
-             text               = excluded.text,
-             model_tier         = excluded.model_tier,
-             generated_at       = excluded.generated_at,
-             depth              = excluded.depth,
-             derived_at_version = COALESCE(excluded.derived_at_version, summaries.derived_at_version)",
+             text             = excluded.text,
+             model_tier       = excluded.model_tier,
+             generated_at     = excluded.generated_at,
+             depth            = excluded.depth,
+             derived_at_kind  = CASE WHEN excluded.derived_at_sha != '' THEN excluded.derived_at_kind ELSE summaries.derived_at_kind END,
+             derived_at_sha   = CASE WHEN excluded.derived_at_sha != '' THEN excluded.derived_at_sha  ELSE summaries.derived_at_sha  END",
         params![
             summary.id,
             summary.corpus_id,
@@ -43,7 +48,8 @@ pub fn upsert(db: &Database, summary: &Summary) -> Result<()> {
             summary.model,
             summary.model_tier,
             summary.generated_at,
-            summary.derived_at_version,
+            prov_kind,
+            prov_sha,
         ],
     )?;
     Ok(())
@@ -59,7 +65,7 @@ pub fn get_best(
 ) -> Result<Option<Summary>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at,
-                derived_at_version
+                derived_at_kind, derived_at_sha
          FROM summaries
          WHERE corpus_id = ?1 AND target_kind = ?2 AND target_id = ?3
          ORDER BY CASE model_tier
@@ -91,7 +97,7 @@ pub fn get_for_model(
 ) -> Result<Option<Summary>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at,
-                derived_at_version
+                derived_at_kind, derived_at_sha
          FROM summaries
          WHERE corpus_id = ?1 AND target_kind = ?2 AND target_id = ?3 AND model = ?4",
     )?;
@@ -108,7 +114,7 @@ pub fn get_for_model(
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Summary>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, corpus_id, target_kind, target_id, depth, text, model, model_tier, generated_at,
-                derived_at_version
+                derived_at_kind, derived_at_sha
          FROM summaries WHERE corpus_id = ?1 ORDER BY generated_at ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_summary)?;
@@ -128,10 +134,17 @@ pub fn delete_for_target(db: &Database, corpus_id: &str, target_id: &str) -> Res
 
 fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<Summary> {
     // Column order: id(0), corpus_id(1), target_kind(2), target_id(3), depth(4),
-    //               text(5), model(6), model_tier(7), generated_at(8), derived_at_version(9)
+    //               text(5), model(6), model_tier(7), generated_at(8),
+    //               derived_at_kind(9), derived_at_sha(10)
     let target_kind_str: String = row.get(2)?;
     let target_kind =
         SummaryTargetKind::from_str(&target_kind_str).unwrap_or(SummaryTargetKind::Chunk);
+    let prov_kind: Option<String> = row.get(9)?;
+    let prov_sha: Option<String> = row.get(10)?;
+    let provenance = match (prov_kind.as_deref(), prov_sha.as_deref()) {
+        (Some(k), Some(s)) if !s.is_empty() => Provenance::from_columns(k, s).ok(),
+        _ => None,
+    };
     Ok(Summary {
         id: row.get(0)?,
         corpus_id: row.get(1)?,
@@ -142,6 +155,6 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<Summary> {
         model: row.get(6)?,
         model_tier: row.get(7)?,
         generated_at: row.get(8)?,
-        derived_at_version: row.get(9)?,
+        provenance,
     })
 }
