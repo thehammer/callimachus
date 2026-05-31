@@ -39,6 +39,9 @@ impl ClaudeCodeProvider {
         timeout_secs: Option<u64>,
         calls_per_minute: Option<u32>,
     ) -> Self {
+        tracing::info!("[pipeline] provider = claude-code (no API key)");
+        // TODO(embedder-fingerprint): when a dedicated embedder provider is wired,
+        // log its key fingerprint here too via key_fingerprint() (see anthropic.rs).
         let cpm = calls_per_minute.unwrap_or(DEFAULT_CALLS_PER_MINUTE);
         ClaudeCodeProvider {
             claude_bin,

@@ -31,6 +31,19 @@ pub struct AnthropicApiProvider {
     budget: Arc<TokenBudget>,
 }
 
+/// Non-secret fingerprint of an API key for log lines: the last 8
+/// characters, prefixed with an ellipsis. Never returns more than the
+/// trailing 8 chars, so the full key cannot leak through logs.
+///
+/// Keys shorter than 8 chars are rendered in full (still only what the
+/// caller already holds in plaintext); this never exposes *more* than the key.
+fn key_fingerprint(api_key: &str) -> String {
+    let chars: Vec<char> = api_key.chars().collect();
+    let start = chars.len().saturating_sub(8);
+    let suffix: String = chars[start..].iter().collect();
+    format!("…{suffix}")
+}
+
 impl AnthropicApiProvider {
     /// Construct from environment. Returns `LlmError::NoProvider` if
     /// `ANTHROPIC_API_KEY` is not set.
@@ -41,6 +54,10 @@ impl AnthropicApiProvider {
 
     /// Construct with explicit key and optional overrides.
     pub fn new(api_key: String, model: Option<String>, base_url: Option<String>) -> Self {
+        tracing::info!(
+            "[pipeline] provider = Anthropic API  key = {}",
+            key_fingerprint(&api_key)
+        );
         AnthropicApiProvider {
             client: reqwest::Client::new(),
             api_key,
@@ -690,6 +707,48 @@ mod tests {
 
         // No rate-limit headers → budget stays uninitialised (passes through).
         assert!(!p.budget.is_initialized(&ModelFamily::Haiku));
+    }
+
+    #[test]
+    fn key_fingerprint_returns_last_eight_chars() {
+        let key = "sk-ant-api03-aaaaaaaaaaaaaaaa2doZYQAA";
+        let fp = key_fingerprint(key);
+        assert_eq!(fp, "…2doZYQAA");
+        assert!(fp.contains("2doZYQAA"));
+        assert!(!fp.contains(key));
+        assert!(!fp.contains("sk-ant-api03"));
+    }
+
+    #[test]
+    fn key_fingerprint_handles_short_keys() {
+        assert_eq!(key_fingerprint("abc"), "…abc");
+        assert_eq!(key_fingerprint(""), "…");
+    }
+
+    #[test]
+    fn key_fingerprint_is_unicode_safe() {
+        let key = "sk-ant-emojiové-✓2doZYQAA";
+        let fp = key_fingerprint(key);
+        assert!(fp.starts_with('…'));
+        assert!(!fp.contains(key));
+    }
+
+    /// Snapshot guard: pins the exact provider-init log line so a future edit
+    /// that accidentally substitutes the full key fails this test instead of
+    /// leaking the key into logs.
+    #[test]
+    fn provider_init_log_line_snapshot() {
+        let key = "sk-ant-api03-SECRETSECRETSECRET2doZYQAA";
+        let rendered = format!(
+            "[pipeline] provider = Anthropic API  key = {}",
+            key_fingerprint(key)
+        );
+        assert_eq!(
+            rendered,
+            "[pipeline] provider = Anthropic API  key = …2doZYQAA"
+        );
+        assert!(!rendered.contains(key));
+        assert!(!rendered.contains("SECRET"));
     }
 
     #[tokio::test]
