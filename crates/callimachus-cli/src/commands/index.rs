@@ -101,7 +101,7 @@ pub fn build_adapter(corpus: &Corpus) -> Result<Arc<dyn SourceAdapter>> {
         "book" => Ok(Arc::new(BookAdapter::new())),
         "code" => Ok(Arc::new(CodeAdapter::new())),
         "wiki" => Ok(Arc::new(WikiAdapter::new())),
-        "docs" => Ok(Arc::new(DocsAdapter::new())),
+        "docs" => Ok(Arc::new(DocsAdapter::with_root(&corpus.source))),
         other => bail!("adapter not yet available for corpus kind '{other}'"),
     }
 }

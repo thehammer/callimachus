@@ -17,11 +17,26 @@ use crate::{chunker, docc::DoccPage, extractor, summarizer};
 /// Each `.json` file in the source directory is treated as one DocC page.
 /// The adapter expects the layout written by `fetch-apple-docs.py --format json`:
 /// `<root>/<Framework>/<SymbolName>.json`
-pub struct DocsAdapter;
+///
+/// Construct with `DocsAdapter::with_root(path)` in production so that
+/// `extract_structure` can read the raw JSON.  `DocsAdapter::new()` leaves
+/// `root` as `None` and `extract_structure` will bail if called.
+pub struct DocsAdapter {
+    root: Option<String>,
+}
 
 impl DocsAdapter {
     pub fn new() -> Self {
-        Self
+        Self { root: None }
+    }
+
+    /// Construct an adapter that knows the corpus root directory.
+    ///
+    /// Required for the `extract_structure` trait method.
+    pub fn with_root(root: &str) -> Self {
+        Self {
+            root: Some(root.to_string()),
+        }
     }
 }
 
@@ -109,42 +124,45 @@ impl SourceAdapter for DocsAdapter {
     }
 
     /// Structural extraction from a docs chunk (no LLM).
+    ///
+    /// Requires the adapter to have been constructed with `DocsAdapter::with_root()`.
+    /// The root path is used to reconstruct the original JSON file from the chunk's
+    /// location path (`docs/<Framework>/<Slug>`).
     async fn extract_structure(&self, chunk: &Chunk) -> anyhow::Result<ExtractedStructure> {
-        // Re-parse the JSON from the chunk's content (the page markdown) is not
-        // sufficient — we need the raw JSON. However, the pipeline passes us the
-        // Chunk object which only has rendered markdown in `content`.
-        //
-        // Strategy: the page chunk location path encodes `docs/<Framework>/<Slug>`.
-        // The chunk's `source_hash` / origin path is not available at this point.
-        // We embed the raw JSON in the page chunk as a sentinel: if `content`
-        // starts with `{` (JSON), parse it directly; otherwise we have the
-        // rendered markdown and must skip structured extraction.
-        //
-        // In practice the pipeline calls chunk() then extract_structure() in the
-        // same run, so the content IS the rendered markdown. The structured
-        // extraction happens at index time by reading from `DiscoveredSource`.
-        //
-        // The correct design is: the adapter stores the raw JSON path and reads
-        // it again. We encode the root path in chunk meta via parent_path convention.
-        //
-        // For v2: when the chunk content is rendered markdown (not JSON), we
-        // return an empty ExtractedStructure. The pipeline's Structure pass will
-        // have already called chunk() and have access to the source — real
-        // extraction happens via extract_from_discovered (below).
-        //
-        // This mirrors the wiki adapter's approach where section-level extraction
-        // works on text.
+        let root = self.root.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "DocsAdapter::extract_structure requires a root path; \
+                 construct the adapter with DocsAdapter::with_root(corpus.source)"
+            )
+        })?;
 
-        // Try to load the raw JSON by recovering the file path from the chunk location.
-        // The chunk location path is `docs/<Framework>/<Slug>` (possibly with `#anchor`).
-        // We need the source root, which we don't have here.
-        // Return empty structure — real extraction is deferred to extract_from_discovered.
-        Ok(ExtractedStructure {
-            parent_path: chunk.parent_path.clone(),
-            child_paths: vec![],
-            structural_entities: vec![],
-            structural_edges: vec![],
-        })
+        // chunk.location.path = "docs/AppKit/NSView" (possibly with "#anchor").
+        // Strip the anchor, then strip the leading "docs/" prefix.
+        let path_part = chunk
+            .location
+            .path
+            .split('#')
+            .next()
+            .unwrap_or(&chunk.location.path);
+
+        let relative = path_part.strip_prefix("docs/").ok_or_else(|| {
+            anyhow::anyhow!(
+                "unexpected docs chunk path format (expected 'docs/<Framework>/<Slug>'): {}",
+                chunk.location.path
+            )
+        })?;
+
+        let json_path = std::path::Path::new(root)
+            .join(relative)
+            .with_extension("json");
+
+        let raw_text = std::fs::read_to_string(&json_path).map_err(|e| {
+            anyhow::anyhow!("failed to read {}: {e}", json_path.display())
+        })?;
+        let raw: serde_json::Value = serde_json::from_str(&raw_text)?;
+        let page = DoccPage::from_value(&raw);
+
+        extractor::extract_structure(chunk, &page, &chunk.corpus_id)
     }
 
     /// Structural extraction given direct access to the DiscoveredSource.
@@ -178,7 +196,9 @@ impl SourceAdapter for DocsAdapter {
             }
             "page" => {
                 let (page_title, _) = summarizer::chunk_metadata(chunk);
-                let summary = summarizer::summarize_page(&page_title, &[], llm).await?;
+                let summary =
+                    summarizer::summarize_page_from_content(&page_title, &chunk.content, llm)
+                        .await?;
                 Ok(Some(summary))
             }
             "corpus" => {

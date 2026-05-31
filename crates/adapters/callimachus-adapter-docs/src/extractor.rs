@@ -7,7 +7,7 @@
 /// - `references_type` edges from declaration token typeIdentifiers (de-duplicated).
 /// - `member_of` edges from `topicSections[].identifiers[]` (child → parent).
 /// - Availability text in the entity description prefix.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use callimachus_core::{
     adapter::ExtractedStructure,
@@ -53,41 +53,64 @@ pub fn map_symbol_kind(symbol_kind: &str, role_heading: &str) -> &'static str {
     }
 }
 
-// ── Canonical name ────────────────────────────────────────────────────────────
+// ── Entity ID from DocC identifier ───────────────────────────────────────────
 
-/// Derive the canonical entity name from a DocC reference identifier.
+/// Convert a DocC identifier to a canonical entity ID.
 ///
-/// Pattern: `doc://com.apple.documentation/documentation/<framework>/<slug>`
-/// → take everything after `documentation/<framework>/`, replace `/` with `.`.
-pub fn identifier_to_canonical_name(
+/// Pattern: `doc://com.apple.documentation/documentation/<framework>/<...slug...>`
+/// Returns `docs:docs/<Framework>/<slug>` where:
+/// - `<Framework>` is the proper-cased framework name (from `framework_hint` when it matches).
+/// - `<slug>` is the path segments after the framework joined with `-`, using
+///   `pathComponents` casing from the references map when available.
+///
+/// Returns `None` if:
+/// - The identifier does not have the expected prefix.
+/// - The framework segment does not match `framework_hint` (cross-framework
+///   reference — we cannot reliably determine the casing, so we skip the edge).
+pub fn identifier_to_entity_id(
     identifier: &str,
-    references: &std::collections::HashMap<String, DoccReference>,
-) -> String {
-    // Prefer the human title from references if available.
-    if let Some(r) = references.get(identifier)
-        && !r.title.is_empty()
-    {
-        // For child symbols, the title is usually "NSView.tag" or similar.
-        return r.title.clone();
+    references: &HashMap<String, DoccReference>,
+    framework_hint: &str,
+) -> Option<String> {
+    let stripped =
+        identifier.strip_prefix("doc://com.apple.documentation/documentation/")?;
+
+    let (framework_id, _rest) = stripped.split_once('/')?;
+
+    // Only proceed when framework matches the hint — preserves casing and avoids dangling cross-framework edges.
+    if framework_hint.to_lowercase() != framework_id.to_lowercase() {
+        return None;
+    }
+    let framework = framework_hint.to_string();
+
+    // Prefer pathComponents from the references map (PascalCase).
+    let slug = if let Some(reference) = references.get(identifier) {
+        if !reference.path_components.is_empty() {
+            reference.path_components.join("-")
+        } else {
+            // Reference present but no pathComponents: fall back to lowercase identifier segments.
+            stripped
+                .split('/')
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join("-")
+                .to_lowercase()
+        }
+    } else {
+        // No reference entry: fall back to lowercase identifier segments.
+        stripped
+            .split('/')
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join("-")
+            .to_lowercase()
+    };
+
+    if slug.is_empty() {
+        return None;
     }
 
-    // Fall back to path extraction.
-    let stripped = identifier
-        .trim_start_matches("doc://com.apple.documentation/documentation/");
-    // Drop the framework prefix (first path component).
-    let after_framework = stripped.split_once('/').map(|x| x.1).unwrap_or(stripped);
-    // Convert path separators to dots and capitalize first letter.
-    let parts: Vec<String> = after_framework
-        .split('/')
-        .map(|p| {
-            let mut c = p.chars();
-            match c.next() {
-                None => String::new(),
-                Some(f) => f.to_uppercase().to_string() + c.as_str(),
-            }
-        })
-        .collect();
-    parts.join(".")
+    Some(format!("docs:docs/{framework}/{slug}"))
 }
 
 // ── Edge ID generation ────────────────────────────────────────────────────────
@@ -180,15 +203,26 @@ pub fn extract_structure(
     };
     entities.push(entity);
 
+    // Framework hint for resolving same-framework edge IDs.
+    let framework_hint = page
+        .metadata
+        .modules
+        .first()
+        .map(|m| m.name.as_str())
+        .unwrap_or("");
+
     // ── Relationship edges (inheritsFrom, conformsTo) ─────────────────────────
 
     for rel in &page.relationships {
-        let target_name = identifier_to_canonical_name(&rel.target, &page.references);
-        let to_id = format!("docs:{}", target_name);
         let kind_str = match rel.kind.as_str() {
             "inheritsFrom" => "inherits_from",
             "conformsTo" => "conforms_to",
             _ => continue,
+        };
+        let Some(to_id) =
+            identifier_to_entity_id(&rel.target, &page.references, framework_hint)
+        else {
+            continue;
         };
         edges.push(Edge {
             id: edge_id(&entity_id, &to_id, kind_str),
@@ -222,9 +256,12 @@ pub fn extract_structure(
                 if id.is_empty() {
                     continue;
                 }
-                let target_name = identifier_to_canonical_name(id, &page.references);
-                if !target_name.is_empty() && referenced_types.insert(target_name.clone()) {
-                    let to_id = format!("docs:{}", target_name);
+                let Some(to_id) =
+                    identifier_to_entity_id(id, &page.references, framework_hint)
+                else {
+                    continue;
+                };
+                if referenced_types.insert(to_id.clone()) {
                     edges.push(Edge {
                         id: edge_id(&entity_id, &to_id, "references_type"),
                         corpus_id: corpus_id.to_string(),
@@ -244,8 +281,11 @@ pub fn extract_structure(
 
     for topic_section in &page.topic_sections {
         for child_id in &topic_section.identifiers {
-            let child_name = identifier_to_canonical_name(child_id, &page.references);
-            let child_entity_id = format!("docs:docs/{child_name}");
+            let Some(child_entity_id) =
+                identifier_to_entity_id(child_id, &page.references, framework_hint)
+            else {
+                continue;
+            };
             edges.push(Edge {
                 id: edge_id(&child_entity_id, &entity_id, "member_of"),
                 corpus_id: corpus_id.to_string(),
@@ -320,29 +360,56 @@ mod tests {
     }
 
     #[test]
-    fn identifier_to_canonical_name_basic() {
-        let refs = std::collections::HashMap::new();
-        let name = identifier_to_canonical_name(
-            "doc://com.apple.documentation/documentation/appkit/nsview",
-            &refs,
-        );
-        assert_eq!(name, "Nsview");
-    }
-
-    #[test]
-    fn identifier_to_canonical_name_uses_reference_title() {
-        let mut refs = std::collections::HashMap::new();
+    fn identifier_to_entity_id_basic_with_path_components() {
+        let mut refs = HashMap::new();
         refs.insert(
             "doc://com.apple.documentation/documentation/appkit/nsview".to_string(),
             DoccReference {
-                title: "NSView".to_string(),
+                path_components: vec!["NSView".to_string()],
                 ..Default::default()
             },
         );
-        let name = identifier_to_canonical_name(
+        let id = identifier_to_entity_id(
             "doc://com.apple.documentation/documentation/appkit/nsview",
             &refs,
+            "AppKit",
         );
-        assert_eq!(name, "NSView");
+        assert_eq!(id, Some("docs:docs/AppKit/NSView".to_string()));
+    }
+
+    #[test]
+    fn identifier_to_entity_id_member_slug() {
+        let mut refs = HashMap::new();
+        refs.insert(
+            "doc://com.apple.documentation/documentation/appkit/nsview/tag".to_string(),
+            DoccReference {
+                path_components: vec!["NSView".to_string(), "tag".to_string()],
+                ..Default::default()
+            },
+        );
+        let id = identifier_to_entity_id(
+            "doc://com.apple.documentation/documentation/appkit/nsview/tag",
+            &refs,
+            "AppKit",
+        );
+        assert_eq!(id, Some("docs:docs/AppKit/NSView-tag".to_string()));
+    }
+
+    #[test]
+    fn identifier_to_entity_id_cross_framework_returns_none() {
+        let refs = HashMap::new();
+        let id = identifier_to_entity_id(
+            "doc://com.apple.documentation/documentation/foundation/nsobject",
+            &refs,
+            "AppKit",
+        );
+        assert_eq!(id, None, "cross-framework reference should return None");
+    }
+
+    #[test]
+    fn identifier_to_entity_id_wrong_prefix_returns_none() {
+        let refs = HashMap::new();
+        let id = identifier_to_entity_id("https://example.com/nsview", &refs, "AppKit");
+        assert_eq!(id, None);
     }
 }

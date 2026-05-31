@@ -8,22 +8,6 @@ use callimachus_core::types::{Chunk, Location};
 
 use crate::{docc::DoccPage, render};
 
-/// Derive the canonical docs path from the file path and root directory.
-///
-/// Result is `docs/<Framework>/<slug>` where `<Framework>` is the
-/// immediate parent directory name and `<slug>` is the file stem.
-pub fn docs_path(file_path: &Path, root: &Path) -> String {
-    let rel = file_path
-        .strip_prefix(root)
-        .unwrap_or(file_path)
-        .to_string_lossy()
-        .replace('\\', "/");
-
-    // Strip `.json` extension from path.
-    let without_ext = rel.trim_end_matches(".json");
-    format!("docs/{without_ext}")
-}
-
 /// Derive the framework name from the path: the first path component under root.
 pub fn framework_from_path(file_path: &Path, root: &Path) -> String {
     if let Ok(rel) = file_path.strip_prefix(root)
@@ -100,11 +84,15 @@ pub fn chunk_docs_file(
     ));
 
     // Section-grain chunks: one per primaryContentSection with kind == "content".
+    // Multiple content sections get a numeric suffix to avoid anchor collisions.
     let sections = raw_json
         .get("primaryContentSections")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+
+    let base_anchor = section_anchor(&page.metadata.title);
+    let mut content_section_count: u32 = 0;
 
     for section in &sections {
         if section.get("kind").and_then(|v| v.as_str()) != Some("content") {
@@ -116,8 +104,14 @@ pub fn chunk_docs_file(
             continue;
         }
 
-        // Use the page title as the section anchor (Discussion is the primary content).
-        let anchor = section_anchor(&page.metadata.title);
+        // First content section keeps the base anchor; subsequent ones get "-<n>" suffix.
+        let anchor = if content_section_count == 0 {
+            base_anchor.clone()
+        } else {
+            format!("{base_anchor}-{content_section_count}")
+        };
+        content_section_count += 1;
+
         let section_path = format!("docs/{framework}/{slug}#{anchor}");
         let section_loc = Location::new(corpus_id, &section_path);
 
@@ -138,13 +132,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn docs_path_basic() {
-        let root = Path::new("/data/docs");
-        let file = Path::new("/data/docs/AppKit/NSView.json");
-        assert_eq!(docs_path(file, root), "docs/AppKit/NSView");
-    }
-
-    #[test]
     fn framework_from_path_basic() {
         let root = Path::new("/data/docs");
         let file = Path::new("/data/docs/AppKit/NSView.json");
@@ -155,5 +142,59 @@ mod tests {
     fn section_anchor_basic() {
         assert_eq!(section_anchor("NSView"), "nsview");
         assert_eq!(section_anchor("My Class"), "my-class");
+    }
+
+    #[test]
+    fn multiple_content_sections_get_distinct_paths() {
+        use crate::docc::{DoccMetadata, DoccPage};
+
+        let page = DoccPage {
+            metadata: DoccMetadata {
+                title: "MyClass".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // Two content sections in the raw JSON.
+        let raw = serde_json::json!({
+            "primaryContentSections": [
+                {
+                    "kind": "content",
+                    "content": [{"type": "paragraph", "inlineContent": [{"type": "text", "text": "First section."}]}]
+                },
+                {
+                    "kind": "content",
+                    "content": [{"type": "paragraph", "inlineContent": [{"type": "text", "text": "Second section."}]}]
+                }
+            ]
+        });
+
+        let root = Path::new("/data/docs");
+        let file = Path::new("/data/docs/AppKit/MyClass.json");
+        let chunks = chunk_docs_file("corpus", file, root, &page, &raw);
+
+        let section_paths: Vec<&str> = chunks
+            .iter()
+            .filter(|c| c.kind == "section")
+            .map(|c| c.location.path.as_str())
+            .collect();
+
+        assert_eq!(section_paths.len(), 2, "expected 2 section chunks");
+        assert_ne!(
+            section_paths[0], section_paths[1],
+            "multiple content sections must have distinct location paths"
+        );
+        // First keeps the base anchor, second gets a suffix.
+        assert!(
+            section_paths[0].ends_with("#myclass"),
+            "first section anchor = base: {}",
+            section_paths[0]
+        );
+        assert!(
+            section_paths[1].ends_with("#myclass-1"),
+            "second section anchor = base-1: {}",
+            section_paths[1]
+        );
     }
 }

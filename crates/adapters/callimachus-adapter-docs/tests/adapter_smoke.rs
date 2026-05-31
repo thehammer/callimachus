@@ -208,10 +208,10 @@ async fn nsstackview_inherits_nsview_conforms_two_protocols() {
         1,
         "NSStackView should have exactly 1 inherits_from edge"
     );
-    assert!(
-        inherits_edges[0].to_entity_id.contains("NSView"),
-        "NSStackView should inherit from NSView, got: {:?}",
-        inherits_edges[0].to_entity_id
+    assert_eq!(
+        inherits_edges[0].to_entity_id,
+        "docs:docs/AppKit/NSView",
+        "NSStackView inherits_from target must exactly equal the NSView page entity ID"
     );
 
     let conforms_edges: Vec<_> = structure
@@ -224,4 +224,78 @@ async fn nsstackview_inherits_nsview_conforms_two_protocols() {
         2,
         "NSStackView should conform to 2 protocols"
     );
+}
+
+#[tokio::test]
+async fn extract_structure_via_trait_path() {
+    let dir = fixtures_dir();
+    let dir_str = dir.to_str().unwrap();
+
+    // Build the adapter with a root path so extract_structure can read the JSON files.
+    let adapter = DocsAdapter::with_root(dir_str);
+
+    let mut sources = adapter
+        .discover(dir_str)
+        .await
+        .expect("discover failed");
+
+    // Inject corpus_id; sort for determinism.
+    sources.sort_by(|a, b| a.path.cmp(&b.path));
+    for s in &mut sources {
+        s.meta["corpus_id"] = serde_json::Value::String("test-corpus".to_string());
+    }
+
+    // Pick NSView.json (not the tag variant).
+    let nsview_source = sources
+        .iter()
+        .find(|s| s.path.ends_with("NSView.json"))
+        .expect("NSView.json source not found");
+
+    let chunks = adapter
+        .chunk(nsview_source)
+        .await
+        .expect("chunk failed");
+
+    let page_chunk = chunks
+        .iter()
+        .find(|c| c.kind == "page")
+        .expect("no page chunk produced");
+
+    // Exercise the TRAIT method — not extract_from_source.
+    let structure = adapter
+        .extract_structure(page_chunk)
+        .await
+        .expect("extract_structure via trait failed");
+
+    assert!(
+        !structure.structural_entities.is_empty(),
+        "trait extract_structure should produce entities"
+    );
+    assert!(
+        !structure.structural_edges.is_empty(),
+        "trait extract_structure should produce edges"
+    );
+
+    // Entity should be the NSView class.
+    let entity = &structure.structural_entities[0];
+    assert_eq!(entity.kind, "class");
+    assert_eq!(entity.canonical_name, "NSView");
+
+    // At least one member_of edge should have an exact canonical entity ID.
+    let member_of_edges: Vec<_> = structure
+        .structural_edges
+        .iter()
+        .filter(|e| e.kind == "member_of")
+        .collect();
+    assert!(
+        !member_of_edges.is_empty(),
+        "should have member_of edges from topicSections"
+    );
+    // Every member_of target must be the NSView page entity ID.
+    for edge in &member_of_edges {
+        assert_eq!(
+            edge.to_entity_id, "docs:docs/AppKit/NSView",
+            "member_of edge target should equal the NSView page entity ID"
+        );
+    }
 }

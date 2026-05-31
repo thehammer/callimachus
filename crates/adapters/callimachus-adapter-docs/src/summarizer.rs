@@ -54,6 +54,37 @@ pub async fn summarize_section(
     Ok(resp.text.trim().to_string())
 }
 
+/// Summarize a docs page using its rendered page content directly.
+///
+/// Called from the `"page"` summarize arm; injects the full page markdown
+/// so the LLM has substance to work with rather than an empty sections list.
+pub async fn summarize_page_from_content(
+    page_title: &str,
+    content: &str,
+    llm: &dyn LlmProvider,
+) -> anyhow::Result<String> {
+    let prompt = format!(
+        "You are summarizing an Apple developer documentation page for a searchable index.\n\n\
+         Symbol: {page_title}\n\n\
+         Page content:\n{content}\n\n\
+         Write a 2-3 sentence summary of what this API symbol does.\n\
+         Return ONLY the summary text.",
+    );
+
+    let resp = llm
+        .complete(CompletionRequest {
+            prompt,
+            model: None,
+            max_tokens: Some(300),
+            chunk_id: None,
+            kind: "page".to_string(),
+            pass: "summarize".to_string(),
+        })
+        .await?;
+
+    Ok(resp.text.trim().to_string())
+}
+
 /// Summarize a docs page from its section summaries.
 pub async fn summarize_page(
     page_title: &str,
