@@ -211,7 +211,7 @@ pub trait SourceAdapter: Send + Sync {
         RoutingInputs::default()
     }
 
-    /// Extract corpus-level architectural themes (opt-in).
+    /// Extract corpus-level architectural themes.
     /// Default: `Ok(None)`.
     async fn extract_themes(
         &self,

@@ -36,7 +36,7 @@ Each pass enriches the index with pre-built understanding:
 - **Summarize** — 1–3 sentence behavioral summary per entity, bottom-up (function → file → corpus)
 - **Purpose** — architectural intent: *why* this entity exists
 - **Contract** — static signals (is_public, is_fallible, has_panic_risk, …) merged with LLM-inferred assumptions, risks, and caller notes
-- **Themes** — corpus-level architectural invariants (opt-in; code and wiki adapters)
+- **Themes** — corpus-level architectural invariants (code and wiki adapters)
 
 At query time, responses are assembled from these pre-built pieces — zero new LLM comprehension required.
 
@@ -294,7 +294,7 @@ The index is a single SQLite file. Key tables:
 | `entity_blocks` | Sub-function block-level descriptions |
 | `kind_taxonomy` | Maps concrete entity kinds to abstract kinds for cross-corpus queries |
 | `scholia` | Non-destructive corrections applied at query time (entity merges, renames, overrides) |
-| `themes` | Corpus-level architectural invariants (opt-in) |
+| `themes` | Corpus-level architectural invariants |
 
 ---
 

@@ -180,10 +180,10 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
         /// Comma-separated list of passes to run.  Use `default` to expand to the
-        /// standard eight-pass list (history,chunk,structure,semantic,aliases,
-        /// summarize,purpose,contract).  Combine like `--passes "default,theme"` to
+        /// standard nine-pass list (history,chunk,structure,semantic,aliases,
+        /// summarize,purpose,contract,theme).  Combine like `--passes "default,embed"` to
         /// layer extra passes on top.  Order is ignored; duplicates are removed.
-        /// When omitted, the default eight-pass list runs.
+        /// When omitted, the default nine-pass list runs.
         #[arg(long)]
         passes: Option<String>,
         /// Pin Layer-2 LLM calls to deterministic sampling.

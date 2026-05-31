@@ -14,7 +14,7 @@
 //! | 5 | [`Pass::Summarize`] | Yes | Bottom-up LLM summarization: function → file → corpus for code; scene → chapter → corpus for books. |
 //! | 6 | [`Pass::Purpose`] | Yes | Asks the LLM why each entity exists; stores an `entity_purpose` row. |
 //! | 7 | [`Pass::Contract`] | Yes | Static signals (is_public, is_fallible, …) plus LLM-inferred assumptions, risks, and caller notes; stores an `entity_contract` row. |
-//! | 8 | [`Pass::Theme`] | Yes | Corpus-level architectural invariants (opt-in; not in the default pass list). |
+//! | 8 | [`Pass::Theme`] | Yes | Corpus-level architectural invariants. Runs by default; Embed is the remaining opt-in pass. |
 //!
 //! Passes are epistemically ordered: each depends on the outputs of earlier
 //! passes.  They can be run individually with `calli index --pass <name>` or
@@ -166,7 +166,8 @@ impl Default for IndexOptions {
                 Pass::Summarize,
                 Pass::Purpose,
                 Pass::Contract,
-                // Pass::Theme is opt-in; not included by default.
+                Pass::Theme,
+                // Pass::Embed remains opt-in; wire up when embedding.enabled = true.
                 // NOTE: keep in sync with DEFAULT_PASSES in types/pass.rs
                 //       (used by parse_passes_list for the "default" token).
             ],
@@ -705,8 +706,8 @@ mod tests {
         assert!(result.total_chunks > 0, "expected chunks after indexing");
         assert_eq!(
             result.runs.len(),
-            8,
-            "expected 8 run-log entries (history, chunk, structure, semantic, aliases, summarize, purpose, contract)"
+            9,
+            "expected 9 run-log entries (history, chunk, structure, semantic, aliases, summarize, purpose, contract, theme)"
         );
         for run in &result.runs {
             assert_eq!(run.status, "completed");
