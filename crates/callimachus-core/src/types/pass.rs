@@ -24,7 +24,7 @@ pub enum Pass {
     Purpose,
     /// Static + LLM-driven contract analysis (signals, risks, assumptions).
     Contract,
-    /// Corpus-level architectural theme detection (opt-in).
+    /// Corpus-level architectural theme detection.
     Theme,
 }
 
@@ -65,7 +65,7 @@ impl std::str::FromStr for Pass {
 }
 
 /// Default pass list used by `parse_passes_list` for the `default` token and by
-/// [`crate::indexing::pipeline::IndexOptions::default`] for the standard eight-pass run.
+/// [`crate::indexing::pipeline::IndexOptions::default`] for the standard nine-pass run.
 ///
 /// **Keep in sync** with `IndexOptions::default()` in `crates/callimachus-core/src/indexing/pipeline.rs`.
 const DEFAULT_PASSES: &[Pass] = &[
@@ -77,6 +77,7 @@ const DEFAULT_PASSES: &[Pass] = &[
     Pass::Summarize,
     Pass::Purpose,
     Pass::Contract,
+    Pass::Theme,
 ];
 
 /// Parse a comma-separated `--passes` value into a deduplicated, ordered
@@ -84,7 +85,7 @@ const DEFAULT_PASSES: &[Pass] = &[
 ///
 /// The literal token `default` expands to the current default pass list:
 /// History, Chunk, Structure, Semantic, Aliases, Summarize, Purpose,
-/// Contract. (Theme and Embed are opt-in.)
+/// Contract, Theme. (Embed is opt-in.)
 ///
 /// Returns an `Err` for:
 /// * an empty input string (after trimming)
@@ -190,14 +191,16 @@ mod tests {
                 Pass::Summarize,
                 Pass::Purpose,
                 Pass::Contract,
+                Pass::Theme,
             ]
         );
     }
 
     #[test]
     fn default_plus_extra() {
+        // Theme is already part of default; the dup is silently removed, so we still get 9.
         let result = parse_passes_list("default,theme").unwrap();
-        assert_eq!(result.len(), 9, "default(8) + theme = 9");
+        assert_eq!(result.len(), 9, "theme is already in default; dedup keeps it at 9");
         assert!(result.contains(&Pass::Theme));
         assert!(result.contains(&Pass::History));
     }
@@ -231,7 +234,7 @@ mod tests {
     fn default_with_dup() {
         // "default,chunk" should deduplicate chunk (it's already in default).
         let result = parse_passes_list("default,chunk").unwrap();
-        assert_eq!(result.len(), 8, "chunk already in default; still 8 passes");
+        assert_eq!(result.len(), 9, "chunk already in default; still 9 passes");
         // chunk appears exactly once
         assert_eq!(result.iter().filter(|p| **p == Pass::Chunk).count(), 1);
     }

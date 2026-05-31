@@ -92,7 +92,7 @@ GET /corpora/:id
 
 ### 3. `corpus_themes`
 
-List corpus-level architectural themes and invariants extracted during the opt-in `themes` indexing pass (`calli index <id> --pass theme`).
+List corpus-level architectural themes and invariants extracted during the `themes` indexing pass.
 
 #### Input
 ```json
@@ -120,7 +120,7 @@ List corpus-level architectural themes and invariants extracted during the opt-i
 
 #### Notes
 
-Themes are not produced by default. Run `calli index <id> --pass theme` after the main pipeline finishes, or enable via `IndexOptions`. Currently implemented for code and wiki adapters.
+Themes are produced by default as part of the standard nine-pass run. They can also be run standalone via `calli index <id> --pass theme`. Currently implemented for code and wiki adapters.
 
 ---
 

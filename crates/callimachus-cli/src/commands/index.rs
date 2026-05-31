@@ -155,6 +155,7 @@ fn resolve_passes(pass: Option<String>) -> Result<Vec<Pass>> {
             Pass::Summarize,
             Pass::Purpose,
             Pass::Contract,
+            Pass::Theme,
         ]),
         Some("all") => Ok(vec![
             Pass::History,
