@@ -19,6 +19,7 @@ callimachus-http = { path = "../callimachus-http" }
 callimachus-adapter-book = { path = "../adapters/callimachus-adapter-book" }
 callimachus-adapter-code = { path = "../adapters/callimachus-adapter-code" }
 callimachus-adapter-wiki = { path = "../adapters/callimachus-adapter-wiki" }
+callimachus-adapter-docs = { path = "../adapters/callimachus-adapter-docs" }
 anyhow.workspace = true
 clap.workspace = true
 git2 = { version = "0.19", default-features = false }

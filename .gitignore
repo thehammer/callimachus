@@ -13,3 +13,9 @@ data/apple-docs-macos-*.pinakes
 data/apple-docs-macos-*.pinakes-shm
 data/apple-docs-macos-*.pinakes-wal
 data/apple-docs-macos-*-src/
+
+# Apple docs corpus v2 — explicit patterns (belt-and-braces; wildcards above also match)
+data/apple-docs-macos-*-v2-src/
+data/apple-docs-macos-*-v2.pinakes
+data/apple-docs-macos-*-v2.pinakes-shm
+data/apple-docs-macos-*-v2.pinakes-wal

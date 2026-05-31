@@ -1,17 +1,37 @@
 #!/usr/bin/env python3
-"""fetch-apple-docs.py — Fetch Apple developer documentation as markdown.
+"""fetch-apple-docs.py — Fetch Apple developer documentation as markdown or JSON.
 
 Enumerates top-level types from a Swift symbol graph, fetches the
 corresponding DocC JSON from developer.apple.com, and renders each to a
-Markdown file that the callimachus wiki adapter can ingest.
+Markdown file (wiki adapter) or writes the raw DocC JSON (docs adapter).
 
-Usage:
+Usage (v1 / markdown, backward-compatible):
     fetch-apple-docs.py \\
       --framework AppKit \\
       --framework Combine \\
       --framework Foundation \\
       --sdk /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.sdk \\
       --output-dir data/apple-docs-macos-26-src
+
+Usage (v2 / JSON with child symbols):
+    fetch-apple-docs.py \\
+      --framework AppKit \\
+      --framework Combine \\
+      --framework Foundation \\
+      --sdk /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.sdk \\
+      --output-dir data/apple-docs-macos-26-v2-src \\
+      --format json \\
+      --depth 2
+
+New flags (v2):
+  --format {markdown,json,both}   default: markdown
+      markdown — render to .md per symbol (v1 behaviour, unchanged)
+      json     — write raw DocC JSON to <Framework>/<Symbol>.json
+      both     — write both .md and .json side-by-side
+  --depth {1,2}                   default: 1
+      1 — top-level types only (v1 behaviour)
+      2 — also fetch child symbol pages (methods, properties, enum cases)
+          via topicSections[].identifiers[]; adds ~35 min for AppKit at 0.15s/req
 
 No third-party dependencies — only urllib, json, subprocess, argparse, pathlib, time.
 """
@@ -330,9 +350,141 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Re-fetch even if <ClassName>.md already exists",
+        help="Re-fetch even if output file already exists",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["markdown", "json", "both"],
+        default="markdown",
+        metavar="FORMAT",
+        help="Output format: markdown (default, v1 behaviour), json, or both",
+    )
+    parser.add_argument(
+        "--depth",
+        type=int,
+        choices=[1, 2],
+        default=1,
+        metavar="DEPTH",
+        help=(
+            "Fetch depth: 1=top-level types only (default, v1 behaviour); "
+            "2=also fetch child symbol pages (adds ~35 min for AppKit at 0.15s/req)"
+        ),
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress cost-estimate warnings (e.g. depth-2 time estimate)",
     )
     return parser.parse_args()
+
+
+DOCC_BASE_URL = "https://developer.apple.com/tutorials/data/documentation"
+
+
+def identifier_to_url(identifier: str) -> str | None:
+    """Convert a DocC identifier to a fetch URL.
+
+    Pattern: doc://com.apple.documentation/documentation/<path>
+    → https://developer.apple.com/tutorials/data/documentation/<path>.json
+    """
+    prefix = "doc://com.apple.documentation/documentation/"
+    if not identifier.startswith(prefix):
+        return None
+    path = identifier[len(prefix):]
+    return f"{DOCC_BASE_URL}/{path}.json"
+
+
+def write_symbol(
+    framework: str,
+    class_name: str,
+    data: dict,
+    url: str,
+    output_dir: Path,
+    fmt: str,
+) -> None:
+    """Write one symbol's output (markdown and/or JSON) to disk."""
+    if fmt in ("markdown", "both"):
+        md_path = output_dir / f"{class_name}.md"
+        markdown = render_page(data, framework, url)
+        md_path.write_text(markdown, encoding="utf-8")
+
+    if fmt in ("json", "both"):
+        # Write to <output_dir>/<Framework>/<ClassName>.json
+        json_dir = output_dir / framework
+        json_dir.mkdir(parents=True, exist_ok=True)
+        json_path = json_dir / f"{class_name}.json"
+        json_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def fetch_child_symbols(
+    framework: str,
+    class_name: str,
+    data: dict,
+    output_dir: Path,
+    fmt: str,
+    rate_limit: float,
+    force: bool,
+) -> tuple[int, int, int]:
+    """Fetch child symbol pages listed in topicSections[].identifiers[].
+
+    Returns (fetched, skipped, failed).
+    """
+    fetched = skipped = failed = 0
+    seen_identifiers: set[str] = set()
+
+    for section in data.get("topicSections", []):
+        for identifier in section.get("identifiers", []):
+            if identifier in seen_identifiers:
+                continue
+            seen_identifiers.add(identifier)
+
+            url = identifier_to_url(identifier)
+            if url is None:
+                continue
+
+            # Derive child slug from identifier path tail.
+            # e.g. doc://…/documentation/appkit/nsview/tag → tag
+            id_path = identifier.split("/documentation/", 1)[-1]
+            path_parts = id_path.split("/")
+            child_slug = path_parts[-1] if path_parts else identifier.rsplit("/", 1)[-1]
+            child_name = f"{class_name}-{child_slug}"
+
+            # Idempotency check.
+            already_exists = False
+            if fmt in ("markdown", "both"):
+                already_exists = (output_dir / f"{child_name}.md").exists()
+            elif fmt == "json":
+                already_exists = (output_dir / framework / f"{child_name}.json").exists()
+            if already_exists and not force:
+                skipped += 1
+                continue
+
+            try:
+                child_data = fetch_json(url)
+            except Exception as e:
+                print(f"WARN {framework}/{child_name}: fetch error: {e}", file=sys.stderr)
+                failed += 1
+                time.sleep(rate_limit)
+                continue
+
+            if child_data is None:
+                # 404 — child symbol has no published page (normal)
+                skipped += 1
+                time.sleep(rate_limit)
+                continue
+
+            try:
+                write_symbol(framework, child_name, child_data, url, output_dir, fmt)
+            except Exception as e:
+                print(f"WARN {framework}/{child_name}: write error: {e}", file=sys.stderr)
+                failed += 1
+                time.sleep(rate_limit)
+                continue
+
+            fetched += 1
+            time.sleep(rate_limit)
+
+    return fetched, skipped, failed
 
 
 def process_framework(
@@ -342,9 +494,17 @@ def process_framework(
     output_dir: Path,
     rate_limit: float,
     force: bool,
+    fmt: str = "markdown",
+    depth: int = 1,
+    quiet: bool = False,
 ) -> dict:
-    """Process one framework. Returns counts: fetched, skipped, failed."""
-    counts = {"fetched": 0, "skipped": 0, "failed": 0}
+    """Process one framework. Returns counts: fetched_top, fetched_children, skipped, failed."""
+    counts: dict[str, int] = {
+        "fetched_top": 0,
+        "fetched_children": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
 
     with tempfile.TemporaryDirectory() as tmpdir_str:
         tmpdir = Path(tmpdir_str)
@@ -354,12 +514,28 @@ def process_framework(
     symbols = enumerate_top_level_types(graph)
     print(f"[{framework}] {len(symbols)} top-level types found", flush=True)
 
+    if depth == 2 and not quiet:
+        # Estimate child count: assume ~100 children per top-level type on average.
+        est_children = len(symbols) * 100
+        est_min = int(est_children * rate_limit / 60)
+        print(
+            f"[{framework}] WARNING: --depth 2 will fetch ~{est_children:,} additional "
+            f"child symbols at {rate_limit}s/req ≈ {est_min} min. "
+            f"Suppress with --quiet.",
+            file=sys.stderr,
+        )
+
     for sym in symbols:
         path_components = sym.get("pathComponents", [])
         class_name = path_components[0]
-        out_path = output_dir / f"{class_name}.md"
 
-        if out_path.exists() and not force:
+        # Idempotency: skip if already fetched (check primary output file).
+        already_exists = False
+        if fmt in ("markdown", "both"):
+            already_exists = (output_dir / f"{class_name}.md").exists()
+        elif fmt == "json":
+            already_exists = (output_dir / framework / f"{class_name}.json").exists()
+        if already_exists and not force:
             counts["skipped"] += 1
             continue
 
@@ -382,16 +558,30 @@ def process_framework(
             continue
 
         try:
-            markdown = render_page(data, framework, url)
+            write_symbol(framework, class_name, data, url, output_dir, fmt)
         except Exception as e:
-            print(f"WARN {framework}/{class_name}: render error: {e}", file=sys.stderr)
+            print(f"WARN {framework}/{class_name}: render/write error: {e}", file=sys.stderr)
             counts["failed"] += 1
             time.sleep(rate_limit)
             continue
 
-        out_path.write_text(markdown, encoding="utf-8")
-        counts["fetched"] += 1
+        counts["fetched_top"] += 1
         time.sleep(rate_limit)
+
+        # Depth-2: fetch child symbols listed in topicSections.
+        if depth == 2 and data is not None:
+            c_fetched, c_skipped, c_failed = fetch_child_symbols(
+                framework=framework,
+                class_name=class_name,
+                data=data,
+                output_dir=output_dir,
+                fmt=fmt,
+                rate_limit=rate_limit,
+                force=force,
+            )
+            counts["fetched_children"] += c_fetched
+            counts["skipped"] += c_skipped
+            counts["failed"] += c_failed
 
     return counts
 
@@ -401,7 +591,12 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    total = {"fetched": 0, "skipped": 0, "failed": 0}
+    total: dict[str, int] = {
+        "fetched_top": 0,
+        "fetched_children": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
     per_framework: dict[str, dict] = {}
 
     for framework in args.frameworks:
@@ -412,19 +607,26 @@ def main() -> None:
             output_dir=output_dir,
             rate_limit=args.rate_limit,
             force=args.force,
+            fmt=args.format,
+            depth=args.depth,
+            quiet=args.quiet,
         )
         per_framework[framework] = counts
         for k in total:
             total[k] += counts[k]
 
-    per_fw_str = ", ".join(f"{fw}={c['fetched']}f/{c['skipped']}s/{c['failed']}x"
-                           for fw, c in per_framework.items())
+    per_fw_str = ", ".join(
+        f"{fw}=top:{c['fetched_top']}/children:{c['fetched_children']}/skip:{c['skipped']}/fail:{c['failed']}"
+        for fw, c in per_framework.items()
+    )
     print(
-        f"fetched={total['fetched']} skipped={total['skipped']} failed={total['failed']} "
+        f"depth={args.depth} format={args.format} "
+        f"fetched_top={total['fetched_top']} fetched_children={total['fetched_children']} "
+        f"skipped={total['skipped']} failed={total['failed']} "
         f"per_framework={{{per_fw_str}}}"
     )
 
-    if total["fetched"] == 0 and total["skipped"] == 0:
+    if total["fetched_top"] == 0 and total["skipped"] == 0:
         print("error: no symbols fetched or found — check framework names and SDK path", file=sys.stderr)
         sys.exit(1)
 

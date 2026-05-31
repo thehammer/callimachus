@@ -1,0 +1,109 @@
+{
+  "metadata": {
+    "title": "NSStackView",
+    "symbolKind": "class",
+    "roleHeading": "Class",
+    "modules": [{"name": "AppKit"}],
+    "platforms": [
+      {"name": "macOS", "introduced": "10.9", "deprecated": ""}
+    ]
+  },
+  "abstract": [
+    {"type": "text", "text": "A view that arranges an array of views horizontally or vertically and updates their placement and sizing when the window size changes."}
+  ],
+  "primaryContentSections": [
+    {
+      "kind": "declarations",
+      "declarations": [
+        {
+          "languages": ["swift"],
+          "platforms": ["macOS"],
+          "tokens": [
+            {"kind": "keyword", "text": "class"},
+            {"kind": "text", "text": " "},
+            {"kind": "identifier", "text": "NSStackView"},
+            {"kind": "text", "text": " : "},
+            {"kind": "typeIdentifier", "text": "NSView", "identifier": "doc://com.apple.documentation/documentation/appkit/nsview"}
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "content",
+      "content": [
+        {
+          "type": "paragraph",
+          "inlineContent": [
+            {"type": "text", "text": "NSStackView automatically manages the placement, sizing, and spacing of a collection of views, called arranged views."}
+          ]
+        }
+      ]
+    }
+  ],
+  "topicSections": [
+    {
+      "title": "Managing Arranged Views",
+      "identifiers": [
+        "doc://com.apple.documentation/documentation/appkit/nsstackview/alignment"
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "type": "inheritsFrom",
+      "source": "doc://com.apple.documentation/documentation/appkit/nsstackview",
+      "target": "doc://com.apple.documentation/documentation/appkit/nsview"
+    },
+    {
+      "type": "conformsTo",
+      "source": "doc://com.apple.documentation/documentation/appkit/nsstackview",
+      "target": "doc://com.apple.documentation/documentation/appkit/nsaccessibilitygroup"
+    },
+    {
+      "type": "conformsTo",
+      "source": "doc://com.apple.documentation/documentation/appkit/nsstackview",
+      "target": "doc://com.apple.documentation/documentation/appkit/nsaccessibilitycontainer"
+    }
+  ],
+  "references": {
+    "doc://com.apple.documentation/documentation/appkit/nsview": {
+      "identifier": "doc://com.apple.documentation/documentation/appkit/nsview",
+      "title": "NSView",
+      "role": "symbol",
+      "kind": "symbol",
+      "url": "/documentation/appkit/nsview",
+      "abstract": [{"type": "text", "text": "The infrastructure for drawing, printing, and handling events in an app."}],
+      "pathComponents": ["NSView"]
+    },
+    "doc://com.apple.documentation/documentation/appkit/nsaccessibilitygroup": {
+      "identifier": "doc://com.apple.documentation/documentation/appkit/nsaccessibilitygroup",
+      "title": "NSAccessibilityGroup",
+      "role": "symbol",
+      "kind": "symbol",
+      "url": "/documentation/appkit/nsaccessibilitygroup",
+      "abstract": [{"type": "text", "text": "A role-based protocol that provides the interface for a grouping element."}],
+      "pathComponents": ["NSAccessibilityGroup"]
+    },
+    "doc://com.apple.documentation/documentation/appkit/nsaccessibilitycontainer": {
+      "identifier": "doc://com.apple.documentation/documentation/appkit/nsaccessibilitycontainer",
+      "title": "NSAccessibilityContainer",
+      "role": "symbol",
+      "kind": "symbol",
+      "url": "/documentation/appkit/nsaccessibilitycontainer",
+      "abstract": [{"type": "text", "text": "A role-based protocol that provides the interface for container views."}],
+      "pathComponents": ["NSAccessibilityContainer"]
+    },
+    "doc://com.apple.documentation/documentation/appkit/nsstackview/alignment": {
+      "identifier": "doc://com.apple.documentation/documentation/appkit/nsstackview/alignment",
+      "title": "NSStackView.alignment",
+      "role": "symbol",
+      "kind": "symbol",
+      "url": "/documentation/appkit/nsstackview/alignment",
+      "abstract": [{"type": "text", "text": "The view alignment within the stack view."}],
+      "pathComponents": ["NSStackView", "alignment"]
+    }
+  },
+  "availability": [
+    {"name": "macOS", "introduced": "10.9"}
+  ]
+}

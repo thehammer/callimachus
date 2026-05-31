@@ -10,7 +10,7 @@ use std::path::PathBuf;
 pub enum CorpusCommand {
     /// Register a new corpus.
     Add {
-        /// Adapter kind: book, code, wiki.
+        /// Adapter kind: book, code, wiki, docs.
         kind: String,
         /// Human-readable name for this corpus.
         name: String,
