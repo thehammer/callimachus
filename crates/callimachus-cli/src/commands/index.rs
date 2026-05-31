@@ -10,7 +10,8 @@ use callimachus_core::{
     storage::StorageBackend,
     types::{Corpus, Pass},
 };
-use callimachus_llm::{ProviderConfig, build_provider};
+use callimachus_llm::{EmbeddingProviderConfig, ProviderConfig, build_embedding_provider,
+    build_provider};
 
 use crate::config::GlobalConfig;
 
@@ -48,6 +49,27 @@ pub async fn run(
 
     // Build index options.
     let passes = resolve_passes(pass)?;
+
+    // Fail-fast: if embed was requested, the embedding config must be usable.
+    let embed_requested = passes.contains(&Pass::Embed);
+    let embedder = if embed_requested {
+        let embed_cfg = build_embedding_provider_config(config);
+        match build_embedding_provider(embed_cfg) {
+            Ok(Some(p)) => Some(p),
+            Ok(None) => {
+                bail!(
+                    "--pass embed/all requested but [embedding] is disabled or absent \
+                     in config; set [embedding] enabled = true with a Voyage api_key_env"
+                );
+            }
+            Err(e) => {
+                bail!("embeddings requested via --pass but not usable: {e}");
+            }
+        }
+    } else {
+        None
+    };
+
     let opts = IndexOptions {
         passes,
         from_chunk,
@@ -69,7 +91,7 @@ pub async fn run(
         db,
         adapter,
         llm: Arc::new(llm),
-        embedder: None, // TODO: wire up from config when embedding.enabled = true
+        embedder,
     };
 
     let result = pipeline.run(&corpus, opts).await?;
@@ -95,6 +117,21 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Translate the CLI's `EmbeddingConfig` into the llm crate's
+/// `EmbeddingProviderConfig` so the llm crate stays unaware of CLI types.
+pub fn build_embedding_provider_config(config: &GlobalConfig) -> EmbeddingProviderConfig {
+    match &config.embedding {
+        None => EmbeddingProviderConfig::default(),
+        Some(e) => EmbeddingProviderConfig {
+            enabled: e.enabled,
+            provider: e.provider.clone(),
+            model: e.model.clone(),
+            api_key: e.api_key.clone(),
+            api_key_env: e.api_key_env.clone(),
+        },
+    }
 }
 
 pub fn build_adapter(corpus: &Corpus) -> Result<Arc<dyn SourceAdapter>> {
@@ -349,6 +386,41 @@ mod tests {
         assert!(
             msg.contains("pdf") || msg.contains("adapter"),
             "error should mention adapter kind: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_pass_without_config_errors_loudly() {
+        let db: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let corpus = Corpus::new(
+            "embed-test".to_string(),
+            "Embed Test".to_string(),
+            "code".to_string(),
+            env!("CARGO_MANIFEST_DIR").to_string(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        // Request embed pass with default config (no [embedding] block).
+        let result = super::run(
+            "embed-test",
+            Some("embed".to_string()),
+            None,
+            false,
+            false,
+            false,
+            None,
+            false,
+            Some("dry-run".to_string()),
+            db,
+            &GlobalConfig::default(),
+        )
+        .await;
+
+        assert!(result.is_err(), "expected error when embed requested but not configured");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("embed") || msg.contains("embedding") || msg.contains("[embedding]"),
+            "error should mention embed/embedding config: {msg}"
         );
     }
 }

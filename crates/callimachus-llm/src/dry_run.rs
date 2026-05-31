@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use crate::{
+    embedding::EmbeddingProvider,
     error::Result,
     provider::{CompletionRequest, CompletionResponse, LlmProvider, ProviderUsage},
 };
@@ -99,6 +100,29 @@ impl LlmProvider for DryRunProvider {
     }
 }
 
+/// `DryRunProvider` also implements `EmbeddingProvider` so it can be used as
+/// both the LLM and the embedder in tests that check cache-hit behaviour.
+/// The `call_count()` counter is shared between `complete` and `embed_batch`,
+/// allowing a single test double to cover both roles.
+#[async_trait::async_trait]
+impl EmbeddingProvider for DryRunProvider {
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.calls.fetch_add(texts.len() as u64, Ordering::SeqCst);
+        Ok(texts
+            .iter()
+            .map(|_| {
+                let mut v = vec![0.0f32; 8];
+                v[0] = 1.0;
+                v
+            })
+            .collect())
+    }
+
+    fn name(&self) -> &str {
+        "dry-run"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,7 +206,8 @@ mod tests {
     #[test]
     fn name_and_parallel() {
         let p = DryRunProvider::new();
-        assert_eq!(p.name(), "dry-run");
+        // Both LlmProvider::name and EmbeddingProvider::name return "dry-run".
+        assert_eq!(LlmProvider::name(&p), "dry-run");
         assert!(p.supports_parallel());
     }
 }

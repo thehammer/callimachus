@@ -124,6 +124,7 @@ impl CorpusWatcher {
                             &self.corpus,
                             &self.adapter,
                             &self.llm,
+                            None, // watcher does not configure an embedder
                             &change_set,
                             &opts,
                         )

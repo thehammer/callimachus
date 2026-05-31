@@ -217,6 +217,7 @@ async fn incremental_reindex_preserves_unchanged_chunks_and_corrections() {
         &corpus_refreshed,
         &(Arc::clone(&adapter) as Arc<dyn SourceAdapter>),
         &(Arc::new(DryRunProvider::new()) as Arc<dyn callimachus_llm::LlmProvider>),
+        None,
         &change_set,
         &IndexOptions::default(),
     )

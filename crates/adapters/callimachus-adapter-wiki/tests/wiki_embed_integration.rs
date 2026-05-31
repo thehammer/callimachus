@@ -8,7 +8,7 @@ use callimachus_core::{
     storage::{SqliteBackend, StorageBackend},
     types::{Corpus, Pass},
 };
-use callimachus_llm::DryRunProvider;
+use callimachus_llm::{DryRunProvider, EmbeddingProvider};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample_wiki");
 
@@ -114,7 +114,9 @@ impl SourceAdapter for CorpusAwareWikiAdapter {
 async fn end_to_end_index_with_embed_pass() {
     let (db, corpus) = setup().await;
     let adapter = Arc::new(CorpusAwareWikiAdapter::new(&corpus.id, FIXTURE));
-    let llm: Arc<dyn callimachus_llm::LlmProvider> = Arc::new(DryRunProvider::new());
+    let dry = Arc::new(DryRunProvider::new());
+    let llm: Arc<dyn callimachus_llm::LlmProvider> =
+        Arc::clone(&dry) as Arc<dyn callimachus_llm::LlmProvider>;
 
     // Run chunk + embed passes.
     let opts = IndexOptions {
@@ -126,7 +128,8 @@ async fn end_to_end_index_with_embed_pass() {
         db: Arc::clone(&db),
         adapter: adapter.clone(),
         llm: Arc::clone(&llm),
-        embedder: Some(Arc::clone(&llm)), // DryRunProvider supports embeddings
+        // DryRunProvider implements both LlmProvider and EmbeddingProvider.
+        embedder: Some(Arc::clone(&dry) as Arc<dyn EmbeddingProvider>),
     };
 
     let result = pipeline.run(&corpus, opts).await.unwrap();
@@ -154,7 +157,8 @@ async fn end_to_end_index_with_embed_pass() {
 async fn semantic_search_returns_results_after_embed() {
     let (db, corpus) = setup().await;
     let adapter = Arc::new(CorpusAwareWikiAdapter::new(&corpus.id, FIXTURE));
-    let llm: Arc<dyn callimachus_llm::LlmProvider> = Arc::new(DryRunProvider::new());
+    let dry = Arc::new(DryRunProvider::new());
+    let llm: Arc<dyn callimachus_llm::LlmProvider> = Arc::clone(&dry) as Arc<dyn callimachus_llm::LlmProvider>;
 
     let opts = IndexOptions {
         passes: vec![Pass::Chunk, Pass::Embed],
@@ -165,7 +169,7 @@ async fn semantic_search_returns_results_after_embed() {
         db: Arc::clone(&db),
         adapter,
         llm: Arc::clone(&llm),
-        embedder: Some(Arc::clone(&llm)),
+        embedder: Some(Arc::clone(&dry) as Arc<dyn EmbeddingProvider>),
     };
 
     pipeline.run(&corpus, opts).await.unwrap();

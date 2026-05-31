@@ -1,11 +1,14 @@
+use std::sync::Arc;
 use std::path::PathBuf;
 
 use crate::{
     anthropic::AnthropicApiProvider,
     claude_code::ClaudeCodeProvider,
     dry_run::DryRunProvider,
+    embedding::EmbeddingProvider,
     error::{LlmError, Result},
     provider::LlmProvider,
+    voyage::VoyageEmbeddingProvider,
 };
 
 #[derive(Debug)]
@@ -96,6 +99,67 @@ pub fn build(config: ProviderConfig) -> Result<Box<dyn LlmProvider>> {
         }
         ProviderConfig::DryRun => Ok(Box::new(DryRunProvider::new())),
     }
+}
+
+// ── Embedding provider ────────────────────────────────────────────────────────
+
+/// Configuration for constructing an embedding provider.
+///
+/// The CLI translates its `EmbeddingConfig` struct into this type so that the
+/// `callimachus-llm` crate stays unaware of CLI-specific types.
+#[derive(Debug, Default)]
+pub struct EmbeddingProviderConfig {
+    pub enabled: bool,
+    /// Provider id. Currently only `"voyage"` is accepted.
+    pub provider: Option<String>,
+    /// Model name. Defaults to `"voyage-code-3"` when absent.
+    pub model: Option<String>,
+    /// Inline API key. Lower precedence than `api_key_env`.
+    pub api_key: Option<String>,
+    /// Name of the environment variable holding the API key.
+    /// Takes precedence over `api_key` when both are present.
+    pub api_key_env: Option<String>,
+}
+
+/// Build an embedding provider from config.
+///
+/// Returns:
+/// - `Ok(None)` when embeddings are disabled (`enabled == false`). This is the
+///   normal, fully-supported off state.
+/// - `Ok(Some(provider))` when enabled and a key resolves.
+/// - `Err(..)` when enabled but misconfigured (unknown provider, or no key
+///   resolvable from `api_key_env` / `api_key`). Loud, actionable message.
+pub fn build_embedding_provider(
+    cfg: EmbeddingProviderConfig,
+) -> Result<Option<Arc<dyn EmbeddingProvider>>> {
+    if !cfg.enabled {
+        return Ok(None);
+    }
+
+    let provider = cfg.provider.as_deref().unwrap_or("voyage");
+    if provider != "voyage" {
+        return Err(LlmError::Other(format!(
+            "unknown embedding provider '{provider}'; only 'voyage' is supported"
+        )));
+    }
+
+    // api_key_env takes precedence over inline api_key.
+    let key = cfg
+        .api_key_env
+        .as_deref()
+        .and_then(|name| std::env::var(name).ok())
+        .or(cfg.api_key.clone())
+        .ok_or_else(|| {
+            LlmError::Other(
+                "embedding enabled but no API key found: set api_key_env to the name \
+                 of an environment variable holding your Voyage key (e.g. \
+                 VOYAGE_API_KEY), or set api_key inline"
+                    .into(),
+            )
+        })?;
+
+    let p = VoyageEmbeddingProvider::new(key, cfg.model.clone());
+    Ok(Some(Arc::new(p)))
 }
 
 fn find_claude_in_path() -> Option<PathBuf> {
