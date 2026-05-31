@@ -233,6 +233,22 @@ impl QueryService {
             if let Some(engine) = &self.corrections {
                 engine.apply_to_entities(&mut matches);
             }
+            // Apply kind filter or tie-break heuristic.
+            let matches = if let Some(ref k) = input.kind {
+                // Explicit kind filter: retain only entities of the requested kind.
+                matches.into_iter().filter(|e| e.kind == *k).collect::<Vec<_>>()
+            } else if matches.len() > 1 {
+                // Tie-break: if exactly one non-file entity exists, prefer it.
+                let non_file: Vec<_> = matches.iter().filter(|e| e.kind != "file").cloned().collect();
+                if non_file.len() == 1 {
+                    non_file
+                } else {
+                    matches
+                }
+            } else {
+                matches
+            };
+
             match matches.len() {
                 0 => {
                     // Fuzzy suggestions via entity list filter.
@@ -553,6 +569,7 @@ impl QueryService {
         let entity = match self.entity(EntityInput {
             corpus_id: input.corpus_id.clone(),
             name_or_id: input.name.clone(),
+            kind: None,
         }) {
             ToolResult::Ok(s) => s.data,
             other => {
@@ -1085,7 +1102,18 @@ mod tests {
         name: &str,
         first_uri: Option<&str>,
     ) -> Entity {
-        let mut e = Entity::new(id.into(), corpus_id.into(), name.into(), "character".into());
+        seed_entity_kind(db, corpus_id, id, name, first_uri, "character")
+    }
+
+    fn seed_entity_kind(
+        db: &dyn StorageBackend,
+        corpus_id: &str,
+        id: &str,
+        name: &str,
+        first_uri: Option<&str>,
+        kind: &str,
+    ) -> Entity {
+        let mut e = Entity::new(id.into(), corpus_id.into(), name.into(), kind.into());
         e.appearance_count = 1;
         e.first_location = first_uri.and_then(|u| Location::parse(u).ok());
         e.last_location = first_uri.and_then(|u| Location::parse(u).ok());
@@ -1190,6 +1218,7 @@ mod tests {
         let result = svc.entity(EntityInput {
             corpus_id: "c1".into(),
             name_or_id: "Gandalf".into(),
+            kind: None,
         });
         let ToolResult::Ok(s) = result else {
             panic!("expected Ok")
@@ -1206,6 +1235,7 @@ mod tests {
         let result = svc.entity(EntityInput {
             corpus_id: "c1".into(),
             name_or_id: "e-gandalf".into(),
+            kind: None,
         });
         let ToolResult::Ok(s) = result else {
             panic!("expected Ok")
@@ -1222,6 +1252,7 @@ mod tests {
         let result = svc.entity(EntityInput {
             corpus_id: "c1".into(),
             name_or_id: "Gandalff".into(),
+            kind: None,
         });
         let ToolResult::Err(e) = result else {
             panic!("expected Err")
@@ -1244,11 +1275,102 @@ mod tests {
         let result = svc.entity(EntityInput {
             corpus_id: "c1".into(),
             name_or_id: "Gandalf".into(),
+            kind: None,
         });
         let ToolResult::Err(e) = result else {
             panic!("expected Err")
         };
         assert!(matches!(e.error, crate::types::ToolError::Ambiguous { .. }));
+    }
+
+    #[test]
+    fn entity_kind_filter_resolves_ambiguity() {
+        let (svc, db) = make_service();
+        seed_corpus(db.as_ref(), "c1");
+        seed_entity_kind(db.as_ref(), "c1", "e-class", "NewsletterService", None, "class");
+        seed_entity_kind(db.as_ref(), "c1", "e-file", "NewsletterService", None, "file");
+
+        let result = svc.entity(EntityInput {
+            corpus_id: "c1".into(),
+            name_or_id: "NewsletterService".into(),
+            kind: Some("class".into()),
+        });
+        let ToolResult::Ok(s) = result else {
+            panic!("expected Ok")
+        };
+        assert_eq!(s.data.kind, "class");
+        assert_eq!(s.data.id, "e-class");
+    }
+
+    #[test]
+    fn entity_kind_filter_no_match_returns_not_found() {
+        let (svc, db) = make_service();
+        seed_corpus(db.as_ref(), "c1");
+        seed_entity_kind(db.as_ref(), "c1", "e-class", "NewsletterService", None, "class");
+        seed_entity_kind(db.as_ref(), "c1", "e-file", "NewsletterService", None, "file");
+
+        let result = svc.entity(EntityInput {
+            corpus_id: "c1".into(),
+            name_or_id: "NewsletterService".into(),
+            kind: Some("method".into()),
+        });
+        let ToolResult::Err(e) = result else {
+            panic!("expected Err")
+        };
+        assert!(matches!(e.error, crate::types::ToolError::NotFound { .. }));
+    }
+
+    #[test]
+    fn entity_kind_omitted_preserves_behaviour() {
+        let (svc, db) = make_service();
+        seed_corpus(db.as_ref(), "c1");
+        // Two same-kind candidates → Ambiguous (no tie-break when both are non-file)
+        seed_entity_kind(db.as_ref(), "c1", "e1", "Gandalf the Grey", None, "character");
+        seed_entity_kind(db.as_ref(), "c1", "e2", "Gandalf the White", None, "character");
+
+        let result = svc.entity(EntityInput {
+            corpus_id: "c1".into(),
+            name_or_id: "Gandalf".into(),
+            kind: None,
+        });
+        assert!(matches!(
+            result,
+            ToolResult::Err(ref e) if matches!(e.error, crate::types::ToolError::Ambiguous { .. })
+        ));
+
+        // Single match with kind: None → Ok
+        let (svc2, db2) = make_service();
+        seed_corpus(db2.as_ref(), "c1");
+        seed_entity_kind(db2.as_ref(), "c1", "e3", "Frodo", None, "character");
+
+        let result2 = svc2.entity(EntityInput {
+            corpus_id: "c1".into(),
+            name_or_id: "Frodo".into(),
+            kind: None,
+        });
+        let ToolResult::Ok(s) = result2 else {
+            panic!("expected Ok")
+        };
+        assert_eq!(s.data.canonical_name, "Frodo");
+    }
+
+    #[test]
+    fn entity_tiebreak_prefers_non_file() {
+        let (svc, db) = make_service();
+        seed_corpus(db.as_ref(), "c1");
+        seed_entity_kind(db.as_ref(), "c1", "e-class", "NewsletterService", None, "class");
+        seed_entity_kind(db.as_ref(), "c1", "e-file", "NewsletterService", None, "file");
+
+        let result = svc.entity(EntityInput {
+            corpus_id: "c1".into(),
+            name_or_id: "NewsletterService".into(),
+            kind: None,
+        });
+        let ToolResult::Ok(s) = result else {
+            panic!("expected Ok")
+        };
+        assert_eq!(s.data.kind, "class");
+        assert_eq!(s.data.id, "e-class");
     }
 
     // ── entity_edges ──────────────────────────────────────────────────────

@@ -84,6 +84,10 @@ pub struct SearchOutput {
 pub struct EntityInput {
     pub corpus_id: String,
     pub name_or_id: String,
+    /// Optional adapter-defined kind filter (e.g. "class", "method", "file").
+    /// When set, name matches are filtered to this kind before the ambiguity check.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 // ── entity_edges ─────────────────────────────────────────────────────────────
