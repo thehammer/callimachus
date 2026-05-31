@@ -31,7 +31,7 @@ use callimachus_core::{
     storage::{SqliteBackend, StorageBackend},
     types::{Chunk, Corpus, Entity, Location, Pass},
 };
-use callimachus_llm::{DryRunProvider, LlmProvider};
+use callimachus_llm::{DryRunProvider, EmbeddingProvider, LlmProvider};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -59,7 +59,7 @@ async fn run_passes(
     corpus: &Corpus,
     adapter: Arc<dyn SourceAdapter>,
     dry: Arc<DryRunProvider>,
-    embedder: Option<Arc<dyn LlmProvider>>,
+    embedder: Option<Arc<dyn EmbeddingProvider>>,
     passes: Vec<Pass>,
     full: bool,
     stable_sampling: bool,
@@ -887,7 +887,7 @@ async fn embed_cache_hit_skips_llm() {
         &corpus,
         Arc::clone(&adapter) as Arc<dyn SourceAdapter>,
         Arc::clone(&dry),
-        Some(Arc::clone(&dry) as Arc<dyn LlmProvider>),
+        Some(Arc::clone(&dry) as Arc<dyn EmbeddingProvider>),
         vec![Pass::Chunk, Pass::Embed],
         false,
         false,
@@ -906,7 +906,7 @@ async fn embed_cache_hit_skips_llm() {
         &corpus,
         Arc::clone(&adapter) as Arc<dyn SourceAdapter>,
         Arc::clone(&dry),
-        Some(Arc::clone(&dry) as Arc<dyn LlmProvider>),
+        Some(Arc::clone(&dry) as Arc<dyn EmbeddingProvider>),
         vec![Pass::Chunk, Pass::Embed],
         true,
         false,

@@ -7,9 +7,12 @@ use callimachus_core::{
     indexing::{ChangeStrategy, change_detector, pipeline::IndexOptions, reindex_pass},
     storage::StorageBackend,
 };
-use callimachus_llm::build_provider;
+use callimachus_llm::{build_embedding_provider, build_provider};
 
-use crate::{commands::index::resolve_provider, config::GlobalConfig};
+use crate::{
+    commands::index::{build_embedding_provider_config, resolve_provider},
+    config::GlobalConfig,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -76,6 +79,26 @@ pub async fn run(
         return Ok(());
     }
 
+    // Build embedder if embeddings are enabled. Fail loudly if enabled-but-broken.
+    let embedder = {
+        let embedding_enabled = config
+            .embedding
+            .as_ref()
+            .is_some_and(|e| e.enabled);
+        if embedding_enabled {
+            let embed_cfg = build_embedding_provider_config(config);
+            match build_embedding_provider(embed_cfg) {
+                Ok(Some(p)) => Some(p),
+                Ok(None) => None,
+                Err(e) => {
+                    bail!("embeddings enabled in config but not usable: {e}");
+                }
+            }
+        } else {
+            None
+        }
+    };
+
     let start = Instant::now();
     let llm_arc = Arc::new(llm);
 
@@ -84,6 +107,7 @@ pub async fn run(
         &corpus,
         &(adapter as Arc<dyn callimachus_core::SourceAdapter>),
         &(llm_arc as Arc<dyn callimachus_llm::LlmProvider>),
+        embedder,
         &change_set,
         &IndexOptions {
             dry_run: false,

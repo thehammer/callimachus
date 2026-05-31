@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use callimachus_llm::{LlmProvider, StableSamplingProvider};
+use callimachus_llm::{EmbeddingProvider, LlmProvider, StableSamplingProvider};
 
 use crate::{
     adapter::SourceAdapter,
@@ -315,8 +315,10 @@ pub struct IndexPipeline {
     pub db: Arc<dyn StorageBackend>,
     pub adapter: Arc<dyn SourceAdapter>,
     pub llm: Arc<dyn LlmProvider>,
-    /// Optional embedding provider. When `None`, the embed pass is skipped with a warning.
-    pub embedder: Option<Arc<dyn LlmProvider>>,
+    /// Optional embedding provider. When `None`, the embed pass is a no-op.
+    /// Possessing an `EmbeddingProvider` is the capability — no separate
+    /// `supports_embeddings()` check is needed.
+    pub embedder: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 impl IndexPipeline {
@@ -326,10 +328,12 @@ impl IndexPipeline {
         // Build tier providers once for the whole run.
         let mut tiers = build_tier_providers(Arc::clone(&self.llm), &opts.tier_config);
 
-        // Opt-in deterministic sampling: wrap each tier (and the embedder) so
-        // every Layer-2 LLM call is pinned to temperature 0 + a deterministic
-        // seed.  Default-off, so this is a no-op for existing callers.
-        let mut embedder = self.embedder.clone();
+        // Opt-in deterministic sampling: wrap each tier so every Layer-2 LLM
+        // call is pinned to temperature 0 + a deterministic seed.  Default-off,
+        // so this is a no-op for existing callers.
+        // Note: Voyage embeddings are deterministic for a fixed model, so
+        // stable-sampling wrapping is a no-op for the embedder and is omitted.
+        let embedder = self.embedder.clone();
         if opts.stable_sampling {
             tracing::info!(
                 "[pipeline] stable-sampling: ENABLED (temperature=0, deterministic seed)"
@@ -337,7 +341,6 @@ impl IndexPipeline {
             tiers.haiku = StableSamplingProvider::wrap(tiers.haiku);
             tiers.sonnet = StableSamplingProvider::wrap(tiers.sonnet);
             tiers.opus = StableSamplingProvider::wrap(tiers.opus);
-            embedder = embedder.map(StableSamplingProvider::wrap);
         }
 
         // ── Run-time visibility: log the resolved provider + tier + concurrency

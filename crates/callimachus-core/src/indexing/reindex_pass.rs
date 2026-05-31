@@ -1,12 +1,12 @@
 use std::{collections::HashSet, sync::Arc};
 
-use callimachus_llm::LlmProvider;
+use callimachus_llm::{EmbeddingProvider, LlmProvider};
 
 use crate::{
     adapter::SourceAdapter,
     indexing::{
-        change_detector::ChangeSet, pipeline::IndexOptions, semantic_pass, structure_pass,
-        summarize_pass,
+        change_detector::ChangeSet, embed_pass, pipeline::IndexOptions, semantic_pass,
+        structure_pass, summarize_pass,
     },
     storage::StorageBackend,
     types::Corpus,
@@ -31,12 +31,14 @@ pub struct ReindexStats {
 ///   4. Delete explicitly deleted chunk IDs.
 ///   5. Re-run structure, semantic, and summarize passes (all idempotent).
 ///   6. Run alias resolution.
-///   7. Update `corpus.last_indexed_at`.
+///   7. Run embed pass when `embedder` is `Some` (idempotent; skipped when `None`).
+///   8. Update `corpus.last_indexed_at`.
 pub async fn run(
     db: &Arc<dyn StorageBackend>,
     corpus: &Corpus,
     adapter: &Arc<dyn SourceAdapter>,
     llm: &Arc<dyn LlmProvider>,
+    embedder: Option<Arc<dyn EmbeddingProvider>>,
     change_set: &ChangeSet,
     opts: &IndexOptions,
 ) -> anyhow::Result<ReindexStats> {
@@ -139,7 +141,10 @@ pub async fn run(
         }
     }
 
-    // ── 5. Update corpus last_indexed_at ─────────────────────────────────────
+    // ── 5. Run embed pass when an embedder is configured (idempotent) ─────────
+    embed_pass::run(db.as_ref(), corpus, embedder, opts).await?;
+
+    // ── 6. Update corpus last_indexed_at ─────────────────────────────────────
     let now = chrono::Utc::now().to_rfc3339();
     db.corpus_set_last_indexed(&corpus.id, &now)?;
 
@@ -316,6 +321,7 @@ mod tests {
             &corpus,
             &(Arc::clone(&adapter) as Arc<dyn SourceAdapter>),
             &(Arc::new(DryRunProvider::new()) as Arc<dyn LlmProvider>),
+            None,
             &cs,
             &IndexOptions::default(),
         )
@@ -347,6 +353,7 @@ mod tests {
             &corpus,
             &(Arc::clone(&adapter) as Arc<dyn SourceAdapter>),
             &(Arc::new(DryRunProvider::new()) as Arc<dyn LlmProvider>),
+            None,
             &cs,
             &IndexOptions::default(),
         )
@@ -376,6 +383,7 @@ mod tests {
                 &corpus,
                 &(Arc::clone(&adapter) as Arc<dyn SourceAdapter>),
                 &(Arc::new(DryRunProvider::new()) as Arc<dyn LlmProvider>),
+                None,
                 &cs,
                 &IndexOptions::default(),
             )
@@ -415,6 +423,7 @@ mod tests {
             &corpus,
             &(Arc::clone(&adapter) as Arc<dyn SourceAdapter>),
             &(Arc::new(DryRunProvider::new()) as Arc<dyn LlmProvider>),
+            None,
             &cs,
             &IndexOptions::default(),
         )

@@ -16,9 +16,9 @@ use callimachus_core::{
     storage::StorageBackend,
     types::{Corpus, Pass, parse_passes_list},
 };
-use callimachus_llm::build_provider;
+use callimachus_llm::{build_embedding_provider, build_provider};
 
-use crate::commands::index::{build_adapter, resolve_provider};
+use crate::commands::index::{build_adapter, build_embedding_provider_config, resolve_provider};
 use crate::config::GlobalConfig;
 
 /// Register the corpus at `(kind, name, path)` if it does not already exist,
@@ -72,6 +72,26 @@ pub async fn run(
     // Validate prerequisites against current head state before running anything.
     validate_pass_prerequisites(db.as_ref(), &corpus.id, &pass_list)?;
 
+    // Fail-fast: if embed was requested, the embedding config must be usable.
+    let embed_requested = pass_list.contains(&Pass::Embed);
+    let embedder = if embed_requested {
+        let embed_cfg = build_embedding_provider_config(config);
+        match build_embedding_provider(embed_cfg) {
+            Ok(Some(p)) => Some(p),
+            Ok(None) => {
+                bail!(
+                    "--pass embed/all requested but [embedding] is disabled or absent \
+                     in config; set [embedding] enabled = true with a Voyage api_key_env"
+                );
+            }
+            Err(e) => {
+                bail!("embeddings requested via --pass but not usable: {e}");
+            }
+        }
+    } else {
+        None
+    };
+
     let opts = IndexOptions {
         passes: pass_list,
         dry_run,
@@ -85,7 +105,7 @@ pub async fn run(
         db,
         adapter,
         llm: Arc::new(llm),
-        embedder: None,
+        embedder,
     };
 
     if with_history {

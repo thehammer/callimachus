@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use callimachus_llm::LlmProvider;
+use callimachus_llm::EmbeddingProvider;
 
 use crate::{
     indexing::{layer2_cache, pipeline::IndexOptions},
@@ -16,36 +16,26 @@ const PROGRESS_EVERY: u64 = 25;
 /// `embedder.embed(content)`, and stores the result. Already-embedded
 /// chunks are skipped, making the pass idempotent.
 ///
-/// If `embedder` is `None` (no embedding provider configured), this
-/// function logs a warning and returns immediately with `processed = 0`.
+/// If `embedder` is `None` (no embedding provider configured), the pass
+/// returns immediately with `processed = 0`. In normal operation the
+/// fail-fast guard at command setup prevents a `None` embedder from being
+/// passed when embed was explicitly requested — `None` here means "embed
+/// was not requested" and is a legitimate no-op path.
 ///
 /// The embed pass is **not** in `IndexOptions::default().passes`.
 /// Request it explicitly via `--pass=embed` or `--pass=all`.
 pub async fn run(
     db: &dyn StorageBackend,
     corpus: &Corpus,
-    embedder: Option<Arc<dyn LlmProvider>>,
+    embedder: Option<Arc<dyn EmbeddingProvider>>,
     opts: &IndexOptions,
 ) -> anyhow::Result<PassStats> {
     let embedder = match embedder {
         Some(e) => e,
         None => {
-            tracing::warn!(
-                corpus_id = %corpus.id,
-                "embed pass requested but no embedder configured; skipping"
-            );
             return Ok(PassStats::default());
         }
     };
-
-    if !embedder.supports_embeddings() {
-        tracing::warn!(
-            corpus_id = %corpus.id,
-            provider = %embedder.name(),
-            "embed pass: provider does not support embeddings; skipping"
-        );
-        return Ok(PassStats::default());
-    }
 
     // Load all chunks for this corpus.
     let mut chunks = db.chunk_list(&corpus.id)?;
@@ -135,7 +125,28 @@ mod tests {
     use super::*;
     use crate::storage::SqliteBackend;
     use crate::types::{Chunk, Corpus, Location};
-    use callimachus_llm::DryRunProvider;
+
+    struct StubEmbeddingProvider;
+
+    #[async_trait::async_trait]
+    impl EmbeddingProvider for StubEmbeddingProvider {
+        async fn embed_batch(
+            &self,
+            texts: &[String],
+        ) -> callimachus_llm::error::Result<Vec<Vec<f32>>> {
+            Ok(texts
+                .iter()
+                .map(|_| {
+                    let mut v = vec![0.0f32; 8];
+                    v[0] = 1.0;
+                    v
+                })
+                .collect())
+        }
+        fn name(&self) -> &str {
+            "voyage-code-3"
+        }
+    }
 
     fn setup() -> (Arc<dyn StorageBackend>, Corpus) {
         let db = SqliteBackend::open_in_memory().unwrap();
@@ -166,7 +177,7 @@ mod tests {
     #[tokio::test]
     async fn embeds_three_chunks() {
         let (db, corpus) = setup();
-        let embedder: Arc<dyn LlmProvider> = Arc::new(DryRunProvider::new());
+        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(StubEmbeddingProvider);
         let opts = IndexOptions::default();
 
         let stats = run(db.as_ref(), &corpus, Some(embedder), &opts)
@@ -183,7 +194,7 @@ mod tests {
     #[tokio::test]
     async fn embed_pass_is_idempotent() {
         let (db, corpus) = setup();
-        let embedder: Arc<dyn LlmProvider> = Arc::new(DryRunProvider::new());
+        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(StubEmbeddingProvider);
         let opts = IndexOptions::default();
 
         // First run.
