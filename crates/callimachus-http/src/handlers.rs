@@ -69,6 +69,7 @@ pub async fn entity(
     let result = qs.entity(EntityInput {
         corpus_id,
         name_or_id: name,
+        kind: None,
     });
     tool_result_to_response(result)
 }

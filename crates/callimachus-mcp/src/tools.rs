@@ -65,7 +65,8 @@ pub static TOOL_LIST: Lazy<Vec<ToolDesc>> = Lazy::new(|| {
                 "type": "object",
                 "properties": {
                     "corpus_id": { "type": "string" },
-                    "name_or_id": { "type": "string", "description": "Entity canonical name or ID." }
+                    "name_or_id": { "type": "string", "description": "Entity canonical name or ID." },
+                    "kind": { "type": "string", "description": "Optional kind filter (e.g. \"class\", \"method\", \"function\", \"file\"). Narrows ambiguous name matches before resolution." }
                 },
                 "required": ["corpus_id", "name_or_id"]
             }),
