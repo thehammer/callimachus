@@ -7,3 +7,9 @@ Cargo.lock
 !data/callimachus.db
 .env
 .DS_Store
+
+# Apple docs corpus — generated artifacts (rebuild via scripts/build-apple-docs-macos-26.sh)
+data/apple-docs-macos-*.pinakes
+data/apple-docs-macos-*.pinakes-shm
+data/apple-docs-macos-*.pinakes-wal
+data/apple-docs-macos-*-src/
