@@ -1,14 +1,16 @@
 use std::{path::Path, sync::Arc};
 
-use anyhow::{Context, Result, bail};
-use callimachus_adapter_book::BookAdapter;
+use anyhow::{Context, Result};
 use callimachus_core::{
     indexing::watcher::{CorpusWatcher, WatcherConfig},
     storage::{SqliteBackend, StorageBackend},
 };
 use callimachus_llm::build_provider;
 
-use crate::{commands::index::resolve_provider, config::GlobalConfig};
+use crate::{
+    commands::index::{build_adapter, resolve_provider},
+    config::GlobalConfig,
+};
 
 pub async fn run(
     corpus_id: &str,
@@ -28,12 +30,7 @@ pub async fn run(
         .map_err(|e| anyhow::anyhow!("{e}"))
         .map_err(|e| e.context(format!("corpus '{corpus_id}' not found")))?;
 
-    if corpus.kind != "book" {
-        bail!(
-            "adapter for kind '{}' is not yet available (supports 'book' only)",
-            corpus.kind
-        );
-    }
+    let adapter = build_adapter(&corpus)?;
 
     let provider_config = resolve_provider(provider_override, config)?;
     let llm = build_provider(provider_config)
@@ -45,7 +42,7 @@ pub async fn run(
     let watcher = CorpusWatcher::new(
         corpus,
         db,
-        Arc::new(BookAdapter::new()),
+        adapter,
         Arc::new(llm),
         WatcherConfig {
             debounce_ms,
