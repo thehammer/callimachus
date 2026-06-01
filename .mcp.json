@@ -2,8 +2,8 @@
   "mcpServers": {
     "callimachus": {
       "command": "calli",
-      "args": ["--pinakes", "${workspaceFolder}/data/callimachus.pinakes", "mcp"],
-      "description": "Callimachus index server — queryable entity graph, summaries, contracts, and purposes for this codebase"
+      "args": ["mcp"],
+      "description": "Callimachus index server — queryable entity graph, summaries, contracts, and purposes for this codebase (serves the global production index)"
     }
   }
 }
