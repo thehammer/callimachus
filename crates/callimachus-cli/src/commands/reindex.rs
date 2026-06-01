@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use callimachus_adapter_book::BookAdapter;
 use callimachus_core::{
     indexing::{ChangeStrategy, change_detector, pipeline::IndexOptions, reindex_pass},
     storage::StorageBackend,
@@ -10,7 +9,7 @@ use callimachus_core::{
 use callimachus_llm::{build_embedding_provider, build_provider};
 
 use crate::{
-    commands::index::{build_embedding_provider_config, resolve_provider},
+    commands::index::{build_adapter, build_embedding_provider_config, resolve_provider},
     config::GlobalConfig,
 };
 
@@ -33,13 +32,7 @@ pub async fn run(
     let llm = build_provider(provider_config)
         .map_err(|e| anyhow::anyhow!("failed to build LLM provider: {e}"))?;
 
-    if corpus.kind != "book" {
-        bail!(
-            "adapter for kind '{}' is not yet available (supports 'book' only)",
-            corpus.kind
-        );
-    }
-    let adapter = Arc::new(BookAdapter::new());
+    let adapter = build_adapter(&corpus)?;
 
     // Detect changes.
     let change_set = change_detector::detect(&corpus, db.as_ref(), since.as_deref())
@@ -122,4 +115,41 @@ pub async fn run(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use callimachus_core::storage::{SqliteBackend, StorageBackend};
+    use callimachus_core::types::Corpus;
+
+    use crate::config::GlobalConfig;
+
+    /// Regression: `reindex` previously hardcoded the book adapter and bailed
+    /// with "supports 'book' only" for any other corpus kind. It must now select
+    /// the code adapter via `build_adapter` and complete a dry-run without error.
+    #[tokio::test]
+    async fn code_corpus_reindex_selects_code_adapter() {
+        let db: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let corpus = Corpus::new(
+            "code-test".to_string(),
+            "Code Test".to_string(),
+            "code".to_string(),
+            env!("CARGO_MANIFEST_DIR").to_string(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        super::run(
+            "code-test",
+            None,  // since
+            true,  // dry_run
+            None,  // provider_override
+            false, // stable_sampling
+            db,
+            &GlobalConfig::default(),
+        )
+        .await
+        .unwrap();
+    }
 }
