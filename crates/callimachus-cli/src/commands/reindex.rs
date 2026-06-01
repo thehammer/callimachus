@@ -142,10 +142,10 @@ mod tests {
 
         super::run(
             "code-test",
-            None,  // since
-            true,  // dry_run
-            None,  // provider_override
-            false, // stable_sampling
+            None,                        // since
+            true,                        // dry_run
+            Some("dry-run".to_string()), // provider_override (no API key needed)
+            false,                       // stable_sampling
             db,
             &GlobalConfig::default(),
         )
