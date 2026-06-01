@@ -81,10 +81,7 @@ pub async fn run(
 
     // Build embedder if embeddings are enabled. Fail loudly if enabled-but-broken.
     let embedder = {
-        let embedding_enabled = config
-            .embedding
-            .as_ref()
-            .is_some_and(|e| e.enabled);
+        let embedding_enabled = config.embedding.as_ref().is_some_and(|e| e.enabled);
         if embedding_enabled {
             let embed_cfg = build_embedding_provider_config(config);
             match build_embedding_provider(embed_cfg) {

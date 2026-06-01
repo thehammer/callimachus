@@ -24,7 +24,9 @@ pub use error::LlmError;
 pub use failing::FailingProvider;
 pub use openai_embed::OpenAiEmbeddingProvider;
 pub use provider::{CompletionRequest, CompletionResponse, LlmProvider, ProviderUsage, model_tier};
-pub use resolve::{EmbeddingProviderConfig, ProviderConfig, auto_detect, build as build_provider,
-    build_embedding_provider};
+pub use resolve::{
+    EmbeddingProviderConfig, ProviderConfig, auto_detect, build as build_provider,
+    build_embedding_provider,
+};
 pub use stable_sampling::{StableSamplingProvider, seed_from_prompt};
 pub use voyage::VoyageEmbeddingProvider;

@@ -284,7 +284,10 @@ mod tests {
         });
         let cfg = embedding_provider_config_from(&config);
         let result = callimachus_llm::build_embedding_provider(cfg);
-        assert!(result.is_err(), "enabled embedding without key should error");
+        assert!(
+            result.is_err(),
+            "enabled embedding without key should error"
+        );
         let msg = result.err().expect("checked above").to_string();
         assert!(
             msg.contains("key") || msg.contains("api_key"),

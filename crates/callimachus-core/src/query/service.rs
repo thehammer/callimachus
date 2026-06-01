@@ -236,10 +236,17 @@ impl QueryService {
             // Apply kind filter or tie-break heuristic.
             let matches = if let Some(ref k) = input.kind {
                 // Explicit kind filter: retain only entities of the requested kind.
-                matches.into_iter().filter(|e| e.kind == *k).collect::<Vec<_>>()
+                matches
+                    .into_iter()
+                    .filter(|e| e.kind == *k)
+                    .collect::<Vec<_>>()
             } else if matches.len() > 1 {
                 // Tie-break: if exactly one non-file entity exists, prefer it.
-                let non_file: Vec<_> = matches.iter().filter(|e| e.kind != "file").cloned().collect();
+                let non_file: Vec<_> = matches
+                    .iter()
+                    .filter(|e| e.kind != "file")
+                    .cloned()
+                    .collect();
                 if non_file.len() == 1 {
                     non_file
                 } else {
@@ -1287,8 +1294,22 @@ mod tests {
     fn entity_kind_filter_resolves_ambiguity() {
         let (svc, db) = make_service();
         seed_corpus(db.as_ref(), "c1");
-        seed_entity_kind(db.as_ref(), "c1", "e-class", "NewsletterService", None, "class");
-        seed_entity_kind(db.as_ref(), "c1", "e-file", "NewsletterService", None, "file");
+        seed_entity_kind(
+            db.as_ref(),
+            "c1",
+            "e-class",
+            "NewsletterService",
+            None,
+            "class",
+        );
+        seed_entity_kind(
+            db.as_ref(),
+            "c1",
+            "e-file",
+            "NewsletterService",
+            None,
+            "file",
+        );
 
         let result = svc.entity(EntityInput {
             corpus_id: "c1".into(),
@@ -1306,8 +1327,22 @@ mod tests {
     fn entity_kind_filter_no_match_returns_not_found() {
         let (svc, db) = make_service();
         seed_corpus(db.as_ref(), "c1");
-        seed_entity_kind(db.as_ref(), "c1", "e-class", "NewsletterService", None, "class");
-        seed_entity_kind(db.as_ref(), "c1", "e-file", "NewsletterService", None, "file");
+        seed_entity_kind(
+            db.as_ref(),
+            "c1",
+            "e-class",
+            "NewsletterService",
+            None,
+            "class",
+        );
+        seed_entity_kind(
+            db.as_ref(),
+            "c1",
+            "e-file",
+            "NewsletterService",
+            None,
+            "file",
+        );
 
         let result = svc.entity(EntityInput {
             corpus_id: "c1".into(),
@@ -1325,8 +1360,22 @@ mod tests {
         let (svc, db) = make_service();
         seed_corpus(db.as_ref(), "c1");
         // Two same-kind candidates → Ambiguous (no tie-break when both are non-file)
-        seed_entity_kind(db.as_ref(), "c1", "e1", "Gandalf the Grey", None, "character");
-        seed_entity_kind(db.as_ref(), "c1", "e2", "Gandalf the White", None, "character");
+        seed_entity_kind(
+            db.as_ref(),
+            "c1",
+            "e1",
+            "Gandalf the Grey",
+            None,
+            "character",
+        );
+        seed_entity_kind(
+            db.as_ref(),
+            "c1",
+            "e2",
+            "Gandalf the White",
+            None,
+            "character",
+        );
 
         let result = svc.entity(EntityInput {
             corpus_id: "c1".into(),
@@ -1358,8 +1407,22 @@ mod tests {
     fn entity_tiebreak_prefers_non_file() {
         let (svc, db) = make_service();
         seed_corpus(db.as_ref(), "c1");
-        seed_entity_kind(db.as_ref(), "c1", "e-class", "NewsletterService", None, "class");
-        seed_entity_kind(db.as_ref(), "c1", "e-file", "NewsletterService", None, "file");
+        seed_entity_kind(
+            db.as_ref(),
+            "c1",
+            "e-class",
+            "NewsletterService",
+            None,
+            "class",
+        );
+        seed_entity_kind(
+            db.as_ref(),
+            "c1",
+            "e-file",
+            "NewsletterService",
+            None,
+            "file",
+        );
 
         let result = svc.entity(EntityInput {
             corpus_id: "c1".into(),

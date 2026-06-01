@@ -158,7 +158,8 @@ async fn semantic_search_returns_results_after_embed() {
     let (db, corpus) = setup().await;
     let adapter = Arc::new(CorpusAwareWikiAdapter::new(&corpus.id, FIXTURE));
     let dry = Arc::new(DryRunProvider::new());
-    let llm: Arc<dyn callimachus_llm::LlmProvider> = Arc::clone(&dry) as Arc<dyn callimachus_llm::LlmProvider>;
+    let llm: Arc<dyn callimachus_llm::LlmProvider> =
+        Arc::clone(&dry) as Arc<dyn callimachus_llm::LlmProvider>;
 
     let opts = IndexOptions {
         passes: vec![Pass::Chunk, Pass::Embed],

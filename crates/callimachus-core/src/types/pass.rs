@@ -200,7 +200,11 @@ mod tests {
     fn default_plus_extra() {
         // Theme is already part of default; the dup is silently removed, so we still get 9.
         let result = parse_passes_list("default,theme").unwrap();
-        assert_eq!(result.len(), 9, "theme is already in default; dedup keeps it at 9");
+        assert_eq!(
+            result.len(),
+            9,
+            "theme is already in default; dedup keeps it at 9"
+        );
         assert!(result.contains(&Pass::Theme));
         assert!(result.contains(&Pass::History));
     }

@@ -15,9 +15,7 @@ pub trait EmbeddingProvider: Send + Sync {
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let mut out = self.embed_batch(&[text.to_string()]).await?;
         out.pop().ok_or_else(|| {
-            LlmError::Other(
-                "embedding provider returned no vector for single input".into(),
-            )
+            LlmError::Other("embedding provider returned no vector for single input".into())
         })
     }
 

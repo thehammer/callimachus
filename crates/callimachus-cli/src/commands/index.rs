@@ -10,8 +10,9 @@ use callimachus_core::{
     storage::StorageBackend,
     types::{Corpus, Pass},
 };
-use callimachus_llm::{EmbeddingProviderConfig, ProviderConfig, build_embedding_provider,
-    build_provider};
+use callimachus_llm::{
+    EmbeddingProviderConfig, ProviderConfig, build_embedding_provider, build_provider,
+};
 
 use crate::config::GlobalConfig;
 
@@ -416,7 +417,10 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_err(), "expected error when embed requested but not configured");
+        assert!(
+            result.is_err(),
+            "expected error when embed requested but not configured"
+        );
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("embed") || msg.contains("embedding") || msg.contains("[embedding]"),
