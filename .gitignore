@@ -13,3 +13,12 @@ data/apple-docs-macos-*.pinakes
 data/apple-docs-macos-*.pinakes-shm
 data/apple-docs-macos-*.pinakes-wal
 data/apple-docs-macos-*-src/
+
+# Local index snapshots / experiment artifacts (not for VCS)
+data/callimachus-*.pinakes
+data/webster-*.pinakes
+data/*.pinakes-shm
+data/*.pinakes-wal
+data/*.pinakes.bak-*
+data/*.pinakes.backup-*
+data/*.db
