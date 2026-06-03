@@ -5,8 +5,8 @@ use callimachus_llm::{EmbeddingProvider, LlmProvider};
 use crate::{
     adapter::SourceAdapter,
     indexing::{
-        change_detector::ChangeSet, embed_pass, pipeline::IndexOptions, semantic_pass,
-        structure_pass, summarize_pass,
+        change_detector::ChangeSet, contract_pass, embed_pass, pipeline::IndexOptions,
+        purpose_pass, semantic_pass, structure_pass, summarize_pass, theme_pass,
     },
     storage::StorageBackend,
     types::Corpus,
@@ -32,8 +32,11 @@ pub struct ReindexStats {
 ///   4. Delete explicitly deleted chunk IDs.
 ///   5. Re-run structure, semantic, and summarize passes (all idempotent).
 ///   6. Run alias resolution.
-///   7. Run embed pass when `embedder` is `Some` (idempotent; skipped when `None`).
-///   8. Update `corpus.last_indexed_at`.
+///   7. Re-derive Layer-2 artifacts: purpose, contract, theme (idempotent; per-entity
+///      skip keeps it incremental). Omitting these previously left reindexed entities
+///      without contracts/purposes and with stale themes.
+///   8. Run embed pass when `embedder` is `Some` (idempotent; skipped when `None`).
+///   9. Update `corpus.last_indexed_at`.
 pub async fn run(
     db: &Arc<dyn StorageBackend>,
     corpus: &Corpus,
@@ -165,6 +168,45 @@ pub async fn run(
             Err(e) => tracing::warn!("alias resolution failed during reindex: {e}"),
         }
     }
+
+    // ── 4b. Re-derive Layer-2 artifacts (purpose, contract, theme) ────────────
+    //
+    // These were previously omitted from reindex, so entities surfaced or changed
+    // by an incremental run were left with no contracts/purposes and stale themes —
+    // the index drifted internally inconsistent. Each pass is idempotent and skips
+    // entities whose artifact is already current (per-entity cache / version check),
+    // so unchanged entities cost nothing; only new/changed ones hit the LLM. Tier
+    // routing is via opts.tier_config, so we pass `llm` for all three tiers (as the
+    // summarize pass above does). Order mirrors the full pipeline: purpose → contract
+    // → theme.
+    purpose_pass::run(
+        Arc::clone(db),
+        corpus,
+        Arc::clone(adapter),
+        Arc::clone(llm),
+        Arc::clone(llm),
+        Arc::clone(llm),
+        opts,
+    )
+    .await?;
+    contract_pass::run(
+        Arc::clone(db),
+        corpus,
+        Arc::clone(adapter),
+        Arc::clone(llm),
+        Arc::clone(llm),
+        Arc::clone(llm),
+        opts,
+    )
+    .await?;
+    theme_pass::run(
+        Arc::clone(db),
+        corpus,
+        Arc::clone(adapter),
+        Arc::clone(llm),
+        opts,
+    )
+    .await?;
 
     // ── 5. Run embed pass when an embedder is configured (idempotent) ─────────
     embed_pass::run(db.as_ref(), corpus, embedder, opts).await?;
