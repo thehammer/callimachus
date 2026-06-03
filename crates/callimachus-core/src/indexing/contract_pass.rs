@@ -36,10 +36,12 @@ enum ContractOutcome {
         verified_by_edges: Vec<EdgeSpec>,
         discards_result_edges: Vec<EdgeSpec>,
     },
-    /// LLM call failed; store a default contract and count as failed.
+    /// LLM call failed. Count as `failed` and write NOTHING — leaving the entity
+    /// contract-less so a later run retries it. Writing a placeholder here would
+    /// silently pollute the index with a NULL-provenance "contract" that masks the
+    /// failure (matches purpose/summarize/theme, which all write nothing on failure).
     Failed {
         entity_id: String,
-        corpus_id: String,
         message: String,
     },
     Skip,
@@ -194,14 +196,11 @@ pub async fn run(
                 tier_counts[tier as usize] += 1;
                 stats.processed += 1;
             }
-            ContractOutcome::Failed {
-                entity_id,
-                corpus_id,
-                message,
-            } => {
+            ContractOutcome::Failed { entity_id, message } => {
                 tracing::warn!("contract pass failed for entity {entity_id}: {message}");
-                // Store a default contract so we don't retry on subsequent runs.
-                store_default_contract_direct(&db, &corpus_id, &entity_id)?;
+                // Write nothing on failure — leave the entity contract-less so a later
+                // run retries it. (Previously stored a NULL-provenance placeholder, which
+                // silently polluted the index when the LLM was unavailable.)
                 stats.failed += 1;
             }
         }
@@ -449,7 +448,6 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
         }
         Err(e) => ContractOutcome::Failed {
             entity_id: entity.id.clone(),
-            corpus_id: corpus_id.to_string(),
             message: e.to_string(),
         },
     }
