@@ -59,10 +59,15 @@ impl SourceAdapter for PlainTextAdapter {
     }
 
     async fn discover(&self, source: &str) -> anyhow::Result<Vec<DiscoveredSource>> {
+        // Faithful to the real code adapter: discover does NOT know the corpus_id.
+        // The pipeline (chunk_pass / reindex_pass) injects it into `meta` before
+        // calling chunk(). If that injection is missing, chunk() below produces an
+        // empty corpus_id and the chunks.corpus_id -> corpora FK fails — which is
+        // exactly the reindex bug this guards against.
         Ok(vec![DiscoveredSource {
             path: source.to_string(),
             kind: "text".to_string(),
-            meta: serde_json::json!({ "corpus_id": "integ" }),
+            meta: serde_json::json!({ "kind": "text" }),
         }])
     }
 
@@ -70,6 +75,14 @@ impl SourceAdapter for PlainTextAdapter {
         let map = self.content.lock().unwrap();
         let text = map.get(&source.path).cloned().unwrap_or_default();
         drop(map);
+
+        // Read corpus_id from the injected source meta, like the real code adapter.
+        let corpus_id = source
+            .meta
+            .get("corpus_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         // Split on blank lines → chapters.
         let chapters: Vec<&str> = text
@@ -83,10 +96,10 @@ impl SourceAdapter for PlainTextAdapter {
             .enumerate()
             .map(|(i, content)| {
                 Chunk::new(
-                    "integ".to_string(),
+                    corpus_id.clone(),
                     None,
                     "chapter".to_string(),
-                    Location::new("integ", format!("ch/{}", i + 1)),
+                    Location::new(&corpus_id, format!("ch/{}", i + 1)),
                     content.to_string(),
                 )
             })
@@ -229,6 +242,19 @@ async fn incremental_reindex_preserves_unchanged_chunks_and_corrections() {
     after_chunks.sort_by(|a, b| a.location.uri.cmp(&b.location.uri));
 
     assert_eq!(after_chunks.len(), 2, "still 2 chunks after reindex");
+
+    // Regression guard for the reindex FK bug: every reindexed chunk must carry the
+    // corpus_id that the pipeline injects into source meta. The bug skipped that
+    // injection, producing empty corpus_id and a chunks.corpus_id -> corpora FK
+    // violation (the reindex_pass::run above would have returned Err).
+    assert!(
+        after_chunks.iter().all(|c| c.corpus_id == "integ"),
+        "reindexed chunks must carry injected corpus_id 'integ', got {:?}",
+        after_chunks
+            .iter()
+            .map(|c| c.corpus_id.clone())
+            .collect::<Vec<_>>()
+    );
 
     // Chapter 1 should have the SAME id (content unchanged).
     let new_ch1 = after_chunks
