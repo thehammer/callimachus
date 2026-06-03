@@ -3,7 +3,10 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use callimachus_core::{
-    indexing::{ChangeStrategy, change_detector, pipeline::IndexOptions, reindex_pass},
+    indexing::{
+        ChangeStrategy, change_detector, change_manifest::ChangeManifest, pipeline::IndexOptions,
+        reindex_pass,
+    },
     storage::StorageBackend,
 };
 use callimachus_llm::{build_embedding_provider, build_provider};
@@ -89,6 +92,21 @@ pub async fn run(
         }
     };
 
+    // Resolve the corpus's current HEAD as a `git:<oid>` version so the Layer-2
+    // passes (purpose/contract/theme) stamp `derived_at_version` and the version
+    // anchor advances. Without this, reindex wrote NULL-provenance artifacts and
+    // never bumped `last_indexed_version`. `all_dirty` keeps every entity a
+    // candidate; the per-entity cache still skips unchanged ones, so only changed
+    // entities re-derive — just now with a version stamp. Non-git corpora (rev-parse
+    // fails) get no manifest, preserving prior behaviour.
+    let change_manifest = std::process::Command::new("git")
+        .args(["-C", &corpus.source, "rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| ChangeManifest::all_dirty(format!("git:{}", s.trim())));
+
     let start = Instant::now();
     let llm_arc = Arc::new(llm);
 
@@ -102,6 +120,7 @@ pub async fn run(
         &IndexOptions {
             dry_run: false,
             stable_sampling,
+            change_manifest,
             ..Default::default()
         },
     )
