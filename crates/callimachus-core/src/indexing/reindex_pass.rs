@@ -22,8 +22,9 @@ pub struct ReindexStats {
 
 /// Run an incremental reindex over a `ChangeSet`.
 ///
-/// Steps for each changed path:
-///   1. Re-discover and re-chunk sources scoped to that path.
+/// Steps (when any path changed):
+///   1. Re-chunk the whole source tree from the corpus root (git-aware, stable IDs),
+///      injecting corpus_id into source meta exactly as the full index does.
 ///   2. Upsert new content-addressed chunks.
 ///   3. Find orphaned chunk IDs (old IDs not present in new set) and delete them.
 ///
@@ -44,37 +45,61 @@ pub async fn run(
 ) -> anyhow::Result<ReindexStats> {
     let mut stats = ReindexStats::default();
 
-    // ── 1. Re-chunk changed paths and compute orphans ─────────────────────────
+    // ── 1. Re-chunk from the corpus source ROOT and compute orphans ───────────
+    //
+    // We re-chunk the entire source tree from `corpus.source` (exactly as the full
+    // index does in chunk_pass), NOT the individual `changed_paths`. Chunk IDs are
+    // content hashes and location URIs are anchored at the path handed to the
+    // adapter, so chunking a single changed file path produced empty/relative-wrong
+    // locations and a corrupted orphan diff, tripping FK constraints downstream.
+    // Chunking is cheap and local; the expensive LLM passes below are idempotent and
+    // still only touch new/changed work. `changed_paths` remains the trigger for
+    // whether any reindex work is needed at all.
     if !change_set.changed_paths.is_empty() {
         // Snapshot current chunk IDs for the corpus.
         let old_ids: HashSet<String> = db.chunk_list_ids(&corpus.id)?.into_iter().collect();
 
-        // Collect new chunk IDs by re-chunking every changed path.
+        // Collect new chunk IDs by re-chunking the whole tree from the source root.
         let mut new_ids: HashSet<String> = HashSet::new();
 
-        for path in &change_set.changed_paths {
-            // Discover sources at this path.
-            let sources = adapter.discover(path).await?;
+        let mut sources = adapter.discover(&corpus.source).await?;
+        // Inject corpus_id + pipeline flags into each source's meta, exactly as the
+        // full index (chunk_pass) does. The adapter reads corpus_id from here to stamp
+        // each chunk; omitting it produced chunks with an empty corpus_id that violated
+        // the `chunks.corpus_id -> corpora` FK — the root cause of the reindex FK error.
+        for source in &mut sources {
+            if let Some(obj) = source.meta.as_object_mut() {
+                obj.entry("corpus_id")
+                    .or_insert_with(|| serde_json::Value::String(corpus.id.clone()));
+                obj.insert(
+                    "no_git_filter".to_string(),
+                    serde_json::Value::Bool(opts.no_git_filter),
+                );
+            } else {
+                source.meta = serde_json::json!({
+                    "corpus_id": corpus.id,
+                    "no_git_filter": opts.no_git_filter,
+                });
+            }
+        }
 
-            for source in &sources {
-                let chunks = adapter.chunk(source).await?;
-                for chunk in chunks {
-                    new_ids.insert(chunk.id.clone());
-                    if opts.dry_run {
-                        continue;
-                    }
-                    // Upsert is idempotent: INSERT OR IGNORE skips existing same-content chunks.
-                    if !db.chunk_has(&chunk.id)? {
-                        db.chunk_upsert(&chunk)?;
-                        stats.added += 1;
-                    }
+        for source in &sources {
+            let chunks = adapter.chunk(source).await?;
+            for chunk in chunks {
+                new_ids.insert(chunk.id.clone());
+                if opts.dry_run {
+                    continue;
+                }
+                // Upsert is idempotent: skips existing same-content chunks (content-hash IDs).
+                if !db.chunk_has(&chunk.id)? {
+                    db.chunk_upsert(&chunk)?;
+                    stats.added += 1;
                 }
             }
         }
 
         // Orphans = chunks that existed before but are no longer produced.
         let orphan_ids: Vec<String> = old_ids.difference(&new_ids).cloned().collect();
-
         for orphan_id in &orphan_ids {
             if opts.dry_run {
                 stats.deleted += 1;
