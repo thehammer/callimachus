@@ -211,7 +211,14 @@ pub async fn run(
     // ── 5. Run embed pass when an embedder is configured (idempotent) ─────────
     embed_pass::run(db.as_ref(), corpus, embedder, opts).await?;
 
-    // ── 6. Update corpus last_indexed_at ─────────────────────────────────────
+    // ── 6. Advance the provenance anchor + timestamp ─────────────────────────
+    // When a version context is present (set by the reindex command from the
+    // corpus HEAD), advance `last_indexed_version` so the next incremental run
+    // diffs from this commit instead of re-diffing the same range. Mirrors the
+    // full pipeline's History-pass write-back.
+    if let Some(manifest) = opts.change_manifest.as_ref() {
+        db.corpus_set_last_indexed_version(&corpus.id, &manifest.current_version)?;
+    }
     let now = chrono::Utc::now().to_rfc3339();
     db.corpus_set_last_indexed(&corpus.id, &now)?;
 
