@@ -146,6 +146,7 @@ pub fn to_extracted_structure(
                 location: chunk.location.clone(),
                 confidence: 0.8,
                 derived_at_version: None,
+                ..Default::default()
             });
         }
 
@@ -161,6 +162,7 @@ pub fn to_extracted_structure(
                 location: chunk.location.clone(),
                 confidence: 0.4,
                 derived_at_version: None,
+                ..Default::default()
             });
         }
     } else if chunk.kind == "section" {
@@ -203,6 +205,7 @@ pub fn to_extracted_structure(
                 location: chunk.location.clone(),
                 confidence: 0.8,
                 derived_at_version: None,
+                ..Default::default()
             });
         }
     }

@@ -23,6 +23,10 @@ fn migrations() -> Migrations<'static> {
         )),
         M::up(include_str!("../../migrations/013_honest_provenance.sql")),
         M::up(include_str!("../../migrations/014_backfill_cursor.sql")),
+        M::up(include_str!(
+            "../../migrations/015_edge_occurrence_count.sql"
+        )),
+        M::up(include_str!("../../migrations/016_edge_origin_scope.sql")),
     ])
 }
 

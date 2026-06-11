@@ -162,6 +162,7 @@ pub async fn run(
                                 location: crate::types::Location::new(&contract.corpus_id, ""),
                                 confidence: 0.5,
                                 derived_at_version: current_version.clone(),
+                                ..Default::default()
                             };
                             db.edge_upsert(&edge)?;
                         }
@@ -186,6 +187,7 @@ pub async fn run(
                                     location: crate::types::Location::new(&contract.corpus_id, ""),
                                     confidence: 0.5,
                                     derived_at_version: current_version.clone(),
+                                    ..Default::default()
                                 };
                                 db.edge_upsert(&edge)?;
                             }

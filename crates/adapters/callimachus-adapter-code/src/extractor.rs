@@ -1,11 +1,11 @@
 use anyhow::Result;
 use callimachus_core::types::{Chunk, Edge, Entity};
+use sha2::{Digest, Sha256};
 use tree_sitter::{Parser, Query, QueryCursor};
-use uuid::Uuid;
 
 use crate::languages::LangConfig;
 
-// ── Deterministic ID helper ───────────────────────────────────────────────────
+// ── Deterministic ID helpers ──────────────────────────────────────────────────
 
 /// Build a deterministic, corpus-scoped entity ID from a symbol name.
 ///
@@ -25,6 +25,155 @@ fn entity_id(corpus_id: &str, name: &str) -> String {
         })
         .collect();
     format!("{corpus_id}:{slug}")
+}
+
+/// Build a deterministic, corpus-scoped edge ID from the edge's identity
+/// fields: `(from_id, kind, to_id, origin_scope)`.
+///
+/// Uses SHA-256 over the pipe-separated fields and encodes the first 8 bytes
+/// as a 16-character lowercase hex string, producing ids like
+/// `{corpus_id}:edge:{hex16}`.  The result is whitespace-free.
+///
+/// Determinism over these four fields means that N call sites to the same
+/// function in the same file produce N edges with the **same** id, which the
+/// post-extraction aggregation step then collapses into one row with
+/// `occurrence_count = N`.
+fn edge_id(corpus_id: &str, from_id: &str, kind: &str, to_id: &str, origin_scope: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(from_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(kind.as_bytes());
+    hasher.update(b"|");
+    hasher.update(to_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(origin_scope.as_bytes());
+    let hash = hasher.finalize();
+    let short_hash = hex::encode(&hash[..8]); // 16 hex chars
+    format!("{corpus_id}:edge:{short_hash}")
+}
+
+// ── Test-scope detection (Rust only) ─────────────────────────────────────────
+
+/// Returns the byte ranges in `source` that constitute "test scope":
+/// - entire `mod_item` nodes annotated with `#[cfg(test)]`
+/// - entire `function_item` nodes annotated with `#[test]` or `#[tokio::test]`
+///
+/// A source node is "test scope" if its start byte falls within any of the
+/// returned ranges.  Only called for Rust; returns empty vec for other langs.
+fn rust_test_byte_ranges(
+    root: tree_sitter::Node<'_>,
+    source: &[u8],
+) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    collect_test_ranges(root, source, &mut ranges);
+    ranges
+}
+
+fn collect_test_ranges(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    ranges: &mut Vec<std::ops::Range<usize>>,
+) {
+    let kind = node.kind();
+
+    if kind == "mod_item" && item_has_cfg_test_attr(node, source) {
+        // The entire mod is test scope — record its range and don't descend.
+        ranges.push(node.byte_range());
+        return;
+    }
+
+    if kind == "function_item" && item_has_test_attr(node, source) {
+        ranges.push(node.byte_range());
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_test_ranges(child, source, ranges);
+    }
+}
+
+/// Returns `true` when `node` (a `mod_item`) is annotated with `#[cfg(test)]`.
+///
+/// Uses a dual strategy to handle both grammar layouts seen in different
+/// tree-sitter-rust versions:
+///
+/// - **Children** (attributes are children of the item node): walk
+///   `node.children()` for an `attribute_item` containing `cfg` + `test`.
+/// - **Preceding siblings** (attributes are sibling nodes that precede the
+///   item, which is what tree-sitter-rust 0.23 actually emits): walk
+///   backwards through `node.prev_sibling()` for the same pattern.
+fn item_has_cfg_test_attr(node: tree_sitter::Node<'_>, source: &[u8]) -> bool {
+    // Strategy 1: attribute_item as a child of this node.
+    {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "attribute_item" {
+                let text = std::str::from_utf8(&source[child.byte_range()]).unwrap_or("");
+                if text.contains("cfg") && text.contains("test") {
+                    return true;
+                }
+            }
+        }
+    }
+    // Strategy 2: attribute_item as a preceding sibling of this node.
+    let mut sibling = node.prev_sibling();
+    while let Some(s) = sibling {
+        if s.kind() == "attribute_item" {
+            let text = std::str::from_utf8(&source[s.byte_range()]).unwrap_or("");
+            if text.contains("cfg") && text.contains("test") {
+                return true;
+            }
+            sibling = s.prev_sibling();
+        } else {
+            break; // gap between attributes and item — stop walking
+        }
+    }
+    false
+}
+
+/// Returns `true` when `node` (a `function_item`) is annotated with `#[test]`
+/// or `#[tokio::test]`.
+///
+/// Uses the same dual child/preceding-sibling strategy as
+/// `item_has_cfg_test_attr`.
+fn item_has_test_attr(node: tree_sitter::Node<'_>, source: &[u8]) -> bool {
+    // Strategy 1: attribute_item as a child of this node.
+    {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "attribute_item" {
+                let text = std::str::from_utf8(&source[child.byte_range()]).unwrap_or("");
+                if text.contains("test") {
+                    return true;
+                }
+            }
+        }
+    }
+    // Strategy 2: attribute_item as a preceding sibling of this node.
+    let mut sibling = node.prev_sibling();
+    while let Some(s) = sibling {
+        if s.kind() == "attribute_item" {
+            let text = std::str::from_utf8(&source[s.byte_range()]).unwrap_or("");
+            if text.contains("test") {
+                return true;
+            }
+            sibling = s.prev_sibling();
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+/// Returns `"test"` when `byte_pos` falls inside one of the test-scope ranges;
+/// `"production"` otherwise.
+fn scope_for_pos(byte_pos: usize, test_ranges: &[std::ops::Range<usize>]) -> String {
+    if test_ranges.iter().any(|r| r.contains(&byte_pos)) {
+        "test".to_string()
+    } else {
+        "production".to_string()
+    }
 }
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -63,19 +212,45 @@ pub fn extract_structure(
     let root = tree.root_node();
     let source = chunk.content.as_bytes();
 
+    // Build test-scope byte ranges once per file (Rust only).
+    // All non-Rust languages default every edge to "production".
+    let test_ranges: Vec<std::ops::Range<usize>> = if lang_config.name == "rust" {
+        rust_test_byte_ranges(root, source)
+    } else {
+        vec![]
+    };
+
     // Extract top-level named entities.
-    extract_entities(chunk, root, source, lang_config, &mut result);
+    extract_entities(chunk, root, source, lang_config, &test_ranges, &mut result);
 
     // Extract call edges.
-    extract_calls(chunk, root, source, lang_config, &mut result);
+    extract_calls(chunk, root, source, lang_config, &test_ranges, &mut result);
 
     // Extract import edges.
-    extract_imports(chunk, root, source, lang_config, &mut result);
+    extract_imports(chunk, root, source, lang_config, &test_ranges, &mut result);
 
     // PHP-specific: extract `new ClassName()` instantiation edges.
     if lang_config.name == "php" {
-        extract_php_instantiations(chunk, root, source, lang_config, &mut result);
+        extract_php_instantiations(chunk, root, source, lang_config, &test_ranges, &mut result);
     }
+
+    // Aggregate edges: collapse entries with the same deterministic id into a
+    // single row, summing occurrence_counts.  Keep the first edge's location
+    // and confidence.
+    //
+    // Because edge ids encode (from, kind, to, origin_scope), N call sites to
+    // the same function become one edge with occurrence_count = N.  On
+    // incremental reindex the cascade deletes the file's edges before this
+    // batch is emitted, so overwrite upsert in the storage layer is correct
+    // and idempotent — see edge_store::upsert for the storage-side invariant.
+    let mut aggregated: std::collections::HashMap<String, Edge> = std::collections::HashMap::new();
+    for edge in result.edges.drain(..) {
+        aggregated
+            .entry(edge.id.clone())
+            .and_modify(|e| e.occurrence_count += edge.occurrence_count)
+            .or_insert(edge);
+    }
+    result.edges = aggregated.into_values().collect();
 
     // Extract doc comment for the top-level symbol.
     result.doc_comment = extract_doc_comment(root, source, lang_config.name);
@@ -157,6 +332,7 @@ fn extract_entities(
     root: tree_sitter::Node<'_>,
     source: &[u8],
     lang: &LangConfig,
+    test_ranges: &[std::ops::Range<usize>],
     result: &mut ExtractedCodeStructure,
 ) {
     let nodes = capture_nodes(source, lang, root, lang.top_level_query);
@@ -215,25 +391,33 @@ fn extract_entities(
         entity.confidence = 0.9;
 
         // Emit a "defines" edge: this file defines the symbol.
-        let edge_id = format!("{}-{}", chunk.corpus_id, Uuid::new_v4());
-        let defines_edge = Edge::new(
-            edge_id,
+        let scope = scope_for_pos(node.byte_range.start, test_ranges);
+        let eid = edge_id(
+            &chunk.corpus_id,
+            &file_entity_id,
+            "defines",
+            &sym_entity_id,
+            &scope,
+        );
+        let mut defines_edge = Edge::new(
+            eid,
             chunk.corpus_id.clone(),
             file_entity_id.clone(),
             sym_entity_id,
             "defines".to_string(),
             chunk.location.clone(),
         );
+        defines_edge.origin_scope = scope;
         result.edges.push(defines_edge);
         result.entities.push(entity);
     }
 
     // Also extract extends/implements for class-like nodes.
-    extract_inheritance(chunk, root, source, lang, result);
+    extract_inheritance(chunk, root, source, lang, test_ranges, result);
 
     // PHP: descend into class bodies to extract methods.
     if lang.name == "php" {
-        extract_php_methods(chunk, root, source, lang, result);
+        extract_php_methods(chunk, root, source, lang, test_ranges, result);
     }
 }
 
@@ -247,6 +431,7 @@ fn extract_php_methods(
     root: tree_sitter::Node<'_>,
     source: &[u8],
     lang: &LangConfig,
+    test_ranges: &[std::ops::Range<usize>],
     result: &mut ExtractedCodeStructure,
 ) {
     let query_str = r#"
@@ -282,8 +467,8 @@ fn extract_php_methods(
     };
 
     for (class_range, method_range) in pairs {
-        let class_name = text_from_bytes(source, class_range);
-        let method_name = text_from_bytes(source, method_range);
+        let class_name = text_from_bytes(source, class_range.clone());
+        let method_name = text_from_bytes(source, method_range.clone());
         if class_name.is_empty() || method_name.is_empty() {
             continue;
         }
@@ -305,15 +490,23 @@ fn extract_php_methods(
         result.entities.push(method_entity);
 
         // Emit defines edge: class → method.
-        let edge_id = format!("{}-{}", chunk.corpus_id, Uuid::new_v4());
-        let defines_edge = Edge::new(
-            edge_id,
+        let scope = scope_for_pos(method_range.start, test_ranges);
+        let eid = edge_id(
+            &chunk.corpus_id,
+            &class_entity_id,
+            "defines",
+            &method_entity_id,
+            &scope,
+        );
+        let mut defines_edge = Edge::new(
+            eid,
             chunk.corpus_id.clone(),
             class_entity_id,
             method_entity_id,
             "defines".to_string(),
             chunk.location.clone(),
         );
+        defines_edge.origin_scope = scope;
         result.edges.push(defines_edge);
     }
 }
@@ -323,6 +516,7 @@ fn extract_inheritance(
     root: tree_sitter::Node<'_>,
     source: &[u8],
     lang: &LangConfig,
+    test_ranges: &[std::ops::Range<usize>],
     result: &mut ExtractedCodeStructure,
 ) {
     let patterns: &[(&str, &str)] = match lang.name {
@@ -383,7 +577,7 @@ fn extract_inheritance(
         };
 
         for (from_range, to_range) in pairs {
-            let from = text_from_bytes(source, from_range);
+            let from = text_from_bytes(source, from_range.clone());
             let mut to = text_from_bytes(source, to_range);
             if from.is_empty() || to.is_empty() {
                 continue;
@@ -396,15 +590,17 @@ fn extract_inheritance(
 
             let from_id = entity_id(&chunk.corpus_id, &from);
             let to_id = entity_id(&chunk.corpus_id, &to);
-            let edge_id = format!("{}-{}", chunk.corpus_id, Uuid::new_v4());
-            let edge = Edge::new(
-                edge_id,
+            let scope = scope_for_pos(from_range.start, test_ranges);
+            let eid = edge_id(&chunk.corpus_id, &from_id, edge_kind, &to_id, &scope);
+            let mut edge = Edge::new(
+                eid,
                 chunk.corpus_id.clone(),
                 from_id,
                 to_id,
                 edge_kind.to_string(),
                 chunk.location.clone(),
             );
+            edge.origin_scope = scope;
             result.edges.push(edge);
         }
     }
@@ -417,6 +613,7 @@ fn extract_calls(
     root: tree_sitter::Node<'_>,
     source: &[u8],
     lang: &LangConfig,
+    test_ranges: &[std::ops::Range<usize>],
     result: &mut ExtractedCodeStructure,
 ) {
     let callees: Vec<std::ops::Range<usize>> = {
@@ -455,7 +652,7 @@ fn extract_calls(
     };
 
     for callee_range in callees {
-        let callee_text = text_from_bytes(source, callee_range);
+        let callee_text = text_from_bytes(source, callee_range.clone());
         if callee_text.len() < 2
             || callee_text
                 .chars()
@@ -466,15 +663,17 @@ fn extract_calls(
         }
 
         let to_id = entity_id(&chunk.corpus_id, &callee_text);
-        let edge_id = format!("{}-{}", chunk.corpus_id, Uuid::new_v4());
-        let edge = Edge::new(
-            edge_id,
+        let scope = scope_for_pos(callee_range.start, test_ranges);
+        let eid = edge_id(&chunk.corpus_id, &from_id, "calls", &to_id, &scope);
+        let mut edge = Edge::new(
+            eid,
             chunk.corpus_id.clone(),
             from_id.clone(),
             to_id,
             "calls".to_string(),
             chunk.location.clone(),
         );
+        edge.origin_scope = scope;
         result.edges.push(edge);
     }
 }
@@ -486,6 +685,7 @@ fn extract_imports(
     root: tree_sitter::Node<'_>,
     source: &[u8],
     lang: &LangConfig,
+    test_ranges: &[std::ops::Range<usize>],
     result: &mut ExtractedCodeStructure,
 ) {
     let query_str = match lang.name {
@@ -529,7 +729,7 @@ fn extract_imports(
     let file_entity_id = entity_id(&chunk.corpus_id, &file_path);
 
     for range in import_ranges {
-        let import_text = text_from_bytes(source, range);
+        let import_text = text_from_bytes(source, range.clone());
         // Strip string delimiters (for languages like Go/TS that quote imports).
         let import_text = import_text.trim_matches('"').trim_matches('\'');
         // Strip PHP namespace separator prefix.
@@ -555,15 +755,23 @@ fn extract_imports(
         result.entities.push(entity);
 
         // Edge: this file imports the module.
-        let edge_id = format!("{}-{}", chunk.corpus_id, Uuid::new_v4());
-        let edge = Edge::new(
-            edge_id,
+        let scope = scope_for_pos(range.start, test_ranges);
+        let eid = edge_id(
+            &chunk.corpus_id,
+            &file_entity_id,
+            "imports",
+            &import_entity_id,
+            &scope,
+        );
+        let mut edge = Edge::new(
+            eid,
             chunk.corpus_id.clone(),
             file_entity_id.clone(),
             import_entity_id,
             "imports".to_string(),
             chunk.location.clone(),
         );
+        edge.origin_scope = scope;
         result.edges.push(edge);
     }
 }
@@ -576,6 +784,7 @@ fn extract_php_instantiations(
     root: tree_sitter::Node<'_>,
     source: &[u8],
     lang: &LangConfig,
+    test_ranges: &[std::ops::Range<usize>],
     result: &mut ExtractedCodeStructure,
 ) {
     let query_str = r#"(object_creation_expression [(name) (qualified_name)] @target)"#;
@@ -612,7 +821,7 @@ fn extract_php_instantiations(
     };
 
     for range in target_ranges {
-        let target_text = text_from_bytes(source, range);
+        let target_text = text_from_bytes(source, range.clone());
         // Strip leading PHP namespace separator.
         let target_text = target_text.trim_start_matches('\\').to_string();
         if target_text.is_empty() {
@@ -620,15 +829,17 @@ fn extract_php_instantiations(
         }
 
         let to_id = entity_id(&chunk.corpus_id, &target_text);
-        let edge_id = format!("{}-{}", chunk.corpus_id, Uuid::new_v4());
-        let edge = Edge::new(
-            edge_id,
+        let scope = scope_for_pos(range.start, test_ranges);
+        let eid = edge_id(&chunk.corpus_id, &from_id, "instantiates", &to_id, &scope);
+        let mut edge = Edge::new(
+            eid,
             chunk.corpus_id.clone(),
             from_id.clone(),
             to_id,
             "instantiates".to_string(),
             chunk.location.clone(),
         );
+        edge.origin_scope = scope;
         result.edges.push(edge);
     }
 }

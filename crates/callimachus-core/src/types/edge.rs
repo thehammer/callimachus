@@ -16,6 +16,38 @@ pub struct Edge {
     /// `None` for rows that pre-date migration 012.
     #[serde(default)]
     pub derived_at_version: Option<String>,
+    /// Number of distinct source sites within the file that produce this
+    /// logical edge. Defaults to 1.
+    ///
+    /// Edge ids are now deterministic over `(corpus_id, from, kind, to,
+    /// origin_scope)`, so N call sites to the same function collapse into
+    /// one row with `occurrence_count = N`. On incremental reindex the
+    /// cascade deletes stale edges and the extractor re-emits the
+    /// fully-aggregated count, which is then stored via overwrite upsert —
+    /// so counts are idempotent across reindex runs.
+    #[serde(default = "default_occurrence_count")]
+    pub occurrence_count: u32,
+    /// Whether this edge was derived from production code or test-only code.
+    ///
+    /// Allowed values: `"production"` | `"test"`.
+    ///
+    /// For Rust, set structurally: `"test"` when the source node falls inside
+    /// a `#[cfg(test)] mod` or a `#[test]`/`#[tokio::test]` function body.
+    /// All other languages default to `"production"` (TODO: per-language
+    /// test-scope detection).
+    ///
+    /// Rows predating migration 016 default to `"production"` and re-derive
+    /// correct scope on next reindex.
+    #[serde(default = "default_origin_scope")]
+    pub origin_scope: String,
+}
+
+fn default_occurrence_count() -> u32 {
+    1
+}
+
+fn default_origin_scope() -> String {
+    "production".to_string()
 }
 
 impl Edge {
@@ -36,6 +68,8 @@ impl Edge {
             location,
             confidence: 0.5,
             derived_at_version: None,
+            occurrence_count: 1,
+            origin_scope: "production".to_string(),
         }
     }
 }

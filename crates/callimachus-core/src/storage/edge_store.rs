@@ -7,21 +7,30 @@ use rusqlite::params;
 pub fn upsert(db: &Database, edge: &Edge) -> Result<()> {
     // Use a SELECT-guard so edges referencing entity IDs that don't exist in
     // the corpus (e.g. calls into external crates) are silently skipped rather
-    // than causing a FK constraint violation.  INSERT OR IGNORE only suppresses
-    // UNIQUE conflicts in SQLite — FK violations are always raised regardless of
-    // the conflict algorithm.
+    // than causing a FK constraint violation.
     //
-    // Edge upsert uses INSERT OR IGNORE (not ON CONFLICT DO UPDATE) so existing
-    // edge rows are never overwritten in-place. We therefore do NOT call a
-    // snapshot helper here — cascade.rs handles archiving edges before deletion.
-    // derived_at_version is stamped on new rows only.
+    // ON CONFLICT DO UPDATE overwrites `occurrence_count` (and `origin_scope`)
+    // with the incoming value rather than adding to it.  This is correct and
+    // idempotent because:
+    //   (a) the cascade deletes a file's edges before re-extraction, so the
+    //       incoming count from the extractor's aggregation step IS the
+    //       authoritative per-file count for this reindex run;
+    //   (b) if for some reason a conflict arises without a prior cascade
+    //       (e.g. a clean file whose edges survived), overwriting with the
+    //       freshly-aggregated count is still correct — it reflects the
+    //       current state of the file.
+    // We do NOT call a snapshot helper here — cascade.rs handles archiving
+    // edges before deletion; `derived_at_version` is kept via COALESCE.
     db.conn().execute(
-        "INSERT OR IGNORE INTO edges
+        "INSERT INTO edges
          (id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
-          derived_at_version)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+          derived_at_version, occurrence_count, origin_scope)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
          WHERE EXISTS (SELECT 1 FROM entities WHERE id = ?3)
-           AND EXISTS (SELECT 1 FROM entities WHERE id = ?4)",
+           AND EXISTS (SELECT 1 FROM entities WHERE id = ?4)
+         ON CONFLICT(id) DO UPDATE SET
+           occurrence_count = excluded.occurrence_count,
+           origin_scope     = excluded.origin_scope",
         params![
             edge.id,
             edge.corpus_id,
@@ -31,6 +40,8 @@ pub fn upsert(db: &Database, edge: &Edge) -> Result<()> {
             edge.location.uri,
             edge.confidence as f64,
             edge.derived_at_version,
+            edge.occurrence_count as i64,
+            edge.origin_scope,
         ],
     )?;
     Ok(())
@@ -53,7 +64,7 @@ pub fn get_for_entity(
     if let Some(kind_val) = kind {
         let sql = format!(
             "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
-                    derived_at_version
+                    derived_at_version, occurrence_count, origin_scope
              FROM edges WHERE ({from_clause} OR {to_clause}) AND kind = ?3
              LIMIT ?2"
         );
@@ -64,7 +75,7 @@ pub fn get_for_entity(
     } else {
         let sql = format!(
             "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
-                    derived_at_version
+                    derived_at_version, occurrence_count, origin_scope
              FROM edges WHERE ({from_clause} OR {to_clause})
              LIMIT ?2"
         );
@@ -78,7 +89,7 @@ pub fn get_for_entity(
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Edge>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, corpus_id, from_entity_id, to_entity_id, kind, location_uri, confidence,
-                derived_at_version
+                derived_at_version, occurrence_count, origin_scope
          FROM edges WHERE corpus_id = ?1 ORDER BY id ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_edge)?;
@@ -165,7 +176,8 @@ pub fn out_degree(db: &Database, corpus_id: &str, entity_id: &str) -> Result<u32
 
 fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
     // Column order: id(0), corpus_id(1), from_entity_id(2), to_entity_id(3),
-    //               kind(4), location_uri(5), confidence(6), derived_at_version(7)
+    //               kind(4), location_uri(5), confidence(6), derived_at_version(7),
+    //               occurrence_count(8), origin_scope(9)
     let uri: String = row.get(5)?;
     let location = Location::parse(&uri).unwrap_or_else(|_| Location {
         corpus_id: String::new(),
@@ -181,6 +193,8 @@ fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
         location,
         confidence: row.get::<_, f64>(6)? as f32,
         derived_at_version: row.get(7)?,
+        occurrence_count: row.get::<_, i64>(8)? as u32,
+        origin_scope: row.get(9)?,
     })
 }
 
@@ -220,6 +234,85 @@ mod tests {
             "calls".to_string(),
             Location::new(corpus_id, "src/main.rs"),
         )
+    }
+
+    // ── Test D: upsert idempotency — overwrite, not add ─────────────────────
+
+    /// Upserting the same edge twice must leave exactly one row whose
+    /// `occurrence_count` equals the second write's value, not the sum.
+    /// This proves the ON CONFLICT overwrite semantics are correct for
+    /// incremental reindex (the extractor's aggregation step produces the
+    /// authoritative per-file count, and storage must not double it).
+    #[test]
+    fn upsert_overwrites_occurrence_count_rather_than_accumulating() {
+        let (db, corpus_id) = setup();
+
+        let a = entity(&corpus_id, "entity-a");
+        let b = entity(&corpus_id, "entity-b");
+        db.entity_upsert(&a).unwrap();
+        db.entity_upsert(&b).unwrap();
+
+        let mut e = edge(&corpus_id, "edge-ab", "entity-a", "entity-b");
+        e.occurrence_count = 5;
+        db.edge_upsert(&e).unwrap();
+
+        // Upsert the same edge again with the same count.
+        db.edge_upsert(&e).unwrap();
+
+        let guard = db.db_for_test();
+        let edges = super::list(&guard, &corpus_id).unwrap();
+        drop(guard);
+        let matching: Vec<_> = edges.iter().filter(|x| x.id == "edge-ab").collect();
+
+        assert_eq!(
+            matching.len(),
+            1,
+            "upsert of same edge id must produce exactly one row"
+        );
+        assert_eq!(
+            matching[0].occurrence_count, 5,
+            "occurrence_count must remain 5 after a second upsert of the same value, \
+             not accumulate to 10"
+        );
+    }
+
+    // ── Test E: round-trip of occurrence_count and origin_scope ─────────────
+
+    /// `occurrence_count` and `origin_scope` must survive a write-then-read
+    /// cycle through the storage layer without corruption.
+    #[test]
+    fn new_fields_round_trip_through_storage() {
+        let (db, corpus_id) = setup();
+
+        let a = entity(&corpus_id, "entity-a");
+        let b = entity(&corpus_id, "entity-b");
+        db.entity_upsert(&a).unwrap();
+        db.entity_upsert(&b).unwrap();
+
+        let mut e = edge(&corpus_id, "edge-ab", "entity-a", "entity-b");
+        e.occurrence_count = 3;
+        e.origin_scope = "test".to_string();
+        db.edge_upsert(&e).unwrap();
+
+        let guard = db.db_for_test();
+        let stored =
+            super::get_for_entity(&guard, "entity-a", super::EdgeDirection::Outbound, None, 10)
+                .unwrap();
+        drop(guard);
+
+        let found = stored
+            .iter()
+            .find(|x| x.id == "edge-ab")
+            .expect("edge-ab should be retrievable via get_for_entity");
+
+        assert_eq!(
+            found.occurrence_count, 3,
+            "occurrence_count must round-trip through storage"
+        );
+        assert_eq!(
+            found.origin_scope, "test",
+            "origin_scope must round-trip through storage"
+        );
     }
 
     #[test]
