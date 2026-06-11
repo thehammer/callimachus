@@ -295,14 +295,9 @@ mod tests {
         db.edge_upsert(&e).unwrap();
 
         let guard = db.db_for_test();
-        let stored = super::get_for_entity(
-            &guard,
-            "entity-a",
-            super::EdgeDirection::Outbound,
-            None,
-            10,
-        )
-        .unwrap();
+        let stored =
+            super::get_for_entity(&guard, "entity-a", super::EdgeDirection::Outbound, None, 10)
+                .unwrap();
         drop(guard);
 
         let found = stored

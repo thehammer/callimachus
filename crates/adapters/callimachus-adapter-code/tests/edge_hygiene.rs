@@ -61,8 +61,7 @@ fn helper() {}
     );
 
     assert_eq!(
-        calls_to_helper[0].occurrence_count,
-        4,
+        calls_to_helper[0].occurrence_count, 4,
         "occurrence_count should be 4 (one per call site)"
     );
 }
@@ -123,23 +122,15 @@ fn shared_helper() {}
     let chunk = make_chunk("corp", "src/lib.rs", "file", source);
     let result = extract_structure(&chunk, rust_lang()).unwrap();
 
-    let prod_edge = result
-        .edges
-        .iter()
-        .find(|e| {
-            e.kind == "calls"
-                && e.to_entity_id.contains("shared_helper")
-                && e.origin_scope == "production"
-        });
+    let prod_edge = result.edges.iter().find(|e| {
+        e.kind == "calls"
+            && e.to_entity_id.contains("shared_helper")
+            && e.origin_scope == "production"
+    });
 
-    let test_edge = result
-        .edges
-        .iter()
-        .find(|e| {
-            e.kind == "calls"
-                && e.to_entity_id.contains("shared_helper")
-                && e.origin_scope == "test"
-        });
+    let test_edge = result.edges.iter().find(|e| {
+        e.kind == "calls" && e.to_entity_id.contains("shared_helper") && e.origin_scope == "test"
+    });
 
     assert!(
         prod_edge.is_some(),
@@ -149,10 +140,7 @@ fn shared_helper() {}
             .edges
             .iter()
             .filter(|e| e.kind == "calls")
-            .map(|e| format!(
-                "to={} scope={}",
-                e.to_entity_id, e.origin_scope
-            ))
+            .map(|e| format!("to={} scope={}", e.to_entity_id, e.origin_scope))
             .collect::<Vec<_>>()
     );
 
@@ -164,10 +152,7 @@ fn shared_helper() {}
             .edges
             .iter()
             .filter(|e| e.kind == "calls")
-            .map(|e| format!(
-                "to={} scope={}",
-                e.to_entity_id, e.origin_scope
-            ))
+            .map(|e| format!("to={} scope={}", e.to_entity_id, e.origin_scope))
             .collect::<Vec<_>>()
     );
 
@@ -201,9 +186,7 @@ fn my_standalone_test() {
         .edges
         .iter()
         .filter(|e| {
-            e.kind == "calls"
-                && e.to_entity_id.contains("setup_data")
-                && e.origin_scope == "test"
+            e.kind == "calls" && e.to_entity_id.contains("setup_data") && e.origin_scope == "test"
         })
         .collect();
 
@@ -215,10 +198,7 @@ fn my_standalone_test() {
             .edges
             .iter()
             .filter(|e| e.kind == "calls")
-            .map(|e| format!(
-                "to={} scope={}",
-                e.to_entity_id, e.origin_scope
-            ))
+            .map(|e| format!("to={} scope={}", e.to_entity_id, e.origin_scope))
             .collect::<Vec<_>>()
     );
 }

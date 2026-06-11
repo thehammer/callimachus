@@ -38,13 +38,7 @@ fn entity_id(corpus_id: &str, name: &str) -> String {
 /// function in the same file produce N edges with the **same** id, which the
 /// post-extraction aggregation step then collapses into one row with
 /// `occurrence_count = N`.
-fn edge_id(
-    corpus_id: &str,
-    from_id: &str,
-    kind: &str,
-    to_id: &str,
-    origin_scope: &str,
-) -> String {
+fn edge_id(corpus_id: &str, from_id: &str, kind: &str, to_id: &str, origin_scope: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(from_id.as_bytes());
     hasher.update(b"|");
@@ -249,8 +243,7 @@ pub fn extract_structure(
     // incremental reindex the cascade deletes the file's edges before this
     // batch is emitted, so overwrite upsert in the storage layer is correct
     // and idempotent — see edge_store::upsert for the storage-side invariant.
-    let mut aggregated: std::collections::HashMap<String, Edge> =
-        std::collections::HashMap::new();
+    let mut aggregated: std::collections::HashMap<String, Edge> = std::collections::HashMap::new();
     for edge in result.edges.drain(..) {
         aggregated
             .entry(edge.id.clone())
