@@ -678,6 +678,184 @@ fn extract_calls(
     }
 }
 
+// ── Rust use-declaration decomposition ──────────────────────────────────────
+
+/// Join two Rust path segments with `::`, handling empty parts gracefully.
+fn join_path_segments(prefix: &str, segment: &str) -> String {
+    match (prefix.is_empty(), segment.is_empty()) {
+        (true, _) => segment.to_string(),
+        (_, true) => prefix.to_string(),
+        _ => format!("{prefix}::{segment}"),
+    }
+}
+
+/// Recursively collect leaf import paths from a Rust `_use_clause` AST node.
+///
+/// `prefix` is the path accumulated from enclosing `scoped_use_list` nodes.
+/// Each leaf is a `(full_path, byte_pos)` pair — `byte_pos` is used for
+/// `scope_for_pos` to tag the edge with the correct `origin_scope`.
+///
+/// Handles:
+/// - `scoped_use_list` (`path::{list}`) — extend prefix with path, recurse
+/// - `use_list` (`{item, ...}`) — recurse each item with the same prefix
+/// - `use_as_clause` (`path as alias`) — emit the original path, ignore alias
+/// - `use_wildcard` (`path::*` or bare `*`) — emit `prefix::*` as a single leaf
+/// - `identifier` — emit `prefix::name` (or just `name` if prefix is empty)
+/// - `scoped_identifier` and other path-like nodes — use full text as the leaf
+fn collect_rust_use_leaves_into(
+    node: tree_sitter::Node<'_>,
+    prefix: &str,
+    source: &[u8],
+    out: &mut Vec<(String, usize)>,
+) {
+    match node.kind() {
+        "scoped_use_list" => {
+            // path::{list} — extend prefix with path, then recurse into list items.
+            let path_text = node
+                .child_by_field_name("path")
+                .map(|n| text_from_bytes(source, n.byte_range()))
+                .unwrap_or_default();
+            let new_prefix = join_path_segments(prefix, &path_text);
+            if let Some(list_node) = node.child_by_field_name("list") {
+                let mut cursor = list_node.walk();
+                for child in list_node.named_children(&mut cursor) {
+                    collect_rust_use_leaves_into(child, &new_prefix, source, out);
+                }
+            }
+        }
+        "use_list" => {
+            // {item, ...} — bare list, recurse each item with the same prefix.
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_rust_use_leaves_into(child, prefix, source, out);
+            }
+        }
+        "use_as_clause" => {
+            // `path as alias` — emit the original path, ignore the alias.
+            let path_text = if let Some(path_node) = node.child_by_field_name("path") {
+                text_from_bytes(source, path_node.byte_range())
+            } else if let Some(first) = node.named_child(0) {
+                text_from_bytes(source, first.byte_range())
+            } else {
+                text_from_bytes(source, node.byte_range())
+            };
+            let leaf = join_path_segments(prefix, &path_text);
+            if !leaf.is_empty() {
+                out.push((leaf, node.start_byte()));
+            }
+        }
+        "use_wildcard" => {
+            // `path::*` at any nesting level — treated as a single leaf `path::*`.
+            //
+            // In tree-sitter-rust 0.23, `child_by_field_name("path")` is not
+            // reliably populated for `use_wildcard` nodes; instead we parse the
+            // node's full text to extract the prefix (e.g. `std::io::*` →
+            // path = `std::io`, leaf = `std::io::*`; bare `*` → leaf = `*` or
+            // `prefix::*` when nested inside a scoped_use_list).
+            // TODO(per-language): other languages don't use this path (non-Rust
+            // branches are handled by the query-based extractor below).
+            let full_text = text_from_bytes(source, node.byte_range());
+            let path_text = if let Some(stripped) = full_text.strip_suffix("::*") {
+                stripped.to_string()
+            } else {
+                // Bare `*` (inside a use_list / at the top level of a use_declaration).
+                String::new()
+            };
+            let base = join_path_segments(prefix, &path_text);
+            let leaf = if base.is_empty() {
+                "*".to_string()
+            } else {
+                format!("{base}::*")
+            };
+            out.push((leaf, node.start_byte()));
+        }
+        "identifier" => {
+            let name = text_from_bytes(source, node.byte_range());
+            if name == "self" {
+                // `use path::{self}` — the imported symbol IS the path prefix.
+                if !prefix.is_empty() {
+                    out.push((prefix.to_string(), node.start_byte()));
+                }
+            } else if !name.is_empty() {
+                out.push((join_path_segments(prefix, &name), node.start_byte()));
+            }
+        }
+        _ => {
+            // `scoped_identifier` and other path-like nodes — use the full text
+            // as the leaf (e.g. `crate::storage::Foo` for a plain qualified import).
+            let text = text_from_bytes(source, node.byte_range());
+            if !text.is_empty() {
+                out.push((join_path_segments(prefix, &text), node.start_byte()));
+            }
+        }
+    }
+}
+
+/// Walk the full AST rooted at `node` and emit one `import` entity + `imports`
+/// edge per leaf name found inside each `use_declaration`.
+///
+/// A grouped `use a::{B, C, D};` yields three edges; a plain
+/// `use a::B;` yields one.  Origin scope and deterministic edge IDs come from
+/// PR 1/2 helpers already in scope.
+fn walk_tree_for_rust_imports(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    chunk: &Chunk,
+    file_entity_id: &str,
+    test_ranges: &[std::ops::Range<usize>],
+    result: &mut ExtractedCodeStructure,
+) {
+    if node.kind() == "use_declaration" {
+        if let Some(arg) = node.child_by_field_name("argument") {
+            let mut leaves: Vec<(String, usize)> = Vec::new();
+            collect_rust_use_leaves_into(arg, "", source, &mut leaves);
+
+            for (leaf_path, byte_pos) in leaves {
+                if leaf_path.is_empty() {
+                    continue;
+                }
+
+                let import_entity_id = entity_id(&chunk.corpus_id, &leaf_path);
+                let mut entity = Entity::new(
+                    import_entity_id.clone(),
+                    chunk.corpus_id.clone(),
+                    leaf_path.clone(),
+                    "import".to_string(),
+                );
+                entity.confidence = 0.95;
+                result.entities.push(entity);
+
+                let scope = scope_for_pos(byte_pos, test_ranges);
+                let eid = edge_id(
+                    &chunk.corpus_id,
+                    file_entity_id,
+                    "imports",
+                    &import_entity_id,
+                    &scope,
+                );
+                let mut edge = Edge::new(
+                    eid,
+                    chunk.corpus_id.clone(),
+                    file_entity_id.to_string(),
+                    import_entity_id,
+                    "imports".to_string(),
+                    chunk.location.clone(),
+                );
+                edge.origin_scope = scope;
+                result.edges.push(edge);
+            }
+        }
+        // Don't descend into use_declaration children — the argument was
+        // already processed above.
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_tree_for_rust_imports(child, source, chunk, file_entity_id, test_ranges, result);
+    }
+}
+
 // ── Import extraction ────────────────────────────────────────────────────────
 
 fn extract_imports(
@@ -688,8 +866,23 @@ fn extract_imports(
     test_ranges: &[std::ops::Range<usize>],
     result: &mut ExtractedCodeStructure,
 ) {
+    // Rust: use the AST-walking decomposer so that grouped `use a::{B, C, D}`
+    // yields one import entity and edge per leaf name rather than one mega-entity
+    // for the entire use-tree.
+    if lang.name == "rust" {
+        let file_path = chunk
+            .location
+            .path
+            .split('#')
+            .next()
+            .unwrap_or(&chunk.location.path)
+            .to_string();
+        let file_entity_id = entity_id(&chunk.corpus_id, &file_path);
+        walk_tree_for_rust_imports(root, source, chunk, &file_entity_id, test_ranges, result);
+        return;
+    }
+
     let query_str = match lang.name {
-        "rust" => r#"(use_declaration argument: (_) @import)"#,
         "typescript" | "javascript" => r#"(import_statement source: (string) @import)"#,
         "python" => {
             r#"[(import_statement name: (dotted_name) @import)
