@@ -852,14 +852,7 @@ fn walk_tree_for_rust_imports(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_tree_for_rust_imports(
-            child,
-            source,
-            chunk,
-            file_entity_id,
-            test_ranges,
-            result,
-        );
+        walk_tree_for_rust_imports(child, source, chunk, file_entity_id, test_ranges, result);
     }
 }
 
