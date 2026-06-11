@@ -1383,8 +1383,9 @@ impl StorageBackend for SqliteBackend {
              (id, corpus_id, from_entity_id, to_entity_id, kind,
               location_uri, confidence, derived_at_version,
               derived_at_kind, derived_at_sha,
-              superseded_at_version, superseded_at_sha, superseded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'concrete',?8,?9,?9,?10)",
+              superseded_at_version, superseded_at_sha, superseded_at,
+              occurrence_count, origin_scope)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'concrete',?8,?9,?9,?10,?11,?12)",
             rusqlite::params![
                 edge.id,
                 edge.corpus_id,
@@ -1396,6 +1397,8 @@ impl StorageBackend for SqliteBackend {
                 derived_at_version,
                 superseded_at_version,
                 now,
+                edge.occurrence_count as i64,
+                edge.origin_scope,
             ],
         )?;
         Ok(())

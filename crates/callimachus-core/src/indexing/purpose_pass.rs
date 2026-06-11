@@ -363,6 +363,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
                     location: crate::types::Location::new(corpus_id, ""),
                     confidence: 0.5,
                     derived_at_version: version.clone(),
+                    ..Default::default()
                 };
                 edges.push(edge);
             }

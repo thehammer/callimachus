@@ -137,12 +137,14 @@ pub(crate) fn snapshot_if_version_changed_edge(
                    (id, corpus_id, from_entity_id, to_entity_id, kind,
                     location_uri, confidence, derived_at_version,
                     derived_at_kind, derived_at_sha,
-                    superseded_at_version, superseded_at_sha, superseded_at)
+                    superseded_at_version, superseded_at_sha, superseded_at,
+                    occurrence_count, origin_scope)
                  SELECT id, corpus_id, from_entity_id, to_entity_id, kind,
                         location_uri, confidence, derived_at_version,
                         derived_at_kind,
                         COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
-                        ?3, ?3, ?4
+                        ?3, ?3, ?4,
+                        occurrence_count, origin_scope
                  FROM edges
                  WHERE id = ?1 AND corpus_id = ?2",
                 params![edge_id, corpus_id, superseded_at_version, now],
@@ -468,12 +470,14 @@ pub(crate) fn archive_edges_for_entity(
            (id, corpus_id, from_entity_id, to_entity_id, kind,
             location_uri, confidence, derived_at_version,
             derived_at_kind, derived_at_sha,
-            superseded_at_version, superseded_at_sha, superseded_at)
+            superseded_at_version, superseded_at_sha, superseded_at,
+            occurrence_count, origin_scope)
          SELECT id, corpus_id, from_entity_id, to_entity_id, kind,
                 location_uri, confidence, derived_at_version,
                 derived_at_kind,
                 COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
-                ?2, ?2, ?3
+                ?2, ?2, ?3,
+                occurrence_count, origin_scope
          FROM edges
          WHERE from_entity_id = ?1 OR to_entity_id = ?1",
         params![entity_id, superseded_at_version, now],
