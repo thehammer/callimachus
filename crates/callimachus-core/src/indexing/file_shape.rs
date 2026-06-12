@@ -50,7 +50,7 @@ pub fn file_shapes_by_uri(entities: &[Entity]) -> HashMap<String, String> {
     for entity in entities {
         if let Some(loc) = entity.first_location.as_ref() {
             ids_by_uri
-                .entry(loc.uri.clone())
+                .entry(loc.uri())
                 .or_default()
                 .push(entity.id.clone());
         }

@@ -217,10 +217,9 @@ impl SourceAdapter for CodeAdapter {
         // Infer language from the entity's location URI so we don't run the
         // Rust tree-sitter grammar on PHP/JS/TS/Vue content (the external scanner
         // can loop indefinitely on non-Rust input).
-        let lang = entity
-            .first_location
-            .as_ref()
-            .map(|loc| loc.uri.as_str())
+        let first_loc_uri = entity.first_location.as_ref().map(|loc| loc.uri());
+        let lang = first_loc_uri
+            .as_deref()
             .unwrap_or("")
             .rsplit('.')
             .next()
@@ -338,10 +337,9 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
         llm: &dyn LlmProvider,
     ) -> Result<Option<ExtractedContract>> {
         // Detect language from the entity's URI extension (same pattern as extract_purpose).
-        let lang = entity
-            .first_location
-            .as_ref()
-            .map(|loc| loc.uri.as_str())
+        let contract_loc_uri = entity.first_location.as_ref().map(|loc| loc.uri());
+        let lang = contract_loc_uri
+            .as_deref()
             .unwrap_or("")
             .rsplit('.')
             .next()

@@ -29,7 +29,7 @@ pub fn run_to_writer(
             "record_type": "chunk",
             "id": chunk.id,
             "corpus_id": chunk.corpus_id,
-            "location_uri": chunk.location.uri,
+            "location_uri": chunk.location.uri(),
             "parent_path": chunk.parent_path,
             "kind": chunk.kind,
             "content": chunk.content,
@@ -72,7 +72,7 @@ pub fn run_to_writer(
             "from_entity_id": edge.from_entity_id,
             "to_entity_id": edge.to_entity_id,
             "kind": edge.kind,
-            "location_uri": edge.location.uri,
+            "location_uri": edge.location.uri(),
         });
         writeln!(writer, "{}", obj)?;
         line_count += 1;

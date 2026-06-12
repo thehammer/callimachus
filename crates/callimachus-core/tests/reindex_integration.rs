@@ -193,7 +193,7 @@ async fn incremental_reindex_preserves_unchanged_chunks_and_corrections() {
         .unwrap();
 
     let mut initial_chunks = db.chunk_list("integ").unwrap();
-    initial_chunks.sort_by(|a, b| a.location.uri.cmp(&b.location.uri));
+    initial_chunks.sort_by(|a, b| a.location.uri().cmp(&b.location.uri()));
     assert_eq!(
         initial_chunks.len(),
         2,
@@ -239,7 +239,7 @@ async fn incremental_reindex_preserves_unchanged_chunks_and_corrections() {
 
     // ── Step 5: Assertions ───────────────────────────────────────────────────
     let mut after_chunks = db.chunk_list("integ").unwrap();
-    after_chunks.sort_by(|a, b| a.location.uri.cmp(&b.location.uri));
+    after_chunks.sort_by(|a, b| a.location.uri().cmp(&b.location.uri()));
 
     assert_eq!(after_chunks.len(), 2, "still 2 chunks after reindex");
 

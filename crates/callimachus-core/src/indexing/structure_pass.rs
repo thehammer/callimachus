@@ -95,18 +95,18 @@ pub async fn run(
     // cache's invalidation boundary (see `indexing::file_shape`). Grouped by the
     // entity's `first_location` URI, which for code corpora is the file chunk's
     // location URI.
-    let mut ids_by_uri: std::collections::HashMap<&str, Vec<String>> =
+    let mut ids_by_uri: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     for entity in &all_entities {
         if let Some(loc) = entity.first_location.as_ref() {
             ids_by_uri
-                .entry(loc.uri.as_str())
+                .entry(loc.uri())
                 .or_default()
                 .push(entity.id.clone());
         }
     }
     for chunk in &chunks {
-        if let Some(ids) = ids_by_uri.get(chunk.location.uri.as_str()) {
+        if let Some(ids) = ids_by_uri.get(chunk.location.uri().as_str()) {
             let (hash, json) = file_shape::file_shape_hash(ids);
             db.chunk_set_file_shape(&chunk.id, &hash, &json)?;
         }

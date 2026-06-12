@@ -79,7 +79,7 @@ pub async fn run(
                 .map(|m| {
                     e.first_location
                         .as_ref()
-                        .map(|loc| m.is_dirty(file_path_from_uri(&loc.uri)))
+                        .map(|loc| m.is_dirty(file_path_from_uri(&loc.uri())))
                         .unwrap_or(true)
                 })
                 .unwrap_or(true)
@@ -206,7 +206,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
     let full = ctx.full;
     // Fetch content via first location.
     let content = match entity.first_location.as_ref() {
-        Some(loc) => match db.chunk_get_by_uri(&loc.uri) {
+        Some(loc) => match db.chunk_get_by_uri(&loc.uri()) {
             Ok(Some(chunk)) => chunk.content,
             _ => return PurposeOutcome::Skip,
         },
@@ -216,10 +216,9 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
     // Compute routing inputs.
     let in_deg = db.entity_in_degree(corpus_id, &entity.id).unwrap_or(0);
     let out_deg = db.entity_out_degree(corpus_id, &entity.id).unwrap_or(0);
-    let language = entity
-        .first_location
-        .as_ref()
-        .map(|l| l.uri.as_str())
+    let first_loc_uri = entity.first_location.as_ref().map(|l| l.uri());
+    let language = first_loc_uri
+        .as_deref()
         .map(detect_language_from_uri)
         .unwrap_or("unknown");
     let mut routing = adapter.static_routing_inputs(language, &content, &entity.canonical_name);
@@ -273,7 +272,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
     let file_shape_hash = entity
         .first_location
         .as_ref()
-        .and_then(|loc| ctx.file_shapes.get(&loc.uri))
+        .and_then(|loc| ctx.file_shapes.get(&loc.uri()))
         .cloned()
         .unwrap_or_default();
     let cache_key = Layer2CacheKey {

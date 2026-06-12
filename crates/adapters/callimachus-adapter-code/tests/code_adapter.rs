@@ -54,7 +54,7 @@ async fn chunk_rust_files_produce_chunks() {
 
     let rust_chunks: Vec<_> = chunks
         .iter()
-        .filter(|c| c.location.uri.contains(".rs"))
+        .filter(|c| c.location.uri().contains(".rs"))
         .collect();
     assert!(
         !rust_chunks.is_empty(),
@@ -99,7 +99,7 @@ async fn yaml_file_produces_file_chunk() {
     // YAML is now a text-passthrough extension — it should produce a file chunk.
     let yaml_chunks: Vec<_> = chunks
         .iter()
-        .filter(|c| c.location.uri.contains(".yaml"))
+        .filter(|c| c.location.uri().contains(".yaml"))
         .collect();
     assert!(
         !yaml_chunks.is_empty(),
@@ -129,9 +129,9 @@ async fn truly_unknown_extension_skipped() {
     assert!(!chunks.is_empty(), "should have chunks from main.rs");
     for chunk in &chunks {
         assert!(
-            !chunk.location.uri.contains(".xyz"),
+            !chunk.location.uri().contains(".xyz"),
             ".xyz file should not produce chunks: {}",
-            chunk.location.uri
+            chunk.location.uri()
         );
     }
 }
@@ -167,7 +167,7 @@ async fn extract_structure_produces_entities_for_rust() {
     // Find any file chunk for a .rs file.
     let rs_file_chunk = chunks
         .iter()
-        .find(|c| c.kind == "file" && c.location.uri.contains(".rs"));
+        .find(|c| c.kind == "file" && c.location.uri().contains(".rs"));
 
     if let Some(chunk) = rs_file_chunk {
         let structure = adapter.extract_structure(chunk).await.unwrap();
@@ -224,7 +224,7 @@ async fn location_round_trip() {
 
     for chunk in &chunks {
         let formatted = adapter.format_location(chunk);
-        let parsed = adapter.parse_location(&chunk.location.uri).unwrap();
+        let parsed = adapter.parse_location(&chunk.location.uri()).unwrap();
 
         // The formatted path should match the chunk's location path.
         assert_eq!(
@@ -261,7 +261,7 @@ async fn extract_structure_edges_use_slug_entity_ids() {
                 entity.id.starts_with("sample:"),
                 "entity id '{}' in chunk '{}' should start with 'sample:'",
                 entity.id,
-                chunk.location.uri
+                chunk.location.uri()
             );
         }
 
@@ -270,13 +270,13 @@ async fn extract_structure_edges_use_slug_entity_ids() {
                 edge.from_entity_id.starts_with("sample:"),
                 "edge from_entity_id '{}' in chunk '{}' should start with 'sample:'",
                 edge.from_entity_id,
-                chunk.location.uri
+                chunk.location.uri()
             );
             assert!(
                 edge.to_entity_id.starts_with("sample:"),
                 "edge to_entity_id '{}' in chunk '{}' should start with 'sample:'",
                 edge.to_entity_id,
-                chunk.location.uri
+                chunk.location.uri()
             );
             // No whitespace in IDs.
             assert!(

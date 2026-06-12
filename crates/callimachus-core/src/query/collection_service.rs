@@ -288,7 +288,7 @@ impl CollectionService {
                 .partial_cmp(&a.relevance)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.corpus_id.cmp(&b.corpus_id))
-                .then_with(|| a.location.uri.cmp(&b.location.uri))
+                .then_with(|| a.location.uri().cmp(&b.location.uri()))
         });
         all.truncate(limit);
 

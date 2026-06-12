@@ -150,7 +150,7 @@ impl ChangeManifest {
     pub fn is_dirty_for_chunk(&self, chunk: &Chunk) -> bool {
         // Delegate to is_dirty so the legacy "src/" prefix strip is honoured
         // here too — chunk URIs are the primary surface that carry the prefix.
-        self.is_dirty(file_path_from_uri(&chunk.location.uri))
+        self.is_dirty(file_path_from_uri(&chunk.location.uri()))
     }
 
     /// Return the commit metadata for a source path, if any.
@@ -193,16 +193,13 @@ mod tests {
     use crate::types::{Chunk, Location};
 
     fn make_chunk(uri: &str) -> Chunk {
+        let location = Location::parse(uri).unwrap_or_else(|_| Location::new("c", uri));
         Chunk {
             id: "abc".into(),
             corpus_id: "c".into(),
             parent_path: None,
             kind: "function".into(),
-            location: Location {
-                corpus_id: "c".into(),
-                path: uri.to_string(),
-                uri: uri.to_string(),
-            },
+            location,
             content: "fn foo() {}".into(),
             byte_length: 11,
             created_at: "2024-01-01T00:00:00Z".into(),

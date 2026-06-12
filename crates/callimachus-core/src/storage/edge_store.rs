@@ -37,7 +37,7 @@ pub fn upsert(db: &Database, edge: &Edge) -> Result<()> {
             edge.from_entity_id,
             edge.to_entity_id,
             edge.kind,
-            edge.location.uri,
+            edge.location.uri(),
             edge.confidence as f64,
             edge.derived_at_version,
             edge.occurrence_count as i64,
@@ -182,7 +182,6 @@ fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
     let location = Location::parse(&uri).unwrap_or_else(|_| Location {
         corpus_id: String::new(),
         path: uri.clone(),
-        uri,
     });
     Ok(Edge {
         id: row.get(0)?,

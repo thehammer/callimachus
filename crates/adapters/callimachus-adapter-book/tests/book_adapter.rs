@@ -37,9 +37,9 @@ async fn chunk_text_returns_chunks_with_valid_locations() {
     for chunk in &chunks {
         // Every chunk must have a non-empty location URI.
         assert!(
-            chunk.location.uri.starts_with("calli://"),
+            chunk.location.uri().starts_with("calli://"),
             "bad location URI: {}",
-            chunk.location.uri
+            chunk.location.uri()
         );
         // Every chunk must have non-empty content.
         assert!(!chunk.content.trim().is_empty(), "chunk has empty content");
@@ -193,7 +193,7 @@ async fn format_and_parse_location() {
     assert!(!formatted.is_empty());
 
     // parse_location should round-trip through the full URI.
-    let loc_ref = adapter.parse_location(&chunk.location.uri).unwrap();
+    let loc_ref = adapter.parse_location(&chunk.location.uri()).unwrap();
     assert!(!loc_ref.path.is_empty());
 }
 

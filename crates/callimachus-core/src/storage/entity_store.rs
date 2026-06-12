@@ -21,8 +21,10 @@ pub fn upsert(db: &Database, entity: &Entity) -> Result<()> {
 
     // Step 2: upsert.
     let aliases_json = serde_json::to_string(&entity.aliases)?;
-    let first_uri = entity.first_location.as_ref().map(|l| &l.uri);
-    let last_uri = entity.last_location.as_ref().map(|l| &l.uri);
+    let first_uri_owned = entity.first_location.as_ref().map(|l| l.uri());
+    let last_uri_owned = entity.last_location.as_ref().map(|l| l.uri());
+    let first_uri = first_uri_owned.as_deref();
+    let last_uri = last_uri_owned.as_deref();
 
     // On conflict: merge aliases, increment appearance_count, update location pointers,
     // take max confidence.
