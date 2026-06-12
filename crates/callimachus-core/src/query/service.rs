@@ -350,7 +350,6 @@ impl QueryService {
             let first_co_occurrence = Location::parse(&first_uri).unwrap_or_else(|_| Location {
                 corpus_id: input.corpus_id.clone(),
                 path: first_uri.clone(),
-                uri: first_uri.clone(),
             });
 
             let all: Vec<Location> = common
@@ -359,7 +358,6 @@ impl QueryService {
                     Location::parse(&uri).unwrap_or_else(|_| Location {
                         corpus_id: input.corpus_id.clone(),
                         path: uri.clone(),
-                        uri: uri.clone(),
                     })
                 })
                 .collect();
@@ -387,17 +385,17 @@ impl QueryService {
             };
 
             let corpus_id = &chunk.corpus_id;
-            let uri = &chunk.location.uri;
+            let uri = chunk.location.uri();
 
             // Summary: look up in summary_store; let corrections override if set.
             let db_summary = self
                 .db
-                .summary_get(corpus_id, &SummaryTargetKind::Chunk, uri)?
+                .summary_get(corpus_id, &SummaryTargetKind::Chunk, &uri)?
                 .map(|s| s.text);
             let summary = self
                 .corrections
                 .as_ref()
-                .and_then(|e| e.override_summary("chunk", uri))
+                .and_then(|e| e.override_summary("chunk", &uri))
                 .map(str::to_string)
                 .or(db_summary);
 
@@ -408,13 +406,13 @@ impl QueryService {
             };
 
             // Entities present: entities whose first or last location is this URI.
-            let mut entities_present = self.db.entities_at_location(corpus_id, uri)?;
+            let mut entities_present = self.db.entities_at_location(corpus_id, &uri)?;
             if let Some(engine) = &self.corrections {
                 engine.apply_to_entities(&mut entities_present);
             }
 
             // Child locations: chunks whose parent_path = this URI.
-            let child_locations = self.db.chunk_children_by_uri(corpus_id, uri)?;
+            let child_locations = self.db.chunk_children_by_uri(corpus_id, &uri)?;
 
             Ok(ToolResult::ok(ReadOutput {
                 location: chunk.location.clone(),
@@ -497,17 +495,18 @@ impl QueryService {
 
             let mut scored: Vec<(f32, String)> = Vec::new();
             for chunk in &all_chunks {
-                if chunk.location.uri == input.location {
+                if chunk.location.uri() == input.location {
                     continue;
                 }
+                let chunk_uri = chunk.location.uri();
                 let chunk_entity_ids: HashSet<String> = self
                     .db
-                    .edge_entity_ids_at_location(&chunk.location.uri)?
+                    .edge_entity_ids_at_location(&chunk_uri)?
                     .into_iter()
                     .collect();
                 let score = jaccard(&target_entity_ids, &chunk_entity_ids);
                 if score > 0.0 {
-                    scored.push((score, chunk.location.uri.clone()));
+                    scored.push((score, chunk_uri));
                 }
             }
 
@@ -521,7 +520,6 @@ impl QueryService {
                     let location = Location::parse(&uri).unwrap_or_else(|_| Location {
                         corpus_id: corpus_id.to_string(),
                         path: uri.clone(),
-                        uri: uri.clone(),
                     });
                     RelatedItem {
                         location,
@@ -639,7 +637,7 @@ impl QueryService {
         // Step 2: read the scene at that location.
         let read_out = match self.read(ReadInput {
             corpus_id: Some(input.corpus_id),
-            location: meet.first_co_occurrence.uri.clone(),
+            location: meet.first_co_occurrence.uri(),
             depth: ReadDepth::Full,
         }) {
             ToolResult::Ok(s) => s.data,
@@ -1090,7 +1088,7 @@ mod tests {
         parent: Option<&str>,
     ) -> Chunk {
         let loc = Location::new(corpus_id, path);
-        let parent_uri = parent.map(|p| Location::new(corpus_id, p).uri);
+        let parent_uri = parent.map(|p| Location::new(corpus_id, p).uri());
         let chunk = Chunk::new(
             corpus_id.into(),
             parent_uri,
@@ -1445,7 +1443,7 @@ mod tests {
         seed_chunk(db.as_ref(), "c1", "ch/1", "...", "chapter", None);
         seed_entity(db.as_ref(), "c1", "e1", "Frodo", None);
         seed_entity(db.as_ref(), "c1", "e2", "Gandalf", None);
-        let uri = Location::new("c1", "ch/1").uri;
+        let uri = Location::new("c1", "ch/1").uri();
         seed_edge(db.as_ref(), "c1", "edge1", "e1", "e2", &uri, "meets");
         seed_edge(db.as_ref(), "c1", "edge2", "e2", "e1", &uri, "advises");
 
@@ -1485,8 +1483,8 @@ mod tests {
         seed_chunk(db.as_ref(), "c1", "ch/2", "second chapter", "chapter", None);
         seed_entity(db.as_ref(), "c1", "e1", "Frodo", None);
         seed_entity(db.as_ref(), "c1", "e2", "Gandalf", None);
-        let uri1 = Location::new("c1", "ch/1").uri;
-        let uri2 = Location::new("c1", "ch/2").uri;
+        let uri1 = Location::new("c1", "ch/1").uri();
+        let uri2 = Location::new("c1", "ch/2").uri();
         seed_edge(db.as_ref(), "c1", "ed1", "e1", "e2", &uri1, "meets");
         seed_edge(db.as_ref(), "c1", "ed2", "e1", "e2", &uri2, "meets");
 
@@ -1519,7 +1517,7 @@ mod tests {
 
         let result = svc.read(ReadInput {
             corpus_id: Some("c1".into()),
-            location: chunk.location.uri.clone(),
+            location: chunk.location.uri(),
             depth: ReadDepth::Full,
         });
         let ToolResult::Ok(s) = result else {
@@ -1543,7 +1541,7 @@ mod tests {
 
         let result = svc.read(ReadInput {
             corpus_id: Some("c1".into()),
-            location: chunk.location.uri.clone(),
+            location: chunk.location.uri(),
             depth: ReadDepth::Summary,
         });
         let ToolResult::Ok(s) = result else {
@@ -1573,7 +1571,7 @@ mod tests {
             "scene",
             Some("ch/1"),
         );
-        let uri = Location::new("c1", "ch/1").uri;
+        let uri = Location::new("c1", "ch/1").uri();
 
         let result = svc.read(ReadInput {
             corpus_id: Some("c1".into()),
@@ -1591,11 +1589,12 @@ mod tests {
         let (svc, db) = make_service();
         seed_corpus(db.as_ref(), "c1");
         let chunk = seed_chunk(db.as_ref(), "c1", "ch/1", "text", "chapter", None);
-        seed_entity(db.as_ref(), "c1", "e1", "Frodo", Some(&chunk.location.uri));
+        let chunk_uri = chunk.location.uri();
+        seed_entity(db.as_ref(), "c1", "e1", "Frodo", Some(&chunk_uri));
 
         let result = svc.read(ReadInput {
             corpus_id: Some("c1".into()),
-            location: chunk.location.uri.clone(),
+            location: chunk_uri.clone(),
             depth: ReadDepth::Full,
         });
         let ToolResult::Ok(s) = result else {
@@ -1667,12 +1666,12 @@ mod tests {
             None,
         );
         seed_entity(db.as_ref(), "c1", "e1", "Frodo", None);
-        let uri1 = Location::new("c1", "ch/1").uri;
-        let uri2 = Location::new("c1", "ch/2").uri;
+        let uri1 = Location::new("c1", "ch/1").uri();
+        let uri2 = Location::new("c1", "ch/2").uri();
         seed_edge(db.as_ref(), "c1", "ed1", "e1", "e1", &uri1, "appears");
         seed_edge(db.as_ref(), "c1", "ed2", "e1", "e1", &uri2, "appears");
 
-        let target_uri = Location::new("c1", "ch/1").uri;
+        let target_uri = Location::new("c1", "ch/1").uri();
         let result = svc.related(RelatedInput {
             corpus_id: "c1".into(),
             location: target_uri,
@@ -1701,7 +1700,7 @@ mod tests {
         );
         seed_entity(db.as_ref(), "c1", "e1", "Frodo", None);
         seed_entity(db.as_ref(), "c1", "e2", "Gandalf", None);
-        let uri = Location::new("c1", "ch/1/sc/1").uri;
+        let uri = Location::new("c1", "ch/1/sc/1").uri();
         seed_edge(db.as_ref(), "c1", "ed1", "e1", "e2", &uri, "meets");
 
         let result = svc.find_scene(FindSceneInput {
@@ -1721,7 +1720,7 @@ mod tests {
         let (svc, db) = make_service();
         seed_corpus(db.as_ref(), "c1");
         seed_chunk(db.as_ref(), "c1", "ch/1", "text", "chapter", None);
-        let uri = Location::new("c1", "ch/1").uri;
+        let uri = Location::new("c1", "ch/1").uri();
         seed_entity(db.as_ref(), "c1", "e1", "Frodo", None);
         seed_entity(db.as_ref(), "c1", "e2", "Gandalf", None);
         seed_edge(db.as_ref(), "c1", "ed1", "e1", "e2", &uri, "meets");

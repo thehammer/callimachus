@@ -19,7 +19,7 @@ pub fn upsert(db: &Database, chunk: &Chunk) -> Result<()> {
             chunk.corpus_id,
             chunk.parent_path,
             chunk.kind,
-            chunk.location.uri,
+            chunk.location.uri(),
             chunk.content,
             chunk.byte_length as i64,
             chunk.created_at,
@@ -205,7 +205,6 @@ pub fn children_by_uri(db: &Database, corpus_id: &str, parent_uri: &str) -> Resu
         let loc = Location::parse(&uri).unwrap_or_else(|_| Location {
             corpus_id: corpus_id.to_string(),
             path: uri.clone(),
-            uri,
         });
         locs.push(loc);
     }
@@ -217,7 +216,6 @@ fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
     let location = Location::parse(&uri).unwrap_or_else(|_| Location {
         corpus_id: String::new(),
         path: uri.clone(),
-        uri: uri.clone(),
     });
     Ok(Chunk {
         id: row.get(0)?,

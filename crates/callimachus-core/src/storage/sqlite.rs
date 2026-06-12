@@ -1276,7 +1276,7 @@ impl StorageBackend for SqliteBackend {
                 chunk.corpus_id,
                 chunk.parent_path,
                 chunk.kind,
-                chunk.location.uri,
+                chunk.location.uri(),
                 chunk.content,
                 chunk.byte_length as i64,
                 chunk.created_at,
@@ -1341,8 +1341,10 @@ impl StorageBackend for SqliteBackend {
         let guard = db!(self);
         let now = chrono::Utc::now().to_rfc3339();
         let aliases_json = serde_json::to_string(&entity.aliases)?;
-        let first_uri = entity.first_location.as_ref().map(|l| &l.uri);
-        let last_uri = entity.last_location.as_ref().map(|l| &l.uri);
+        let first_uri_owned = entity.first_location.as_ref().map(|l| l.uri());
+        let last_uri_owned = entity.last_location.as_ref().map(|l| l.uri());
+        let first_uri = first_uri_owned.as_deref();
+        let last_uri = last_uri_owned.as_deref();
         guard.conn().execute(
             "INSERT OR IGNORE INTO entities_history
              (id, corpus_id, canonical_name, kind, aliases, description,
@@ -1392,7 +1394,7 @@ impl StorageBackend for SqliteBackend {
                 edge.from_entity_id,
                 edge.to_entity_id,
                 edge.kind,
-                edge.location.uri,
+                edge.location.uri(),
                 edge.confidence as f64,
                 derived_at_version,
                 superseded_at_version,

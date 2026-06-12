@@ -87,7 +87,7 @@ pub async fn run(
                 .map(|m| {
                     e.first_location
                         .as_ref()
-                        .map(|loc| m.is_dirty(file_path_from_uri(&loc.uri)))
+                        .map(|loc| m.is_dirty(file_path_from_uri(&loc.uri())))
                         .unwrap_or(true)
                 })
                 .unwrap_or(true)
@@ -265,7 +265,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
     let language = detect_language(entity);
 
     let content = match entity.first_location.as_ref() {
-        Some(loc) => match db.chunk_get_by_uri(&loc.uri) {
+        Some(loc) => match db.chunk_get_by_uri(&loc.uri()) {
             Ok(Some(chunk)) => chunk.content,
             _ => {
                 // No content available — store a default contract immediately.
@@ -343,7 +343,7 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
     let file_shape_hash = entity
         .first_location
         .as_ref()
-        .and_then(|loc| ctx.file_shapes.get(&loc.uri))
+        .and_then(|loc| ctx.file_shapes.get(&loc.uri()))
         .cloned()
         .unwrap_or_default();
     let cache_key = Layer2CacheKey {
@@ -476,11 +476,12 @@ fn store_default_contract_direct(
 }
 
 fn detect_language(entity: &Entity) -> &'static str {
-    let uri = entity
+    let uri_owned = entity
         .first_location
         .as_ref()
-        .map(|l| l.uri.as_str())
-        .unwrap_or("");
+        .map(|l| l.uri())
+        .unwrap_or_default();
+    let uri = uri_owned.as_str();
     let path = uri.split('#').next().unwrap_or(uri);
     if path.ends_with(".rs") {
         "rust"

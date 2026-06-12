@@ -651,7 +651,7 @@ fn run_inspect(sub: InspectCommand, db: Arc<dyn StorageBackend>) -> Result<()> {
                 Some(chunk) => {
                     output::print_kv("id", &chunk.id);
                     output::print_kv("corpus_id", &chunk.corpus_id);
-                    output::print_kv("location_uri", &chunk.location.uri);
+                    output::print_kv("location_uri", &chunk.location.uri());
                     output::print_kv("kind", &chunk.kind);
                     if let Some(pp) = &chunk.parent_path {
                         output::print_kv("parent_path", pp);

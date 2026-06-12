@@ -29,14 +29,12 @@ pub fn keyword_search(
     let max_rank = raw.iter().map(|r| r.rank).fold(f64::NEG_INFINITY, f64::max);
     let range = min_rank - max_rank;
 
-    let scope_position_uri = scope
-        .and_then(|s| s.position.as_ref())
-        .map(|l| l.uri.as_str());
+    let scope_position_uri = scope.and_then(|s| s.position.as_ref()).map(|l| l.uri());
 
     let mut results = Vec::new();
     for r in &raw {
         // Scope filtering: exclude results after the position URI (lexicographic).
-        if let Some(pos) = scope_position_uri
+        if let Some(pos) = scope_position_uri.as_deref()
             && r.location_uri.as_str() > pos
         {
             continue;
@@ -56,7 +54,6 @@ pub fn keyword_search(
         let location = Location::parse(&r.location_uri).unwrap_or_else(|_| Location {
             corpus_id: corpus_id.to_string(),
             path: r.location_uri.clone(),
-            uri: r.location_uri.clone(),
         });
 
         results.push(SearchResult {
@@ -105,9 +102,7 @@ pub fn semantic_search(
         return Ok(vec![]);
     }
 
-    let scope_position_uri = scope
-        .and_then(|s| s.position.as_ref())
-        .map(|l| l.uri.as_str());
+    let scope_position_uri = scope.and_then(|s| s.position.as_ref()).map(|l| l.uri());
 
     // Score all embeddings.
     let mut scored: Vec<(f32, &StoredEmbedding)> = embeddings
@@ -131,8 +126,8 @@ pub fn semantic_search(
         };
 
         // Scope filtering.
-        if let Some(pos) = scope_position_uri
-            && chunk.location.uri.as_str() > pos
+        if let Some(pos) = scope_position_uri.as_deref()
+            && chunk.location.uri().as_str() > pos
         {
             continue;
         }
@@ -176,12 +171,12 @@ pub fn hybrid_search(
     // Build score maps keyed by location URI.
     let mut keyword_scores: HashMap<String, f32> = HashMap::new();
     for r in &keyword_results {
-        keyword_scores.insert(r.location.uri.clone(), r.relevance);
+        keyword_scores.insert(r.location.uri(), r.relevance);
     }
 
     let mut semantic_scores: HashMap<String, f32> = HashMap::new();
     for r in &semantic_results {
-        semantic_scores.insert(r.location.uri.clone(), r.relevance);
+        semantic_scores.insert(r.location.uri(), r.relevance);
     }
 
     // Union of all URIs.
@@ -210,7 +205,7 @@ pub fn hybrid_search(
     // Re-use snippets from whichever result set has the URI.
     let mut result_map: HashMap<String, SearchResult> = HashMap::new();
     for r in keyword_results.into_iter().chain(semantic_results) {
-        result_map.entry(r.location.uri.clone()).or_insert(r);
+        result_map.entry(r.location.uri()).or_insert(r);
     }
 
     let mut results = Vec::with_capacity(blended.len());

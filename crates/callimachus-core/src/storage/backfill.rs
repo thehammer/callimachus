@@ -405,7 +405,7 @@ impl StorageBackend for BackfillStorageWrapper {
 
     fn chunk_get_by_uri(&self, uri: &str) -> Result<Option<Chunk>> {
         let guard = self.written_chunks.lock().unwrap();
-        Ok(guard.values().find(|c| c.location.uri == uri).cloned())
+        Ok(guard.values().find(|c| c.location.uri() == uri).cloned())
     }
 
     fn chunk_list(&self, corpus_id: &str) -> Result<Vec<Chunk>> {
@@ -506,7 +506,7 @@ impl StorageBackend for BackfillStorageWrapper {
             .map(|c| {
                 (
                     c.id.clone(),
-                    c.location.uri.clone(),
+                    c.location.uri(),
                     c.source_hash.clone().unwrap_or_default(),
                 )
             })
@@ -594,8 +594,8 @@ impl StorageBackend for BackfillStorageWrapper {
             .values()
             .filter(|e| {
                 e.corpus_id == corpus_id
-                    && (e.first_location.as_ref().map(|l| &l.uri) == Some(&uri.to_string())
-                        || e.last_location.as_ref().map(|l| &l.uri) == Some(&uri.to_string()))
+                    && (e.first_location.as_ref().map(|l| l.uri()) == Some(uri.to_string())
+                        || e.last_location.as_ref().map(|l| l.uri()) == Some(uri.to_string()))
             })
             .cloned()
             .collect())

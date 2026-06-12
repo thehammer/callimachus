@@ -217,7 +217,7 @@ fn chunk_vue_file(
         file_location,
         content.to_string(),
     );
-    let file_chunk_uri = file_chunk.location.uri.clone();
+    let file_chunk_uri = file_chunk.location.uri();
     chunks.push(file_chunk);
 
     // Extract the script block and parse it as TypeScript.
@@ -332,7 +332,7 @@ fn chunk_file(
         file_location.clone(),
         content.to_string(),
     );
-    let file_chunk_uri = file_chunk.location.uri.clone();
+    let file_chunk_uri = file_chunk.location.uri();
     chunks.push(file_chunk);
 
     // Parse with tree-sitter to extract top-level items.
@@ -770,9 +770,9 @@ mod tests {
         assert!(!chunks.is_empty(), "should have chunks from main.rs");
         for c in &chunks {
             assert!(
-                !c.location.uri.contains(".xyz"),
+                !c.location.uri().contains(".xyz"),
                 ".xyz file should not produce chunks: {}",
-                c.location.uri
+                c.location.uri()
             );
         }
     }
@@ -790,7 +790,7 @@ mod tests {
         let chunk = &chunks[0];
         assert_eq!(chunk.kind, "file");
         assert_eq!(chunk.content, json_content);
-        assert!(chunk.location.uri.contains("data.json"));
+        assert!(chunk.location.uri().contains("data.json"));
     }
 
     #[tokio::test]
@@ -880,11 +880,11 @@ class Bar {
             item_chunks.len(),
             item_chunks
                 .iter()
-                .map(|c| &c.location.uri)
+                .map(|c| c.location.uri())
                 .collect::<Vec<_>>()
         );
 
-        let uris: Vec<_> = item_chunks.iter().map(|c| &c.location.uri).collect();
+        let uris: Vec<_> = item_chunks.iter().map(|c| c.location.uri()).collect();
         assert!(
             uris.iter().any(|u| u.contains("#foo")),
             "expected #foo chunk, got: {:?}",
@@ -924,7 +924,7 @@ function greet(): string {
             "expected item chunks from .vue script"
         );
 
-        let uris: Vec<_> = item_chunks.iter().map(|c| &c.location.uri).collect();
+        let uris: Vec<_> = item_chunks.iter().map(|c| c.location.uri()).collect();
         assert!(
             uris.iter().any(|u| u.contains("#greet")),
             "expected #greet chunk, got: {:?}",
@@ -954,7 +954,7 @@ h1 { color: red; }
             1,
             "template-only .vue should produce exactly 1 chunk, got {}: {:?}",
             chunks.len(),
-            chunks.iter().map(|c| &c.location.uri).collect::<Vec<_>>()
+            chunks.iter().map(|c| c.location.uri()).collect::<Vec<_>>()
         );
         assert_eq!(chunks[0].kind, "file");
     }
@@ -985,9 +985,9 @@ h1 { color: red; }
         // No chunk should come from the tests directory.
         for c in &chunks {
             assert!(
-                !c.location.uri.contains("/tests/"),
+                !c.location.uri().contains("/tests/"),
                 "tests/ directory should be excluded, got: {}",
-                c.location.uri
+                c.location.uri()
             );
         }
     }
@@ -1019,11 +1019,15 @@ h1 { color: red; }
         );
         let opts = ChunkOptions::default();
         let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
-        assert!(chunks.iter().any(|c| c.location.uri.contains("tracked.rs")));
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.location.uri().contains("tracked.rs"))
+        );
         assert!(
             !chunks
                 .iter()
-                .any(|c| c.location.uri.contains("untracked.rs"))
+                .any(|c| c.location.uri().contains("untracked.rs"))
         );
     }
 
@@ -1040,11 +1044,15 @@ h1 { color: red; }
             ..ChunkOptions::default()
         };
         let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
-        assert!(chunks.iter().any(|c| c.location.uri.contains("tracked.rs")));
         assert!(
             chunks
                 .iter()
-                .any(|c| c.location.uri.contains("untracked.rs"))
+                .any(|c| c.location.uri().contains("tracked.rs"))
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.location.uri().contains("untracked.rs"))
         );
     }
 
@@ -1055,8 +1063,8 @@ h1 { color: red; }
         std::fs::write(dir.path().join("b.rs"), "fn b() { let _ = 2; }").unwrap();
         let opts = ChunkOptions::default();
         let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
-        assert!(chunks.iter().any(|c| c.location.uri.contains("a.rs")));
-        assert!(chunks.iter().any(|c| c.location.uri.contains("b.rs")));
+        assert!(chunks.iter().any(|c| c.location.uri().contains("a.rs")));
+        assert!(chunks.iter().any(|c| c.location.uri().contains("b.rs")));
     }
 
     #[test]
