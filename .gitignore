@@ -1,5 +1,4 @@
 /target
-Cargo.lock
 *.db-shm
 *.db-wal
 # Ignore all DBs except the bundled demo index
