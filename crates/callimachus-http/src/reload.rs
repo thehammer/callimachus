@@ -61,7 +61,11 @@ impl ReloadState {
     /// `Arc::clone` through a shared-read `RwLock` — effectively free.
     pub fn fixed(qs: Arc<QueryService>, generation: String) -> Arc<Self> {
         Arc::new(Self {
-            current: RwLock::new(ReloadEntry { qs, generation, loaded_at: Utc::now() }),
+            current: RwLock::new(ReloadEntry {
+                qs,
+                generation,
+                loaded_at: Utc::now(),
+            }),
             reload_error: RwLock::new(None),
         })
     }
@@ -72,7 +76,11 @@ impl ReloadState {
     /// Holds the read lock for the duration of the `Arc` clone only
     /// (nanoseconds), then releases it immediately.
     pub fn current_qs(&self) -> Arc<QueryService> {
-        self.current.read().expect("ReloadState lock poisoned").qs.clone()
+        self.current
+            .read()
+            .expect("ReloadState lock poisoned")
+            .qs
+            .clone()
     }
 
     /// Build the JSON fields for `/health` (generation, loaded_at, reload_error).
@@ -80,7 +88,10 @@ impl ReloadState {
     /// `reload_error` is omitted from the returned object when absent.
     pub fn health_fields(&self) -> serde_json::Value {
         let entry = self.current.read().expect("ReloadState lock poisoned");
-        let error = self.reload_error.read().expect("ReloadState error lock poisoned");
+        let error = self
+            .reload_error
+            .read()
+            .expect("ReloadState error lock poisoned");
         let mut v = serde_json::json!({
             "generation": entry.generation,
             "loaded_at": entry.loaded_at.to_rfc3339(),
@@ -93,7 +104,10 @@ impl ReloadState {
 
     /// `true` when a reload error is recorded (for the `degraded` health status).
     pub fn has_reload_error(&self) -> bool {
-        self.reload_error.read().expect("ReloadState error lock poisoned").is_some()
+        self.reload_error
+            .read()
+            .expect("ReloadState error lock poisoned")
+            .is_some()
     }
 
     /// Attempt to atomically swap to the pinakes file at `new_path`.
@@ -112,8 +126,7 @@ impl ReloadState {
 
         let path = std::path::Path::new(new_path);
         let backend: Arc<dyn StorageBackend> = Arc::new(
-            SqliteBackend::open(path)
-                .with_context(|| format!("opening pinakes at {new_path}"))?,
+            SqliteBackend::open(path).with_context(|| format!("opening pinakes at {new_path}"))?,
         );
 
         let corpora = backend
@@ -138,13 +151,19 @@ impl ReloadState {
             old
         };
 
-        *self.reload_error.write().expect("ReloadState error lock poisoned") = None;
+        *self
+            .reload_error
+            .write()
+            .expect("ReloadState error lock poisoned") = None;
         Ok(old_generation)
     }
 
     /// Record a reload failure. Does not change the current generation.
     pub fn set_reload_error(&self, err: String) {
-        *self.reload_error.write().expect("ReloadState error lock poisoned") = Some(err);
+        *self
+            .reload_error
+            .write()
+            .expect("ReloadState error lock poisoned") = Some(err);
     }
 }
 
@@ -190,11 +209,7 @@ impl axum::extract::FromRef<Arc<ReloadState>> for Qs {
 /// The watcher pre-reads the marker at startup so it does not trigger a
 /// spurious first-tick swap when the marker already points at the current
 /// generation.
-pub fn spawn_reload_watcher(
-    marker_path: PathBuf,
-    state: Arc<ReloadState>,
-    interval: Duration,
-) {
+pub fn spawn_reload_watcher(marker_path: PathBuf, state: Arc<ReloadState>, interval: Duration) {
     tokio::spawn(async move {
         // Pre-read the marker so the first tick skips if unchanged.
         let mut last_seen = match tokio::fs::read_to_string(&marker_path).await {

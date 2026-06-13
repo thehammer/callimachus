@@ -40,7 +40,11 @@ pub async fn health(
         _ => 0,
     };
 
-    let status = if state.has_reload_error() { "degraded" } else { "ok" };
+    let status = if state.has_reload_error() {
+        "degraded"
+    } else {
+        "ok"
+    };
 
     // Merge status + corpus_count with generation / loaded_at / reload_error.
     let mut body = serde_json::json!({
@@ -48,9 +52,7 @@ pub async fn health(
         "corpus_count": count,
     });
     let health_fields = state.health_fields();
-    if let (Some(base), serde_json::Value::Object(extra)) =
-        (body.as_object_mut(), health_fields)
-    {
+    if let (Some(base), serde_json::Value::Object(extra)) = (body.as_object_mut(), health_fields) {
         base.extend(extra);
     }
 
@@ -59,9 +61,7 @@ pub async fn health(
 
 // ── Corpus tools ──────────────────────────────────────────────────────────────
 
-pub async fn corpus_list(
-    State(qs): State<Qs>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+pub async fn corpus_list(State(qs): State<Qs>) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.corpus_list(CorpusListInput {});
     tool_result_to_response(result)
 }
@@ -237,9 +237,7 @@ pub async fn find_scene(
 
 // ── Collection tools ──────────────────────────────────────────────────────────
 
-pub async fn collection_list(
-    State(qs): State<Qs>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+pub async fn collection_list(State(qs): State<Qs>) -> Result<Json<serde_json::Value>, ApiError> {
     let backend = qs.backend();
     let collections = backend.collection_list().map_err(ApiError::from)?;
     let entries: Vec<CollectionListEntry> = collections

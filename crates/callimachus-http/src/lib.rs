@@ -4,7 +4,7 @@ pub mod handlers;
 pub mod reload;
 pub mod router;
 
-pub use reload::{spawn_reload_watcher, ReloadState};
+pub use reload::{ReloadState, spawn_reload_watcher};
 pub use router::build_router;
 
 /// Start the HTTP server on the given listener.

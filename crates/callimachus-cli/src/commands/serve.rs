@@ -73,11 +73,7 @@ pub async fn run(
     let state = callimachus_http::ReloadState::fixed(qs, generation);
 
     if let Some(marker) = reload_marker {
-        callimachus_http::spawn_reload_watcher(
-            marker,
-            Arc::clone(&state),
-            Duration::from_secs(5),
-        );
+        callimachus_http::spawn_reload_watcher(marker, Arc::clone(&state), Duration::from_secs(5));
     }
 
     callimachus_http::serve(listener, state, api_key)
@@ -255,7 +251,10 @@ mod tests {
         poller.await.ok();
         server_task.abort();
 
-        assert!(swapped, "generation did not swap to {path_b_str} within 3 s");
+        assert!(
+            swapped,
+            "generation did not swap to {path_b_str} within 3 s"
+        );
         assert_eq!(
             failures.load(std::sync::atomic::Ordering::Relaxed),
             0,
@@ -294,9 +293,8 @@ mod tests {
         let addr = listener.local_addr().expect("addr");
         let health_url = format!("http://{addr}/health");
 
-        let server_task = tokio::spawn(async move {
-            callimachus_http::serve(listener, state, None).await.ok()
-        });
+        let server_task =
+            tokio::spawn(async move { callimachus_http::serve(listener, state, None).await.ok() });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Point the marker at a nonexistent path.
