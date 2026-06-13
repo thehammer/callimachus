@@ -70,9 +70,9 @@ async fn php_controller_produces_file_and_class_chunks() {
 
     // A class-level item chunk exists for UserController.
     // (PHP chunker produces one chunk per class_declaration, not per method.)
-    let class_chunk = file_chunks.iter().find(|c| {
-        c.kind == "class" && c.location.uri().contains("UserController")
-    });
+    let class_chunk = file_chunks
+        .iter()
+        .find(|c| c.kind == "class" && c.location.uri().contains("UserController"));
     assert!(
         class_chunk.is_some(),
         "UserController.php should have a class-level chunk; item chunks: {:?}",
@@ -204,9 +204,7 @@ async fn php_model_produces_class_entity_extending_model() {
 
     // extends User → Model.
     let extends_model = structure.structural_edges.iter().any(|e| {
-        e.kind == "extends"
-            && e.from_entity_id.contains("user")
-            && e.to_entity_id.contains("model")
+        e.kind == "extends" && e.from_entity_id.contains("user") && e.to_entity_id.contains("model")
     });
     assert!(
         extends_model,
@@ -375,7 +373,12 @@ async fn blade_template_produces_no_class_or_function_entities() {
     let class_or_fn_entities: Vec<_> = structure
         .structural_entities
         .iter()
-        .filter(|e| matches!(e.kind.as_str(), "class" | "function" | "method" | "interface"))
+        .filter(|e| {
+            matches!(
+                e.kind.as_str(),
+                "class" | "function" | "method" | "interface"
+            )
+        })
         .collect();
 
     assert!(
@@ -495,7 +498,10 @@ async fn routes_file_produces_file_chunk_only() {
         "routes/web.php has no class/function declarations at top level; \
         expected zero item chunks, got {} with kinds: {:?}",
         non_file.len(),
-        non_file.iter().map(|c| format!("{}:{}", c.kind, c.location.uri())).collect::<Vec<_>>()
+        non_file
+            .iter()
+            .map(|c| format!("{}:{}", c.kind, c.location.uri()))
+            .collect::<Vec<_>>()
     );
 }
 
