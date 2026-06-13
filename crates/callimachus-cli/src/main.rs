@@ -137,6 +137,14 @@ enum Command {
         port: u16,
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
+        /// API key required for all routes except GET /health.
+        /// Takes precedence over --api-key-env and CALLI_API_KEY.
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Name of an environment variable that holds the API key.
+        /// Falls back to CALLI_API_KEY when omitted.
+        #[arg(long)]
+        api_key_env: Option<String>,
     },
 
     /// Show or modify global configuration.
@@ -542,8 +550,20 @@ async fn main() -> Result<()> {
             provider,
         } => commands::watch::run(&corpus_id, debounce, provider, &db_path, &global_config).await,
         Command::Mcp => commands::mcp::run(&db_path).await,
-        Command::Serve { host, port } => {
-            commands::serve::run(&host, port, &db_path, &global_config).await
+        Command::Serve {
+            host,
+            port,
+            api_key,
+            api_key_env,
+        } => {
+            // Resolve API key: explicit flag > named env var > default env var.
+            let resolved_key = api_key.or_else(|| {
+                let var_name = api_key_env
+                    .as_deref()
+                    .unwrap_or("CALLI_API_KEY");
+                std::env::var(var_name).ok().filter(|v| !v.is_empty())
+            });
+            commands::serve::run(&host, port, resolved_key, &db_path, &global_config).await
         }
         Command::Config { sub } => run_config(&sub, &global_config),
 
