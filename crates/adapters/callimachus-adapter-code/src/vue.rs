@@ -10,8 +10,27 @@
 /// Multiple script blocks (e.g. `<script>` + `<script setup>`) are concatenated
 /// with a newline separator.
 pub fn extract_script_block(content: &str) -> Option<(String, bool)> {
+    extract_script_block_with_line_offset(content).map(|(body, is_tsx, _)| (body, is_tsx))
+}
+
+/// Like `extract_script_block`, but also returns the 0-based line number in the
+/// full `.vue` file at which the *first* script block's body begins.
+///
+/// This offset is used by the chunker to convert tree-sitter row numbers
+/// (which are relative to the extracted `script_body`) into file-relative line
+/// numbers suitable for GitHub `#L<n>-L<m>` deep-links.
+///
+/// For files with multiple `<script>` blocks the offset of the *first* block is
+/// returned; items from subsequent blocks will have slightly wrong line numbers
+/// in the rare multi-block case, which is acceptable until explicit multi-block
+/// tracking is warranted.
+pub fn extract_script_block_with_line_offset(content: &str) -> Option<(String, bool, usize)> {
     let mut parts: Vec<&str> = Vec::new();
     let mut is_tsx = false;
+    // Byte offset of the first script body's first character within `content`.
+    let mut first_body_offset: Option<usize> = None;
+    // Running byte offset of `remaining` relative to the start of `content`.
+    let mut consumed_total: usize = 0;
 
     let mut remaining = content;
 
@@ -46,6 +65,11 @@ pub fn extract_script_block(content: &str) -> Option<(String, bool)> {
         let body_start = tag_start + 7 + tag_end + 1; // after '>'
         let rest = &remaining[body_start..];
 
+        // Record where the first script body starts (absolute byte offset in `content`).
+        if first_body_offset.is_none() {
+            first_body_offset = Some(consumed_total + body_start);
+        }
+
         // Find closing </script>.
         let close = match rest.find("</script>") {
             Some(i) => i,
@@ -57,6 +81,7 @@ pub fn extract_script_block(content: &str) -> Option<(String, bool)> {
 
         // Advance past the closing tag.
         let consumed = body_start + close + "</script>".len();
+        consumed_total += consumed;
         remaining = &remaining[consumed..];
     }
 
@@ -64,7 +89,12 @@ pub fn extract_script_block(content: &str) -> Option<(String, bool)> {
         return None;
     }
 
-    Some((parts.join("\n"), is_tsx))
+    // Convert the first body's byte offset to a 0-based line number.
+    let first_line = first_body_offset
+        .map(|byte_off| content[..byte_off].chars().filter(|&c| c == '\n').count())
+        .unwrap_or(0);
+
+    Some((parts.join("\n"), is_tsx, first_line))
 }
 
 #[cfg(test)]

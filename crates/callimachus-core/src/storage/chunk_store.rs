@@ -12,8 +12,8 @@ pub fn upsert(db: &Database, chunk: &Chunk) -> Result<()> {
         "INSERT OR IGNORE INTO chunks
          (id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at,
           source_hash, introduced_at_version, last_modified_at_version, file_shape_hash,
-          entity_id_list)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+          entity_id_list, start_line, end_line)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             chunk.id,
             chunk.corpus_id,
@@ -28,6 +28,8 @@ pub fn upsert(db: &Database, chunk: &Chunk) -> Result<()> {
             chunk.last_modified_at_version,
             chunk.file_shape_hash,
             chunk.entity_id_list,
+            chunk.start_line.map(|v| v as i64),
+            chunk.end_line.map(|v| v as i64),
         ],
     )?;
     Ok(())
@@ -44,7 +46,7 @@ pub fn has(db: &Database, id: &str) -> Result<bool> {
 
 pub fn get(db: &Database, uri: &str) -> Result<Option<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list, start_line, end_line
          FROM chunks WHERE location_uri = ?1",
     )?;
     let mut rows = stmt.query_map(params![uri], row_to_chunk)?;
@@ -56,7 +58,7 @@ pub fn get(db: &Database, uri: &str) -> Result<Option<Chunk>> {
 
 pub fn get_by_id(db: &Database, id: &str) -> Result<Option<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list, start_line, end_line
          FROM chunks WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], row_to_chunk)?;
@@ -68,7 +70,7 @@ pub fn get_by_id(db: &Database, id: &str) -> Result<Option<Chunk>> {
 
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list, start_line, end_line
          FROM chunks WHERE corpus_id = ?1 ORDER BY location_uri ASC",
     )?;
     let rows = stmt.query_map(params![corpus_id], row_to_chunk)?;
@@ -88,7 +90,7 @@ pub fn count(db: &Database, corpus_id: &str) -> Result<u64> {
 /// Return chunks that have not yet been semantically processed.
 pub fn list_unprocessed(db: &Database, corpus_id: &str) -> Result<Vec<Chunk>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list
+        "SELECT id, corpus_id, parent_path, kind, location_uri, content, byte_length, created_at, source_hash, introduced_at_version, last_modified_at_version, file_shape_hash, entity_id_list, start_line, end_line
          FROM chunks WHERE corpus_id = ?1 AND semantic_processed = 0
          ORDER BY location_uri ASC",
     )?;
@@ -212,6 +214,10 @@ pub fn children_by_uri(db: &Database, corpus_id: &str, parent_uri: &str) -> Resu
 }
 
 fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
+    // Column order: id(0), corpus_id(1), parent_path(2), kind(3), location_uri(4),
+    //               content(5), byte_length(6), created_at(7), source_hash(8),
+    //               introduced_at_version(9), last_modified_at_version(10),
+    //               file_shape_hash(11), entity_id_list(12), start_line(13), end_line(14)
     let uri: String = row.get(4)?;
     let location = Location::parse(&uri).unwrap_or_else(|_| Location {
         corpus_id: String::new(),
@@ -229,8 +235,12 @@ fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
         source_hash: row.get(8)?,
         introduced_at_version: row.get(9)?,
         last_modified_at_version: row.get(10)?,
-        file_shape_hash: row.get(11)?,
-        entity_id_list: row.get(12)?,
+        file_shape_hash: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+        entity_id_list: row
+            .get::<_, Option<String>>(12)?
+            .unwrap_or_else(|| "[]".to_string()),
+        start_line: row.get::<_, Option<i64>>(13)?.map(|v| v as u32),
+        end_line: row.get::<_, Option<i64>>(14)?.map(|v| v as u32),
     })
 }
 

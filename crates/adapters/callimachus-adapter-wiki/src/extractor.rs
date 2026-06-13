@@ -128,6 +128,8 @@ pub fn to_extracted_structure(
             appearance_count: 1,
             confidence: 0.9,
             derived_at_version: None,
+            start_line: None,
+            end_line: None,
         };
         entities.push(page_entity.clone());
 
@@ -187,6 +189,8 @@ pub fn to_extracted_structure(
             appearance_count: 1,
             confidence: 0.8,
             derived_at_version: None,
+            start_line: None,
+            end_line: None,
         };
         entities.push(section_entity.clone());
 

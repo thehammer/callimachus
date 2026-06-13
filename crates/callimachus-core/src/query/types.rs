@@ -70,6 +70,14 @@ pub struct SearchResult {
     pub snippet: String,
     pub relevance: f32,
     pub kind: String,
+    /// 0-based start line of the chunk in its source file.
+    /// `None` for non-code corpora or pre-migration pinakes.
+    #[serde(default)]
+    pub start_line: Option<u32>,
+    /// 0-based end line (inclusive) of the chunk in its source file.
+    /// `None` for non-code corpora or pre-migration pinakes.
+    #[serde(default)]
+    pub end_line: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +165,14 @@ pub struct ReadOutput {
     pub content: Option<String>,
     pub entities_present: Vec<Entity>,
     pub child_locations: Vec<Location>,
+    /// 0-based start line of the chunk in its source file.
+    /// `None` for non-code corpora or pre-migration pinakes.
+    #[serde(default)]
+    pub start_line: Option<u32>,
+    /// 0-based end line (inclusive) of the chunk in its source file.
+    /// `None` for non-code corpora or pre-migration pinakes.
+    #[serde(default)]
+    pub end_line: Option<u32>,
 }
 
 // ── summarize ────────────────────────────────────────────────────────────────

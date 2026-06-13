@@ -158,6 +158,8 @@ async fn resolve_aliases_dry_run_returns_without_error() {
             appearance_count: 5,
             confidence: 0.9,
             derived_at_version: None,
+            start_line: None,
+            end_line: None,
         },
         Entity {
             id: "tale:darnay".to_string(),
@@ -172,6 +174,8 @@ async fn resolve_aliases_dry_run_returns_without_error() {
             appearance_count: 3,
             confidence: 0.9,
             derived_at_version: None,
+            start_line: None,
+            end_line: None,
         },
     ];
 
