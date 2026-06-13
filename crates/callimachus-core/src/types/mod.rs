@@ -27,7 +27,7 @@ pub use provenance::{
     ArchiveSet, ArchiveStats, CachedArtifact, Layer2CacheKey, Provenance, RefineOutcome, Tombstone,
 };
 pub use purpose::EntityPurpose;
-pub use result::{CostMetadata, ToolError, ToolResult, ToolSuccess};
+pub use result::{CorpusFreshness, CostMetadata, ToolError, ToolResult, ToolSuccess};
 pub use scope::Scope;
 pub use summary::{Summary, SummaryTargetKind};
 pub use theme::Theme;

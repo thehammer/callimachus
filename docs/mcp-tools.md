@@ -12,8 +12,11 @@ Every tool returns a `ToolResult` envelope:
   "ok": true,
   "data": { ... },
   "scope_applied": { "corpus_ids": null, "location_prefix": null },
-  "indexed_at": "2025-01-01T00:00:00Z",
-  "cost_metadata": { "cached": true, "tokens_used": null }
+  "indexed_at": "2025-01-01T00:00:00Z",      // query execution time — NOT index time
+  "cost_metadata": { "cached": true, "tokens_used": null },
+  "corpus_freshness": [
+    { "corpus_id": "xenos", "last_indexed_at": "2025-01-15T10:00:00Z" }
+  ]
 }
 
 // Error
@@ -23,6 +26,24 @@ Every tool returns a `ToolResult` envelope:
   "suggestions": ["..."]      // present for not_found
 }
 ```
+
+### `corpus_freshness` — index freshness stamps
+
+Every successful response includes a `corpus_freshness` array listing the index
+timestamp for each corpus consulted by the call:
+
+- **Corpus-scoped tools** (`search`, `entity`, `read`, etc.) return one entry for
+  the queried corpus.
+- **Collection tools** (`collection_search`, `collection_overview`, etc.) return one
+  entry per member corpus — including corpora that contributed zero results. This
+  lets consumers detect when a consulted-but-uncited corpus has a stale index.
+- `last_indexed_at` is `null` when a corpus has never been successfully indexed.
+- `corpus_freshness` is omitted entirely from the response when there is no corpus
+  context (e.g., `list_abstract_kinds`).
+
+> **Important:** `indexed_at` (top-level) records **query execution time**, not
+> index time. Always read `corpus_freshness[*].last_indexed_at` for freshness of
+> the source material.
 
 ---
 

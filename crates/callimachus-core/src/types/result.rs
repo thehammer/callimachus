@@ -16,14 +16,36 @@ impl Default for CostMetadata {
     }
 }
 
+/// Per-corpus index freshness stamp, included in every successful tool response.
+///
+/// `last_indexed_at` is `null` when the corpus has never been indexed.
+/// Consumers should use this value — not the envelope-level `indexed_at`
+/// (which records query execution time) — to determine how stale a corpus is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorpusFreshness {
+    pub corpus_id: String,
+    pub last_indexed_at: Option<String>,
+}
+
 /// Successful tool result envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSuccess<T> {
     pub ok: bool, // always true
     pub data: T,
     pub scope_applied: Scope,
+    /// Query execution timestamp. This records **when the query ran**, not when the
+    /// corpus was indexed. Use `corpus_freshness[*].last_indexed_at` for index-time
+    /// freshness of the source material.
     pub indexed_at: String,
     pub cost_metadata: CostMetadata,
+    /// Index freshness for every corpus consulted by this call.
+    ///
+    /// For corpus-scoped tools this is a single entry; for collection tools it
+    /// enumerates every member corpus consulted, including those that contributed
+    /// zero results. `last_indexed_at` is `null` when a corpus has never been
+    /// successfully indexed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corpus_freshness: Vec<CorpusFreshness>,
 }
 
 impl<T> ToolSuccess<T> {
@@ -34,11 +56,17 @@ impl<T> ToolSuccess<T> {
             scope_applied: Scope::default(),
             indexed_at: chrono::Utc::now().to_rfc3339(),
             cost_metadata: CostMetadata::default(),
+            corpus_freshness: Vec::new(),
         }
     }
 
     pub fn with_scope(mut self, scope: Scope) -> Self {
         self.scope_applied = scope;
+        self
+    }
+
+    pub fn with_corpus_freshness(mut self, freshness: Vec<CorpusFreshness>) -> Self {
+        self.corpus_freshness = freshness;
         self
     }
 }
@@ -82,6 +110,15 @@ pub struct ToolResultError {
 impl<T> ToolResult<T> {
     pub fn ok(data: T) -> Self {
         ToolResult::Ok(ToolSuccess::new(data))
+    }
+
+    /// Attach per-corpus freshness stamps to a successful result.
+    /// No-ops on error envelopes.
+    pub fn with_corpus_freshness(self, freshness: Vec<CorpusFreshness>) -> Self {
+        match self {
+            ToolResult::Ok(s) => ToolResult::Ok(s.with_corpus_freshness(freshness)),
+            err => err,
+        }
     }
 
     pub fn not_found(suggestions: Option<Vec<String>>) -> Self {

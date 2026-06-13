@@ -2,7 +2,7 @@ use crate::corrections::CorrectionsEngine;
 use crate::query::search;
 use crate::query::types::*;
 use crate::storage::{EdgeDirection, StorageBackend};
-use crate::types::{Entity, Location, Scope, SummaryTargetKind, ToolResult};
+use crate::types::{CorpusFreshness, Entity, Location, Scope, SummaryTargetKind, ToolResult};
 use callimachus_llm::LlmProvider;
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -55,15 +55,55 @@ impl QueryService {
         }
     }
 
+    /// Build a single-corpus freshness vec from the corpora table.
+    /// Always returns one entry; `last_indexed_at` is `None` when the corpus
+    /// has never been indexed or does not exist.
+    fn corpus_freshness_for(&self, corpus_id: &str) -> Vec<CorpusFreshness> {
+        let last_indexed_at = self
+            .db
+            .corpus_get(corpus_id)
+            .ok()
+            .flatten()
+            .and_then(|c| c.last_indexed_at);
+        vec![CorpusFreshness {
+            corpus_id: corpus_id.to_string(),
+            last_indexed_at,
+        }]
+    }
+
+    /// Build a freshness vec for a set of corpus IDs.
+    fn corpus_freshness_for_many(&self, corpus_ids: &[String]) -> Vec<CorpusFreshness> {
+        corpus_ids
+            .iter()
+            .map(|cid| {
+                let last_indexed_at = self
+                    .db
+                    .corpus_get(cid)
+                    .ok()
+                    .flatten()
+                    .and_then(|c| c.last_indexed_at);
+                CorpusFreshness {
+                    corpus_id: cid.clone(),
+                    last_indexed_at,
+                }
+            })
+            .collect()
+    }
+
     // ── corpus_list ─────────────────────────────────────────────────────────
 
     pub fn corpus_list(&self, _input: CorpusListInput) -> ToolResult<Vec<CorpusListEntry>> {
         self.try_result(|| {
             let corpora = self.db.corpus_list()?;
             let mut entries = Vec::with_capacity(corpora.len());
+            let mut freshness = Vec::with_capacity(corpora.len());
             for c in corpora {
                 let chunk_count = self.db.chunk_count(&c.id).unwrap_or(0);
                 let entity_count = self.db.entity_count(&c.id).unwrap_or(0);
+                freshness.push(CorpusFreshness {
+                    corpus_id: c.id.clone(),
+                    last_indexed_at: c.last_indexed_at.clone(),
+                });
                 entries.push(CorpusListEntry {
                     id: c.id,
                     name: c.name,
@@ -73,7 +113,7 @@ impl QueryService {
                     entity_count,
                 });
             }
-            Ok(ToolResult::ok(entries))
+            Ok(ToolResult::ok(entries).with_corpus_freshness(freshness))
         })
     }
 
@@ -90,6 +130,10 @@ impl QueryService {
                     )])));
                 }
             };
+            let freshness = vec![CorpusFreshness {
+                corpus_id: corpus.id.clone(),
+                last_indexed_at: corpus.last_indexed_at.clone(),
+            }];
             let chunk_count = self.db.chunk_count(&corpus.id).unwrap_or(0);
             let entity_count = self.db.entity_count(&corpus.id).unwrap_or(0);
             let mut top_entities = self.db.entity_top(&corpus.id, 10)?;
@@ -116,13 +160,15 @@ impl QueryService {
                 last_indexed: corpus.last_indexed_at.clone(),
                 top_entities,
                 summary,
-            }))
+            })
+            .with_corpus_freshness(freshness))
         })
     }
 
     // ── search ───────────────────────────────────────────────────────────────
 
     pub fn search(&self, input: SearchInput) -> ToolResult<SearchOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         let embedder = self.embedder.clone();
         let db = self.db.as_ref();
         self.try_result(|| {
@@ -203,11 +249,13 @@ impl QueryService {
             let total = results.len();
             Ok(ToolResult::ok(SearchOutput { results, total }))
         })
+        .with_corpus_freshness(freshness)
     }
 
     // ── entity ───────────────────────────────────────────────────────────────
 
     pub fn entity(&self, input: EntityInput) -> ToolResult<Entity> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             // Resolve the requested id through merge corrections before DB lookup.
             let resolved_id = self
@@ -269,11 +317,13 @@ impl QueryService {
                 }
             }
         })
+        .with_corpus_freshness(freshness)
     }
 
     // ── entity_edges ─────────────────────────────────────────────────────────
 
     pub fn entity_edges(&self, input: EntityEdgesInput) -> ToolResult<EntityEdgesOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             let direction = match EdgeDirection::from_str(&input.direction) {
                 Ok(d) => d,
@@ -296,11 +346,13 @@ impl QueryService {
                 count,
             }))
         })
+        .with_corpus_freshness(freshness)
     }
 
     // ── entity_meet ──────────────────────────────────────────────────────────
 
     pub fn entity_meet(&self, input: EntityMeetInput) -> ToolResult<EntityMeetOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             // Resolve entity A.
             let id_a = match self.resolve_entity_id(&input.corpus_id, &input.entity_a)? {
@@ -368,6 +420,7 @@ impl QueryService {
                 count,
             }))
         })
+        .with_corpus_freshness(freshness)
     }
 
     // ── read ─────────────────────────────────────────────────────────────────
@@ -386,6 +439,13 @@ impl QueryService {
 
             let corpus_id = &chunk.corpus_id;
             let uri = chunk.location.uri();
+            let freshness = vec![CorpusFreshness {
+                corpus_id: corpus_id.clone(),
+                last_indexed_at: self
+                    .db
+                    .corpus_get(corpus_id)?
+                    .and_then(|c| c.last_indexed_at),
+            }];
 
             // Summary: look up in summary_store; let corrections override if set.
             let db_summary = self
@@ -423,13 +483,15 @@ impl QueryService {
                 child_locations,
                 start_line: chunk.start_line,
                 end_line: chunk.end_line,
-            }))
+            })
+            .with_corpus_freshness(freshness))
         })
     }
 
     // ── summarize ────────────────────────────────────────────────────────────
 
     pub fn summarize(&self, input: SummarizeInput) -> ToolResult<SummarizeOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             let (target_kind, target_id) = match &input.target {
                 SummarizeTarget::Corpus => (SummaryTargetKind::Corpus, input.corpus_id.clone()),
@@ -474,11 +536,13 @@ impl QueryService {
                 ]))),
             }
         })
+        .with_corpus_freshness(freshness)
     }
 
     // ── related ──────────────────────────────────────────────────────────────
 
     pub fn related(&self, input: RelatedInput) -> ToolResult<RelatedOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             // Get entity set for the target chunk.
             let target_entity_ids: HashSet<String> = self
@@ -533,6 +597,7 @@ impl QueryService {
 
             Ok(ToolResult::ok(RelatedOutput { items }))
         })
+        .with_corpus_freshness(freshness)
     }
 
     // ── chapter_summary (composite) ──────────────────────────────────────────
@@ -572,6 +637,7 @@ impl QueryService {
         &self,
         input: CharacterProfileInput,
     ) -> ToolResult<CharacterProfileOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         // Step 1: look up the entity.
         let entity = match self.entity(EntityInput {
             corpus_id: input.corpus_id.clone(),
@@ -616,11 +682,13 @@ impl QueryService {
             edges,
             summary,
         })
+        .with_corpus_freshness(freshness)
     }
 
     // ── find_scene (composite) ───────────────────────────────────────────────
 
     pub fn find_scene(&self, input: FindSceneInput) -> ToolResult<FindSceneOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         // Step 1: entity_meet → first co-occurrence.
         let meet = match self.entity_meet(EntityMeetInput {
             corpus_id: input.corpus_id.clone(),
@@ -656,6 +724,7 @@ impl QueryService {
             content: read_out.content.unwrap_or_default(),
             entities_present: read_out.entities_present,
         })
+        .with_corpus_freshness(freshness)
     }
 
     // ── private helpers ──────────────────────────────────────────────────────
@@ -728,6 +797,7 @@ impl QueryService {
         &self,
         input: EntityContractsInput,
     ) -> ToolResult<EntityContractsOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             let contract = match self.db.contract_get(&input.corpus_id, &input.entity_id)? {
                 Some(c) => c,
@@ -759,6 +829,7 @@ impl QueryService {
                 verified_by,
             }))
         })
+        .with_corpus_freshness(freshness)
     }
 
     /// Find entities whose contracts signal inconsistency or technical debt.
@@ -766,6 +837,7 @@ impl QueryService {
         &self,
         input: FindInconsistenciesInput,
     ) -> ToolResult<FindInconsistenciesOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             let contracts = self.db.contract_list_inconsistencies(&input.corpus_id)?;
             let count = contracts.len();
@@ -774,6 +846,7 @@ impl QueryService {
                 count,
             }))
         })
+        .with_corpus_freshness(freshness)
     }
 
     /// Find entities with no inbound `calls` edges (potentially unreachable code).
@@ -781,15 +854,18 @@ impl QueryService {
         &self,
         input: FindUnreachableInput,
     ) -> ToolResult<FindUnreachableOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             let entities = self.db.entities_without_inbound_calls(&input.corpus_id)?;
             let count = entities.len();
             Ok(ToolResult::ok(FindUnreachableOutput { entities, count }))
         })
+        .with_corpus_freshness(freshness)
     }
 
     /// List corpus-level architectural themes, optionally with their edge sets.
     pub fn corpus_themes(&self, input: CorpusThemesInput) -> ToolResult<CorpusThemesOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             let themes = self.db.theme_list(&input.corpus_id)?;
             let include = input.include_edges.unwrap_or(false);
@@ -829,6 +905,7 @@ impl QueryService {
                 violated_by,
             }))
         })
+        .with_corpus_freshness(freshness)
     }
 
     /// Find entities with no inbound `verified_by` edges (no test coverage).
@@ -836,6 +913,7 @@ impl QueryService {
         &self,
         input: EntitiesWithoutTestsInput,
     ) -> ToolResult<EntitiesWithoutTestsOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             let entities = self.db.entities_without_verified_by(&input.corpus_id)?;
             let count = entities.len();
@@ -844,6 +922,7 @@ impl QueryService {
                 count,
             }))
         })
+        .with_corpus_freshness(freshness)
     }
 
     /// Assemble a narrative explanation of a component via BFS on `calls` edges.
@@ -852,6 +931,7 @@ impl QueryService {
         &self,
         input: ExplainComponentInput,
     ) -> ToolResult<ExplainComponentOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             let max_depth = input.max_depth.unwrap_or(3);
 
@@ -973,6 +1053,7 @@ impl QueryService {
                 nodes,
             }))
         })
+        .with_corpus_freshness(freshness)
     }
 
     /// List entities across corpora filtered by abstract taxonomy kind.
@@ -980,6 +1061,7 @@ impl QueryService {
         &self,
         input: EntitySearchByAbstractKindInput,
     ) -> ToolResult<EntitySearchByAbstractKindOutput> {
+        let freshness = self.corpus_freshness_for_many(&input.corpus_ids);
         self.try_result(|| {
             let corpus_id_refs: Vec<&str> = input.corpus_ids.iter().map(String::as_str).collect();
             let all_entities = self
@@ -993,6 +1075,7 @@ impl QueryService {
                 count,
             }))
         })
+        .with_corpus_freshness(freshness)
     }
 
     /// Return the full kind_taxonomy table.
@@ -1000,6 +1083,7 @@ impl QueryService {
         &self,
         _input: ListAbstractKindsInput,
     ) -> ToolResult<ListAbstractKindsOutput> {
+        // No corpus context — corpus_freshness left empty.
         self.try_result(|| {
             let raw = self.db.kind_taxonomy_list()?;
             let rows: Vec<TaxonomyRow> = raw
@@ -1759,6 +1843,107 @@ mod tests {
             s.data.narrative.starts_with("# Diegesis of "),
             "narrative should start with '# Diegesis of ' but got: {:?}",
             &s.data.narrative[..s.data.narrative.len().min(50)]
+        );
+    }
+
+    // ── corpus_freshness ──────────────────────────────────────────────────
+
+    #[test]
+    fn search_result_carries_corpus_freshness() {
+        let (svc, db) = make_service();
+        seed_corpus(db.as_ref(), "c1");
+        db.corpus_set_last_indexed("c1", "2025-01-15T10:00:00Z")
+            .unwrap();
+        seed_chunk(
+            db.as_ref(),
+            "c1",
+            "ch/1",
+            "the hobbit found the ring",
+            "chapter",
+            None,
+        );
+        db.fts_rebuild("c1").unwrap();
+
+        let result = svc.search(SearchInput {
+            corpus_id: "c1".into(),
+            query: "hobbit".into(),
+            mode: SearchMode::Keyword,
+            scope: None,
+            limit: Some(10),
+            semantic_weight: None,
+        });
+        let ToolResult::Ok(s) = result else {
+            panic!("expected Ok")
+        };
+        assert_eq!(s.corpus_freshness.len(), 1);
+        assert_eq!(s.corpus_freshness[0].corpus_id, "c1");
+        assert_eq!(
+            s.corpus_freshness[0].last_indexed_at,
+            Some("2025-01-15T10:00:00Z".to_string())
+        );
+    }
+
+    #[test]
+    fn corpus_freshness_null_when_never_indexed() {
+        let (svc, db) = make_service();
+        seed_corpus(db.as_ref(), "c1");
+        // Corpus is seeded but never indexed — last_indexed_at stays None.
+        seed_chunk(db.as_ref(), "c1", "ch/1", "some content", "chapter", None);
+        db.fts_rebuild("c1").unwrap();
+
+        let result = svc.search(SearchInput {
+            corpus_id: "c1".into(),
+            query: "content".into(),
+            mode: SearchMode::Keyword,
+            scope: None,
+            limit: Some(10),
+            semantic_weight: None,
+        });
+        let ToolResult::Ok(s) = result else {
+            panic!("expected Ok")
+        };
+        assert_eq!(s.corpus_freshness.len(), 1);
+        assert_eq!(s.corpus_freshness[0].corpus_id, "c1");
+        assert!(
+            s.corpus_freshness[0].last_indexed_at.is_none(),
+            "expected None for a corpus that has never been indexed"
+        );
+    }
+
+    #[test]
+    fn corpus_list_carries_freshness_for_all_corpora() {
+        let (svc, db) = make_service();
+        seed_corpus(db.as_ref(), "c1");
+        seed_corpus(db.as_ref(), "c2");
+        db.corpus_set_last_indexed("c1", "2025-06-01T00:00:00Z")
+            .unwrap();
+        // c2 is never indexed — last_indexed_at stays None.
+
+        let result = svc.corpus_list(CorpusListInput::default());
+        let ToolResult::Ok(s) = result else {
+            panic!("expected Ok")
+        };
+        assert_eq!(s.corpus_freshness.len(), 2);
+
+        let c1_freshness = s
+            .corpus_freshness
+            .iter()
+            .find(|f| f.corpus_id == "c1")
+            .expect("c1 should appear in corpus_freshness");
+        assert_eq!(
+            c1_freshness.last_indexed_at,
+            Some("2025-06-01T00:00:00Z".to_string()),
+            "c1 last_indexed_at should match the seeded value"
+        );
+
+        let c2_freshness = s
+            .corpus_freshness
+            .iter()
+            .find(|f| f.corpus_id == "c2")
+            .expect("c2 should appear in corpus_freshness");
+        assert!(
+            c2_freshness.last_indexed_at.is_none(),
+            "c2 was never indexed so last_indexed_at should be None"
         );
     }
 }
