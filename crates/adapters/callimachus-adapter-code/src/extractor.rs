@@ -176,6 +176,26 @@ fn scope_for_pos(byte_pos: usize, test_ranges: &[std::ops::Range<usize>]) -> Str
     }
 }
 
+/// Returns `true` when the corpus-relative file path is located inside a
+/// `tests/`, `benches/`, or `examples/` directory (literal path-segment match,
+/// not a substring check).
+///
+/// - `crates/foo/tests/integration.rs`   → `true`  (`tests` is a path segment)
+/// - `crates/foo/benches/bench.rs`        → `true`  (`benches` is a path segment)
+/// - `crates/foo/examples/demo.rs`        → `true`  (`examples` is a path segment)
+/// - `src/contract_tests.rs`              → `false` (`tests` appears only in the filename)
+///
+/// This is the path-level test-scope override described in
+/// `.claude/bugs/open/2026-06-12-origin-scope-misses-tests-dir-files.md`:
+/// every entity and edge in one of these directories carries
+/// `origin_scope = "test"` regardless of AST-level annotations.
+fn path_is_in_tests_dir(path: &str) -> bool {
+    // Strip any `#fragment` before splitting into segments.
+    let bare = path.split('#').next().unwrap_or(path);
+    bare.split('/')
+        .any(|seg| seg == "tests" || seg == "benches" || seg == "examples")
+}
+
 // ── Public types ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
@@ -212,9 +232,20 @@ pub fn extract_structure(
     let root = tree.root_node();
     let source = chunk.content.as_bytes();
 
-    // Build test-scope byte ranges once per file (Rust only).
-    // All non-Rust languages default every edge to "production".
-    let test_ranges: Vec<std::ops::Range<usize>> = if lang_config.name == "rust" {
+    // Build test-scope byte ranges once per file.
+    //
+    // Path-level rule (highest priority): if the source file lives inside a
+    // `tests/`, `benches/`, or `examples/` directory segment, the whole file is
+    // test scope — synthesise a single range that covers every byte.
+    // See `.claude/bugs/open/2026-06-12-origin-scope-misses-tests-dir-files.md`.
+    //
+    // Structural rule (Rust only): scan #[cfg(test)] block and #[test] function
+    // byte ranges; only those positions are test scope.
+    //
+    // All other files produce an empty range vec → every edge is "production".
+    let test_ranges: Vec<std::ops::Range<usize>> = if path_is_in_tests_dir(&chunk.location.path) {
+        std::iter::once(0..source.len()).collect()
+    } else if lang_config.name == "rust" {
         rust_test_byte_ranges(root, source)
     } else {
         vec![]
