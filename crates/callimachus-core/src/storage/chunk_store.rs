@@ -236,7 +236,9 @@ fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
         introduced_at_version: row.get(9)?,
         last_modified_at_version: row.get(10)?,
         file_shape_hash: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
-        entity_id_list: row.get::<_, Option<String>>(12)?.unwrap_or_else(|| "[]".to_string()),
+        entity_id_list: row
+            .get::<_, Option<String>>(12)?
+            .unwrap_or_else(|| "[]".to_string()),
         start_line: row.get::<_, Option<i64>>(13)?.map(|v| v as u32),
         end_line: row.get::<_, Option<i64>>(14)?.map(|v| v as u32),
     })

@@ -55,7 +55,11 @@ impl Config {
         !entities_with_spans.is_empty(),
         "expected at least one Rust entity with start_line; got {} entities: {:?}",
         result.entities.len(),
-        result.entities.iter().map(|e| &e.canonical_name).collect::<Vec<_>>()
+        result
+            .entities
+            .iter()
+            .map(|e| &e.canonical_name)
+            .collect::<Vec<_>>()
     );
 
     for entity in &entities_with_spans {
@@ -143,7 +147,11 @@ fn php_class_and_method_entities_carry_spans() {
         !entities_with_spans.is_empty(),
         "expected PHP entities (class/methods) to have start_line; got {} entities: {:?}",
         result.entities.len(),
-        result.entities.iter().map(|e| &e.canonical_name).collect::<Vec<_>>()
+        result
+            .entities
+            .iter()
+            .map(|e| &e.canonical_name)
+            .collect::<Vec<_>>()
     );
 
     let file_lines = src.lines().count() as u32;
@@ -169,8 +177,8 @@ async fn php_chunks_carry_line_spans() {
     use callimachus_adapter_code::CodeAdapter;
     use callimachus_core::adapter::{DiscoveredSource, SourceAdapter};
 
-    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/span_fixtures");
+    let fixture_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/span_fixtures");
 
     let adapter = CodeAdapter::new();
     let source = DiscoveredSource {
@@ -222,8 +230,8 @@ async fn vue_chunks_carry_file_relative_spans() {
     use callimachus_adapter_code::CodeAdapter;
     use callimachus_core::adapter::{DiscoveredSource, SourceAdapter};
 
-    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/span_fixtures");
+    let fixture_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/span_fixtures");
 
     let adapter = CodeAdapter::new();
     let source = DiscoveredSource {
@@ -241,10 +249,7 @@ async fn vue_chunks_carry_file_relative_spans() {
     assert!(
         !vue_fn_chunks.is_empty(),
         "expected non-file Vue chunks from UserCard.vue; all chunks: {:?}",
-        chunks
-            .iter()
-            .map(|c| c.location.uri())
-            .collect::<Vec<_>>()
+        chunks.iter().map(|c| c.location.uri()).collect::<Vec<_>>()
     );
 
     // <script lang="ts"> is on line 8 (0-based) in UserCard.vue.
@@ -265,6 +270,9 @@ async fn vue_chunks_carry_file_relative_spans() {
              a smaller value indicates script-block-relative spans",
             chunk.location.uri()
         );
-        assert!(end >= start, "end_line ({end}) >= start_line ({start}) for Vue chunk");
+        assert!(
+            end >= start,
+            "end_line ({end}) >= start_line ({start}) for Vue chunk"
+        );
     }
 }
