@@ -377,7 +377,7 @@ mod tests {
         let db: Arc<dyn StorageBackend> =
             Arc::new(SqliteBackend::open_in_memory().expect("in-memory DB"));
         let qs = Arc::new(QueryService::new(db));
-        let router = crate::build_router(qs);
+        let router = crate::build_router(qs, None);
         TestServer::new(router).expect("test server")
     }
 

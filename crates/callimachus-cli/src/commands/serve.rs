@@ -1,5 +1,5 @@
 use crate::config::GlobalConfig;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use callimachus_core::{
     corrections::CorrectionsEngine,
     query::QueryService,
@@ -7,7 +7,30 @@ use callimachus_core::{
 };
 use std::{path::Path, sync::Arc};
 
-pub async fn run(host: &str, port: u16, db_path: &Path, _config: &GlobalConfig) -> Result<()> {
+pub async fn run(
+    host: &str,
+    port: u16,
+    api_key: Option<String>,
+    db_path: &Path,
+    _config: &GlobalConfig,
+) -> Result<()> {
+    // Safety guard: refuse to bind on a non-loopback address without a key.
+    // Loopback addresses (127.x.x.x and ::1) are safe without auth because
+    // only processes on the same host can reach them.
+    let is_loopback = host == "127.0.0.1" || host == "localhost" || host == "::1";
+    if api_key.is_none() && !is_loopback {
+        bail!(
+            concat!(
+                "refusing to start: --host {} is not a loopback address and no API key is configured.\n",
+                "\nTo fix, supply a key via one of:",
+                "\n    --api-key <KEY>        pass the key directly",
+                "\n    --api-key-env <VAR>    read the key from an environment variable",
+                "\n    CALLI_API_KEY=<KEY>    set the default env var",
+            ),
+            host
+        );
+    }
+
     let db: Arc<dyn StorageBackend> = Arc::new(
         SqliteBackend::open(db_path)
             .with_context(|| format!("opening database at {}", db_path.display()))?,
@@ -22,14 +45,23 @@ pub async fn run(host: &str, port: u16, db_path: &Path, _config: &GlobalConfig) 
         .await
         .with_context(|| format!("binding to {addr}"))?;
 
+    let auth_status = if api_key.is_some() {
+        "API key authentication enabled"
+    } else {
+        "no authentication (loopback only)"
+    };
+
     println!("Callimachus HTTP API listening on http://{addr}");
     println!("  POST /corpora/:id/search   — full-text / hybrid search");
     println!("  GET  /corpora              — list indexed corpora");
-    println!("  GET  /health               — health check");
+    println!("  GET  /health               — health check (always open)");
+    println!("  Auth: {auth_status}");
     println!();
-    println!("NOTE: server is bound to {host}. Do not expose to untrusted networks.");
+    if api_key.is_none() {
+        println!("NOTE: server is bound to {host}. Do not expose to untrusted networks.");
+    }
 
-    callimachus_http::serve(listener, qs)
+    callimachus_http::serve(listener, qs, api_key)
         .await
         .context("HTTP server error")?;
     Ok(())
@@ -55,7 +87,7 @@ mod tests {
         // Spawn the server on a background task so we can query it.
         let qs2 = qs.clone();
         let server_task = tokio::spawn(async move {
-            callimachus_http::serve(listener, qs2).await.ok();
+            callimachus_http::serve(listener, qs2, None).await.ok();
         });
 
         // Give the server a moment to start accepting connections.
@@ -74,5 +106,31 @@ mod tests {
         assert_eq!(body["status"], "ok");
 
         server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn serve_non_loopback_without_key_is_refused() {
+        let db: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let _qs = Arc::new(QueryService::new(db));
+
+        let config = GlobalConfig::default();
+        // 0.0.0.0 without a key should be rejected before a listener is opened.
+        let result = run(
+            "0.0.0.0",
+            0,
+            None,
+            std::path::Path::new(":memory:"),
+            &config,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "expected refusal for non-loopback without key"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not a loopback address"),
+            "error should mention loopback: {msg}"
+        );
     }
 }

@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+subtle = "2"
 
 [dev-dependencies]
 axum-test = "15"

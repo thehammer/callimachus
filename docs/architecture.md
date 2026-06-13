@@ -169,7 +169,43 @@ The MCP server exposes all 27 tools. The HTTP server currently exposes the 12 or
 
 ### Default Binding
 
-`127.0.0.1:7700` — local only. **Do not expose to untrusted networks** without adding authentication. The CORS policy allows `*` origins because the server is local-only by default.
+`127.0.0.1:7700` — loopback only by default. To bind on a non-loopback address an API key is **required** (the server refuses to start without one when `--host` is not 127.0.0.1/localhost/::1).
+
+### Authentication
+
+All routes except `GET /health` can be protected by an API key. The key is checked
+via constant-time comparison to prevent timing attacks.
+
+**Configure a key (pick one):**
+
+```bash
+# Environment variable (recommended for containers/sidecars)
+CALLI_API_KEY=<key> calli serve
+
+# Explicit flag
+calli serve --api-key <key>
+
+# Named env var
+calli serve --api-key-env MY_SECRET_VAR
+```
+
+**Calling an authenticated endpoint:**
+
+```bash
+# Authorization: Bearer header
+curl -H "Authorization: Bearer <key>" http://host:7700/corpora
+
+# X-Api-Key header
+curl -H "X-Api-Key: <key>" http://host:7700/corpora
+```
+
+Missing or wrong key → `401 {"error": "unauthorized"}`.
+
+`GET /health` is always open so ALB/ECS health checks work without credentials.
+
+**CORS**: When an API key is configured, CORS is deny-by-default (the only
+consumer is a server-side proxy; browsers never call this API directly). In
+open mode (loopback, no key), CORS allows any origin for local-dev convenience.
 
 ### Routes
 
