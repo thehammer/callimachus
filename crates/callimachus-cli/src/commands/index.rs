@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use callimachus_adapter_book::BookAdapter;
+use callimachus_adapter_capture::CaptureAdapter;
 use callimachus_adapter_code::CodeAdapter;
 use callimachus_adapter_wiki::WikiAdapter;
 use callimachus_core::{
@@ -138,6 +139,7 @@ pub fn build_embedding_provider_config(config: &GlobalConfig) -> EmbeddingProvid
 pub fn build_adapter(corpus: &Corpus) -> Result<Arc<dyn SourceAdapter>> {
     match corpus.kind.as_str() {
         "book" => Ok(Arc::new(BookAdapter::new())),
+        "capture" => Ok(Arc::new(CaptureAdapter::new())),
         "code" => Ok(Arc::new(CodeAdapter::new())),
         "wiki" => Ok(Arc::new(WikiAdapter::new())),
         other => bail!("adapter not yet available for corpus kind '{other}'"),

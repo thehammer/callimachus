@@ -1,0 +1,25 @@
+[package]
+name = "callimachus-adapter-capture"
+description = "Callimachus adapter for webster network captures — indexes HTTP API interactions as queryable endpoint entities"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+callimachus-core = { path = "../../callimachus-core" }
+callimachus-llm = { path = "../../callimachus-llm" }
+anyhow = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = "0.1"
+tokio = { workspace = true }
+tracing = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tokio = { workspace = true }
+callimachus-llm = { path = "../../callimachus-llm" }
+tempfile = "3"

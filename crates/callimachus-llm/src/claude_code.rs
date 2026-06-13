@@ -100,11 +100,14 @@ impl LlmProvider for ClaudeCodeProvider {
             .map_err(|e| LlmError::Subprocess(format!("failed to spawn claude: {e}")))?;
 
         // Write prompt to stdin and close it.
+        // BrokenPipe means the child exited before reading all stdin — not an error
+        // on its own; wait_with_output() will surface any real failure below.
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(req.prompt.as_bytes())
-                .await
-                .map_err(|e| LlmError::Subprocess(format!("stdin write: {e}")))?;
+            match stdin.write_all(req.prompt.as_bytes()).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Err(e) => return Err(LlmError::Subprocess(format!("stdin write: {e}"))),
+            }
         }
 
         // Await with timeout.
