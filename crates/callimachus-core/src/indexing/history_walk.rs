@@ -17,9 +17,12 @@
 //!
 //! # Working-directory isolation
 //!
-//! Each commit is materialised into a [`TempDir`] via `git2`'s
-//! `checkout_tree` + `target_dir`.  This writes blobs to the temp dir without
-//! touching the repository's `HEAD`, index, or working tree.
+//! Each commit is materialised into a [`TempDir`] by walking the git tree
+//! object and writing blobs directly via the `git2` object database.  No
+//! `checkout_tree` call is made, so the repository's `HEAD`, index, and
+//! working tree are never touched — not even by the `REMOVE_UNTRACKED` flag
+//! that the previous `checkout_tree`-based approach accidentally applied to the
+//! real working directory.
 //!
 //! [`BackfillStorageWrapper`]: crate::storage::BackfillStorageWrapper
 
@@ -687,41 +690,104 @@ pub(crate) fn confirm_or_abort(skip: bool) -> Result<()> {
     }
 }
 
-/// Check out `oid`'s tree into a fresh `TempDir` and return it.
+/// Materialise `oid`'s tree into a fresh `TempDir` and return it.
 ///
 /// This function is entirely synchronous and holds no git2 objects when it
 /// returns, so the caller may safely `.await` after calling it.
 ///
 /// # Working-directory safety
 ///
-/// `checkout_tree` with `CheckoutBuilder::target_dir` writes blobs to the
-/// specified directory without touching the repository's `HEAD` or index.
+/// Blobs are read directly from the git object database and written to the
+/// temp directory using standard I/O — no `checkout_tree` call is made.
+/// This guarantees that the repository's `HEAD`, index, and working tree are
+/// never touched, even when materialising a commit older than the current HEAD
+/// (which would otherwise cause `checkout_tree`'s `REMOVE_UNTRACKED` flag to
+/// delete newer files from the real working directory).
 fn materialise_tree(repo: &Repository, oid: Oid) -> Result<TempDir> {
     let td = TempDir::new().context("creating temp dir for tree materialisation")?;
 
     let commit = repo
         .find_commit(oid)
         .with_context(|| format!("finding commit {}", &oid.to_string()[..8]))?;
-    let tree = commit.tree()?;
+    let tree = commit
+        .tree()
+        .with_context(|| format!("reading tree for commit {}", &oid.to_string()[..8]))?;
 
-    let mut co = git2::build::CheckoutBuilder::new();
-    co.target_dir(td.path());
-    co.force();
-    co.recreate_missing(true);
-    co.remove_untracked(true);
-
-    // checkout_tree with target_dir writes the tree's blobs to td.path()
-    // without modifying HEAD or the repository index.
-    repo.checkout_tree(tree.as_object(), Some(&mut co))
-        .with_context(|| {
-            format!(
-                "materialising commit {} into {}",
-                &oid.to_string()[..8],
-                td.path().display()
-            )
-        })?;
+    write_tree_to_dir(repo, &tree, td.path()).with_context(|| {
+        format!(
+            "materialising commit {} into {}",
+            &oid.to_string()[..8],
+            td.path().display()
+        )
+    })?;
 
     Ok(td)
+}
+
+/// Recursively walk a git `Tree` and write every blob to `dir`.
+///
+/// File modes are preserved (executable bit on Unix; symlinks created as
+/// symlinks on Unix, written as plain text on other platforms).  Submodule
+/// entries (mode `0o160000`) are silently skipped.
+fn write_tree_to_dir(repo: &Repository, tree: &git2::Tree<'_>, dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    for entry in tree.iter() {
+        let name = match entry.name() {
+            Some(n) => n,
+            None => continue, // skip entries with non-UTF-8 names
+        };
+        let dest = dir.join(name);
+
+        match entry.filemode() {
+            // ── directory ────────────────────────────────────────────────────
+            0o040000 => {
+                let sub = repo
+                    .find_tree(entry.id())
+                    .with_context(|| format!("finding subtree {}", entry.id()))?;
+                std::fs::create_dir_all(&dest)
+                    .with_context(|| format!("creating dir {}", dest.display()))?;
+                write_tree_to_dir(repo, &sub, &dest)?;
+            }
+
+            // ── regular file ──────────────────────────────────────────────────
+            mode @ (0o100644 | 0o100755) => {
+                let blob = repo
+                    .find_blob(entry.id())
+                    .with_context(|| format!("finding blob {}", entry.id()))?;
+                std::fs::write(&dest, blob.content())
+                    .with_context(|| format!("writing {}", dest.display()))?;
+                #[cfg(unix)]
+                if mode == 0o100755 {
+                    let mut perms = std::fs::metadata(&dest)?.permissions();
+                    perms.set_mode(0o755);
+                    std::fs::set_permissions(&dest, perms)
+                        .with_context(|| format!("setting permissions on {}", dest.display()))?;
+                }
+                let _ = mode; // suppress unused-variable warning on non-Unix
+            }
+
+            // ── symbolic link ─────────────────────────────────────────────────
+            0o120000 => {
+                let blob = repo
+                    .find_blob(entry.id())
+                    .with_context(|| format!("finding symlink blob {}", entry.id()))?;
+                let target = std::str::from_utf8(blob.content())
+                    .with_context(|| format!("symlink target for {name} is not valid UTF-8"))?;
+                #[cfg(unix)]
+                symlink(target, &dest)
+                    .with_context(|| format!("creating symlink {}", dest.display()))?;
+                #[cfg(not(unix))]
+                std::fs::write(&dest, target.as_bytes())
+                    .with_context(|| format!("writing symlink target {}", dest.display()))?;
+            }
+
+            // ── submodule (0o160000) or unknown — skip ────────────────────────
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -854,37 +920,82 @@ mod tests {
 
     #[test]
     fn temp_tree_does_not_touch_working_directory() {
-        let (td, repo, oids) = build_linear_repo(&[("a.txt", "a"), ("b.txt", "b")]);
+        // 3-commit repo: each commit ADDS a new file so that materialising an
+        // older commit would remove newer files from the working tree if the
+        // implementation used checkout_tree's REMOVE_UNTRACKED flag.
+        let (td, repo, oids) = build_linear_repo(&[("a.txt", "a"), ("b.txt", "b"), ("c.txt", "c")]);
 
         let head_before = repo.head().unwrap().target().unwrap();
-        let a_mtime_before = fs::metadata(td.path().join("a.txt"))
-            .unwrap()
-            .modified()
-            .unwrap();
 
-        // Materialise each commit into a temp tree.
+        // Snapshot which files exist in the working tree before we materialise anything.
+        let a_exists_before = td.path().join("a.txt").exists();
+        let b_exists_before = td.path().join("b.txt").exists();
+        let c_exists_before = td.path().join("c.txt").exists();
+        assert!(a_exists_before && b_exists_before && c_exists_before);
+
+        // Materialise the OLDEST commit (only has a.txt) — this is the
+        // dangerous case: a naive checkout_tree with REMOVE_UNTRACKED would
+        // delete b.txt and c.txt from the real working tree.
+        let t0 = materialise_tree(&repo, oids[0]).unwrap();
+        assert!(t0.path().join("a.txt").exists(), "temp dir missing a.txt");
+        assert!(
+            !t0.path().join("b.txt").exists(),
+            "temp dir for oldest commit should not have b.txt"
+        );
+        drop(t0);
+
+        // Working tree must still have all files.
+        assert_eq!(
+            a_exists_before,
+            td.path().join("a.txt").exists(),
+            "a.txt disappeared from working tree"
+        );
+        assert_eq!(
+            b_exists_before,
+            td.path().join("b.txt").exists(),
+            "b.txt disappeared from working tree after materialise_tree(oldest)"
+        );
+        assert_eq!(
+            c_exists_before,
+            td.path().join("c.txt").exists(),
+            "c.txt disappeared from working tree after materialise_tree(oldest)"
+        );
+
+        // Materialise all commits; each should write to its own temp dir.
         for oid in &oids {
             let t = materialise_tree(&repo, *oid).unwrap();
-            // Temp tree exists and has the file.
-            assert!(t.path().join("a.txt").exists() || t.path().join("b.txt").exists());
+            assert!(t.path().join("a.txt").exists(), "a.txt missing in temp dir");
             drop(t);
         }
 
-        // HEAD must be unchanged.
+        // HEAD must be unchanged after all materialisations.
         let head_after = repo.head().unwrap().target().unwrap();
         assert_eq!(
             head_before, head_after,
             "HEAD moved during materialise_tree"
         );
 
-        // The original tracked file must be untouched.
-        let a_mtime_after = fs::metadata(td.path().join("a.txt"))
-            .unwrap()
-            .modified()
-            .unwrap();
-        assert_eq!(
-            a_mtime_before, a_mtime_after,
-            "working-tree file mtime changed during materialise_tree"
+        // All working-tree files must still exist.
+        assert!(
+            td.path().join("b.txt").exists(),
+            "b.txt disappeared from working tree"
+        );
+        assert!(
+            td.path().join("c.txt").exists(),
+            "c.txt disappeared from working tree"
+        );
+
+        // git status must be clean (no modifications, no staged changes).
+        let mut status_opts = git2::StatusOptions::new();
+        status_opts.include_untracked(false);
+        let statuses = repo.statuses(Some(&mut status_opts)).unwrap();
+        assert!(
+            statuses.is_empty(),
+            "working tree dirty after materialise_tree: {:?}",
+            statuses
+                .iter()
+                .map(|s| (s.path().unwrap_or("?").to_string(), s.status()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3308,6 +3419,225 @@ mod tests {
             died,
             format!("git:{}", oids[1]),
             "tombstone died_at_sha must be the C2 commit"
+        );
+    }
+
+    // ── Working-tree invariance: backfill must not disturb the checkout ────────
+    //
+    // This is the regression test for the bug where `checkout_tree` +
+    // `REMOVE_UNTRACKED` silently deleted files from the user's working tree
+    // when materialising a commit older than HEAD.
+    //
+    // Scenario: 3-commit linear repo (each commit adds a file).  After a full
+    // forward walk + backward backfill:
+    //   • HEAD OID is unchanged
+    //   • Every file that existed in the working tree before the walk still exists
+    //   • `git status` is clean (no staged or unstaged changes)
+    //
+    // This test covers at least one multi-commit backward walk, as required.
+    #[tokio::test]
+    async fn backfill_does_not_disturb_working_tree() {
+        use crate::adapter::{
+            DiscoveredSource, EntityMerge, ExtractedSemantic, ExtractedStructure, LocationRef,
+            SourceAdapter,
+        };
+        use crate::types::{Chunk, Entity, Location};
+
+        struct SimpleAdapter;
+        #[async_trait::async_trait]
+        impl SourceAdapter for SimpleAdapter {
+            fn kind(&self) -> &str {
+                "code"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            async fn discover(&self, source: &str) -> anyhow::Result<Vec<DiscoveredSource>> {
+                let mut out = Vec::new();
+                if let Ok(rd) = std::fs::read_dir(source) {
+                    for e in rd.flatten() {
+                        let p = e.path();
+                        if p.extension().and_then(|x| x.to_str()) == Some("txt") {
+                            out.push(DiscoveredSource {
+                                path: p.to_string_lossy().into_owned(),
+                                kind: "text".to_string(),
+                                meta: serde_json::Value::Null,
+                            });
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            async fn chunk(&self, s: &DiscoveredSource) -> anyhow::Result<Vec<Chunk>> {
+                let rel = Path::new(&s.path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                Ok(vec![Chunk::new(
+                    "wt-inv".to_string(),
+                    None,
+                    "file".to_string(),
+                    Location::new("wt-inv", &rel),
+                    std::fs::read_to_string(&s.path).unwrap_or_default(),
+                )])
+            }
+            async fn extract_structure(&self, _: &Chunk) -> anyhow::Result<ExtractedStructure> {
+                Ok(ExtractedStructure {
+                    parent_path: None,
+                    child_paths: vec![],
+                    structural_entities: vec![],
+                    structural_edges: vec![],
+                })
+            }
+            async fn extract_with_llm(
+                &self,
+                _: &Chunk,
+                _: &dyn callimachus_llm::LlmProvider,
+            ) -> anyhow::Result<Option<ExtractedSemantic>> {
+                Ok(Some(ExtractedSemantic {
+                    entities: vec![],
+                    edges: vec![],
+                    summary_text: None,
+                }))
+            }
+            async fn summarize(
+                &self,
+                _: &Chunk,
+                _: &dyn callimachus_llm::LlmProvider,
+                _: &str,
+            ) -> anyhow::Result<Option<String>> {
+                Ok(None)
+            }
+            async fn resolve_aliases(
+                &self,
+                _: &[Entity],
+                _: &dyn callimachus_llm::LlmProvider,
+            ) -> anyhow::Result<Vec<EntityMerge>> {
+                Ok(vec![])
+            }
+            fn format_location(&self, c: &Chunk) -> String {
+                c.location.path.clone()
+            }
+            fn parse_location(&self, uri: &str) -> anyhow::Result<LocationRef> {
+                Ok(LocationRef {
+                    corpus_id: "wt-inv".to_string(),
+                    path: uri.to_string(),
+                })
+            }
+        }
+
+        // 3-commit repo: each commit adds one file.
+        let (td, repo, oids) =
+            build_linear_repo(&[("a.txt", "alpha"), ("b.txt", "beta"), ("c.txt", "gamma")]);
+
+        // Snapshot the working tree before any indexing.
+        let head_before = repo.head().unwrap().target().unwrap();
+        let a_before = td.path().join("a.txt").exists();
+        let b_before = td.path().join("b.txt").exists();
+        let c_before = td.path().join("c.txt").exists();
+        assert!(
+            a_before && b_before && c_before,
+            "precondition: all files present"
+        );
+
+        // Collect git status before.
+        let status_before: Vec<(String, git2::Status)> = {
+            let mut sopts = git2::StatusOptions::new();
+            sopts.include_untracked(false);
+            let st = repo.statuses(Some(&mut sopts)).unwrap();
+            st.iter()
+                .map(|e| (e.path().unwrap_or("?").to_string(), e.status()))
+                .collect()
+        };
+
+        // Set up DB + pipeline.
+        let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let corpus = Corpus::new(
+            "wt-inv".to_string(),
+            "Working Tree Invariance Test".to_string(),
+            "code".to_string(),
+            td.path().to_string_lossy().into_owned(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        let pipeline = IndexPipeline {
+            db: db.clone(),
+            adapter: Arc::new(SimpleAdapter),
+            llm: Arc::new(callimachus_llm::DryRunProvider::new()),
+            embedder: None,
+        };
+
+        let index_opts = IndexOptions {
+            passes: vec![Pass::History, Pass::Chunk, Pass::Structure],
+            ..IndexOptions::default()
+        };
+
+        // Forward walk (root → HEAD) to establish HEAD state.
+        walk_history_forward(
+            &pipeline,
+            &corpus,
+            index_opts.clone(),
+            WalkOptions {
+                from_sha: None,
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("forward walk failed");
+
+        // Backward backfill from the oldest commit — this is the dangerous
+        // multi-commit walk that previously disturbed the working tree.
+        walk_history_backward(
+            &pipeline,
+            &corpus,
+            IndexOptions {
+                passes: vec![Pass::Chunk, Pass::Structure],
+                ..IndexOptions::default()
+            },
+            WalkOptions {
+                from_sha: Some(oids[0].to_string()),
+                skip_confirm: true,
+            },
+        )
+        .await
+        .expect("backward walk failed");
+
+        // ── Invariance assertions ─────────────────────────────────────────────
+
+        // HEAD must not have moved.
+        let head_after = repo.head().unwrap().target().unwrap();
+        assert_eq!(head_before, head_after, "HEAD moved during history walk");
+
+        // All working-tree files must still exist with their original content.
+        assert_eq!(
+            a_before,
+            td.path().join("a.txt").exists(),
+            "a.txt disappeared from working tree after backfill"
+        );
+        assert_eq!(
+            b_before,
+            td.path().join("b.txt").exists(),
+            "b.txt disappeared from working tree after backfill"
+        );
+        assert_eq!(
+            c_before,
+            td.path().join("c.txt").exists(),
+            "c.txt disappeared from working tree after backfill"
+        );
+
+        // git status must be byte-identical to before the walk.
+        let status_after: Vec<(String, git2::Status)> = {
+            let mut sopts = git2::StatusOptions::new();
+            sopts.include_untracked(false);
+            let st = repo.statuses(Some(&mut sopts)).unwrap();
+            st.iter()
+                .map(|e| (e.path().unwrap_or("?").to_string(), e.status()))
+                .collect()
+        };
+        assert_eq!(
+            status_before, status_after,
+            "git status changed after history walk — working tree was disturbed"
         );
     }
 }
