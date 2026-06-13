@@ -2,6 +2,8 @@
 ///
 /// Covers occurrence_count aggregation and origin_scope detection, the two
 /// behaviours added in the edge-dedup-and-origin-scope feature branch.
+/// Also covers the path-level `tests/`-directory rule added in the fix for
+/// `.claude/bugs/open/2026-06-12-origin-scope-misses-tests-dir-files.md`.
 ///
 /// These tests operate on `extract_structure` directly — no LLM, no storage.
 /// They are behavioural: they assert on what comes out, not on how the
@@ -485,4 +487,70 @@ mod tests {
             .map(|e| format!("to={} scope={}", e.to_entity_id, e.origin_scope))
             .collect::<Vec<_>>()
     );
+}
+
+// ── Test E: path-level tests/-directory rule ─────────────────────────────────
+
+/// Every edge in a file whose corpus-relative path contains a `tests/`
+/// directory segment is `origin_scope = "test"`, even if there are no
+/// `#[cfg(test)]` or `#[test]` annotations.
+///
+/// Covers the bug described in
+/// `.claude/bugs/open/2026-06-12-origin-scope-misses-tests-dir-files.md`.
+#[test]
+fn tests_dir_file_all_edges_tagged_as_test_scope() {
+    let source = r#"
+fn helper() {}
+
+fn fixture_setup() {
+    helper();
+}
+"#;
+    // Corpus-relative path contains the literal `tests` segment.
+    let chunk = make_chunk("corp", "crates/foo/tests/integration.rs", "file", source);
+    let result = extract_structure(&chunk, rust_lang()).unwrap();
+
+    assert!(
+        !result.edges.is_empty(),
+        "expected at least one edge from the source"
+    );
+
+    for edge in &result.edges {
+        assert_eq!(
+            edge.origin_scope, "test",
+            "all edges in a tests/-dir file should have origin_scope=test; \
+             edge {:?} has origin_scope={}",
+            edge.id, edge.origin_scope
+        );
+    }
+}
+
+/// A file with `tests` appearing only in the filename (not as a directory
+/// segment) must still be classified as production scope.
+#[test]
+fn file_with_tests_in_name_but_not_in_tests_dir_is_production_scope() {
+    let source = r#"
+fn helper() {}
+
+fn normal_fn() {
+    helper();
+}
+"#;
+    // `contract_tests.rs` — "tests" is part of the filename, not a directory.
+    let chunk = make_chunk("corp", "src/contract_tests.rs", "file", source);
+    let result = extract_structure(&chunk, rust_lang()).unwrap();
+
+    assert!(
+        !result.edges.is_empty(),
+        "expected at least one edge from the source"
+    );
+
+    for edge in &result.edges {
+        assert_eq!(
+            edge.origin_scope, "production",
+            "edges in src/contract_tests.rs (tests in filename, not path segment) \
+             should have origin_scope=production; edge {:?} has origin_scope={}",
+            edge.id, edge.origin_scope
+        );
+    }
 }
