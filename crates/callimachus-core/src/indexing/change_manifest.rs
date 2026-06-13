@@ -208,6 +208,8 @@ mod tests {
             last_modified_at_version: None,
             file_shape_hash: String::new(),
             entity_id_list: "[]".into(),
+            start_line: None,
+            end_line: None,
         }
     }
 

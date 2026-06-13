@@ -296,6 +296,7 @@ struct CapturedNode {
     byte_range: std::ops::Range<usize>,
     kind: String,
     start_row: usize,
+    end_row: usize,
     /// Name extracted from the AST node's `name` field or name-like children.
     name: Option<String>,
 }
@@ -321,6 +322,7 @@ fn capture_nodes(
                     byte_range: c.node.byte_range(),
                     kind: c.node.kind().to_string(),
                     start_row: c.node.start_position().row,
+                    end_row: c.node.end_position().row,
                     name: name_from_node(c.node, source),
                 })
                 .collect::<Vec<_>>()
@@ -420,6 +422,8 @@ fn extract_entities(
         entity.last_location = Some(chunk.location.clone());
         entity.appearance_count = 1;
         entity.confidence = 0.9;
+        entity.start_line = Some(node.start_row as u32);
+        entity.end_line = Some(node.end_row as u32);
 
         // Emit a "defines" edge: this file defines the symbol.
         let scope = scope_for_pos(node.byte_range.start, test_ranges);
@@ -479,16 +483,24 @@ fn extract_php_methods(
         Err(_) => return,
     };
 
-    // Collect (class_name_range, method_name_range) pairs.
-    let pairs: Vec<(std::ops::Range<usize>, std::ops::Range<usize>)> = {
+    // Collect (class_name_range, method_name_range, method_start_row, method_end_row) tuples.
+    let pairs: Vec<(std::ops::Range<usize>, std::ops::Range<usize>, usize, usize)> = {
         let mut cursor = QueryCursor::new();
         cursor
             .matches(&query, root, source)
             .filter_map(|m| {
                 if m.captures.len() >= 2 {
+                    let method_node = m.captures[1].node;
+                    // Walk up to the method_declaration parent so we capture the full span.
+                    let method_decl = method_node
+                        .parent()
+                        .filter(|n| n.kind() == "method_declaration")
+                        .unwrap_or(method_node);
                     Some((
                         m.captures[0].node.byte_range(),
-                        m.captures[1].node.byte_range(),
+                        method_node.byte_range(),
+                        method_decl.start_position().row,
+                        method_decl.end_position().row,
                     ))
                 } else {
                     None
@@ -497,7 +509,7 @@ fn extract_php_methods(
             .collect()
     };
 
-    for (class_range, method_range) in pairs {
+    for (class_range, method_range, method_start_row, method_end_row) in pairs {
         let class_name = text_from_bytes(source, class_range.clone());
         let method_name = text_from_bytes(source, method_range.clone());
         if class_name.is_empty() || method_name.is_empty() {
@@ -518,6 +530,8 @@ fn extract_php_methods(
         method_entity.last_location = Some(chunk.location.clone());
         method_entity.appearance_count = 1;
         method_entity.confidence = 0.9;
+        method_entity.start_line = Some(method_start_row as u32);
+        method_entity.end_line = Some(method_end_row as u32);
         result.entities.push(method_entity);
 
         // Emit defines edge: class → method.

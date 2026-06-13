@@ -83,12 +83,14 @@ pub(crate) fn snapshot_if_version_changed_entity(
                    (id, corpus_id, canonical_name, kind, aliases, description,
                     first_location_uri, last_location_uri, appearance_count, confidence,
                     derived_at_version, derived_at_kind, derived_at_sha,
-                    superseded_at_version, superseded_at_sha, superseded_at)
+                    superseded_at_version, superseded_at_sha, superseded_at,
+                    start_line, end_line)
                  SELECT id, corpus_id, canonical_name, kind, aliases, description,
                         first_location_uri, last_location_uri, appearance_count, confidence,
                         derived_at_version, derived_at_kind,
                         COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
-                        ?3, ?3, ?4
+                        ?3, ?3, ?4,
+                        start_line, end_line
                  FROM entities
                  WHERE id = ?1 AND corpus_id = ?2",
                 params![entity_id, corpus_id, superseded_at_version, now],
@@ -444,12 +446,14 @@ pub(crate) fn archive_entity(
            (id, corpus_id, canonical_name, kind, aliases, description,
             first_location_uri, last_location_uri, appearance_count, confidence,
             derived_at_version, derived_at_kind, derived_at_sha,
-            superseded_at_version, superseded_at_sha, superseded_at)
+            superseded_at_version, superseded_at_sha, superseded_at,
+            start_line, end_line)
          SELECT id, corpus_id, canonical_name, kind, aliases, description,
                 first_location_uri, last_location_uri, appearance_count, confidence,
                 derived_at_version, derived_at_kind,
                 COALESCE(NULLIF(derived_at_sha,''), derived_at_version, ''),
-                ?3, ?3, ?4
+                ?3, ?3, ?4,
+                start_line, end_line
          FROM entities
          WHERE id = ?1 AND corpus_id = ?2",
         params![entity_id, corpus_id, superseded_at_version, now],
@@ -607,14 +611,16 @@ pub(crate) fn archive_chunk(
             introduced_at_version, last_modified_at_version,
             last_modified_commit_message, last_modified_author,
             derived_at_kind, derived_at_sha,
-            superseded_at_version, superseded_at_sha, superseded_at)
+            superseded_at_version, superseded_at_sha, superseded_at,
+            start_line, end_line)
          SELECT id, corpus_id, parent_path, kind, location_uri, content,
                 byte_length, created_at, semantic_processed, source_hash,
                 introduced_at_version, last_modified_at_version,
                 last_modified_commit_message, last_modified_author,
                 derived_at_kind,
                 COALESCE(NULLIF(derived_at_sha,''), last_modified_at_version, introduced_at_version, ''),
-                ?2, ?2, ?3
+                ?2, ?2, ?3,
+                start_line, end_line
          FROM chunks
          WHERE id = ?1",
         params![chunk_id, superseded_at_version, now],

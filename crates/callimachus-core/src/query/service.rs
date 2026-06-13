@@ -421,6 +421,8 @@ impl QueryService {
                 content,
                 entities_present,
                 child_locations,
+                start_line: chunk.start_line,
+                end_line: chunk.end_line,
             }))
         })
     }

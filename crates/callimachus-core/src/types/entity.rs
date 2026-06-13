@@ -24,6 +24,14 @@ pub struct Entity {
     /// entity was last written.  `None` for rows that pre-date migration 012.
     #[serde(default)]
     pub derived_at_version: Option<String>,
+    /// 0-based line number of the entity's defining node start within its
+    /// source file.  `None` for non-code corpora and pre-migration rows.
+    #[serde(default)]
+    pub start_line: Option<u32>,
+    /// 0-based line number of the entity's defining node end (inclusive).
+    /// `None` for non-code corpora and pre-migration rows.
+    #[serde(default)]
+    pub end_line: Option<u32>,
 }
 
 impl Entity {
@@ -41,6 +49,8 @@ impl Entity {
             appearance_count: 0,
             confidence: 0.5,
             derived_at_version: None,
+            start_line: None,
+            end_line: None,
         }
     }
 }

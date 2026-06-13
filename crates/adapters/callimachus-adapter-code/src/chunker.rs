@@ -65,6 +65,7 @@ struct ItemInfo {
     byte_range: std::ops::Range<usize>,
     node_kind: String,
     start_row: usize,
+    end_row: usize,
 }
 
 // ── File enumeration ─────────────────────────────────────────────────────────
@@ -221,10 +222,11 @@ fn chunk_vue_file(
     chunks.push(file_chunk);
 
     // Extract the script block and parse it as TypeScript.
-    let (script_body, _is_tsx) = match crate::vue::extract_script_block(content) {
-        Some(pair) => pair,
-        None => return chunks, // template-only .vue: just the file chunk
-    };
+    let (script_body, _is_tsx, script_line_offset) =
+        match crate::vue::extract_script_block_with_line_offset(content) {
+            Some(triple) => triple,
+            None => return chunks, // template-only .vue: just the file chunk
+        };
 
     let ts_lang_name = "typescript";
     let lang = match languages::for_name(ts_lang_name) {
@@ -260,6 +262,7 @@ fn chunk_vue_file(
                         byte_range: c.node.byte_range(),
                         node_kind: c.node.kind().to_string(),
                         start_row: c.node.start_position().row,
+                        end_row: c.node.end_position().row,
                     })
                     .collect::<Vec<_>>()
             })
@@ -281,7 +284,12 @@ fn chunk_vue_file(
 
         let item_kind = node_kind_to_chunk_kind(&item.node_kind);
 
+        // Vue SFC spans are file-relative: add the script block's line offset.
+        let file_start_row = script_line_offset + item.start_row;
+        let file_end_row = script_line_offset + item.end_row;
+
         let item_chunks = if item_text.len() > opts.max_chunk_bytes {
+            // Split chunks don't carry precise spans (lines are arbitrary slices).
             split_large_item(
                 corpus_id,
                 &item_path,
@@ -294,13 +302,16 @@ fn chunk_vue_file(
             vec![]
         } else {
             let loc = Location::new(corpus_id, &item_path);
-            vec![Chunk::new(
+            let mut chunk = Chunk::new(
                 corpus_id.to_string(),
                 Some(file_chunk_uri.clone()),
                 item_kind.to_string(),
                 loc,
                 item_text.to_string(),
-            )]
+            );
+            chunk.start_line = Some(file_start_row as u32);
+            chunk.end_line = Some(file_end_row as u32);
+            vec![chunk]
         };
 
         chunks.extend(item_chunks);
@@ -373,6 +384,7 @@ fn chunk_file(
                         byte_range: c.node.byte_range(),
                         node_kind: c.node.kind().to_string(),
                         start_row: c.node.start_position().row,
+                        end_row: c.node.end_position().row,
                     })
                     .collect::<Vec<_>>()
             })
@@ -399,6 +411,7 @@ fn chunk_file(
 
         // Handle items exceeding max_chunk_bytes.
         let item_chunks = if item_text.len() > opts.max_chunk_bytes {
+            // Split chunks don't carry precise spans (lines are arbitrary slices).
             split_large_item(
                 corpus_id,
                 &item_path,
@@ -411,13 +424,16 @@ fn chunk_file(
             vec![] // drop tiny items
         } else {
             let loc = Location::new(corpus_id, &item_path);
-            vec![Chunk::new(
+            let mut chunk = Chunk::new(
                 corpus_id.to_string(),
                 Some(file_chunk_uri.clone()),
                 item_kind.to_string(),
                 loc,
                 item_text.to_string(),
-            )]
+            );
+            chunk.start_line = Some(item.start_row as u32);
+            chunk.end_line = Some(item.end_row as u32);
+            vec![chunk]
         };
 
         chunks.extend(item_chunks);

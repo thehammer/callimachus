@@ -316,6 +316,8 @@ mod tests {
             appearance_count: 5,
             confidence: 0.8,
             derived_at_version: None,
+            start_line: None,
+            end_line: None,
         };
         db.entity_upsert(&e).unwrap();
         e

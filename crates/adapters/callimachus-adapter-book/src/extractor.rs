@@ -98,6 +98,8 @@ fn parse_extraction_response(text: &str, chunk: &Chunk) -> anyhow::Result<Extrac
                 appearance_count: 1,
                 confidence: 0.8,
                 derived_at_version: None,
+                start_line: None,
+                end_line: None,
             }
         })
         .collect();

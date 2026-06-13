@@ -300,14 +300,16 @@ impl StorageBackend for SqliteBackend {
             "SELECT id, corpus_id, canonical_name, kind, abstract_kind,
                     aliases, description,
                     first_location_uri, last_location_uri,
-                    appearance_count, confidence, derived_at_version
+                    appearance_count, confidence, derived_at_version,
+                    start_line, end_line
              FROM entities
              WHERE corpus_id = ?1 AND derived_at_version = ?2
              UNION ALL
              SELECT id, corpus_id, canonical_name, kind, '' AS abstract_kind,
                     aliases, description,
                     first_location_uri, last_location_uri,
-                    appearance_count, confidence, derived_at_version
+                    appearance_count, confidence, derived_at_version,
+                    start_line, end_line
              FROM entities_history
              WHERE corpus_id = ?1 AND derived_at_version = ?2",
         )?;
@@ -841,6 +843,7 @@ impl StorageBackend for SqliteBackend {
                     aliases, description,
                     first_location_uri, last_location_uri,
                     appearance_count, confidence, derived_at_version,
+                    start_line, end_line,
                     derived_at_kind,
                     COALESCE(NULLIF(derived_at_sha,''), derived_at_version, '') AS eff_sha,
                     1 AS is_head
@@ -851,6 +854,7 @@ impl StorageBackend for SqliteBackend {
                     aliases, description,
                     first_location_uri, last_location_uri,
                     appearance_count, confidence, derived_at_version,
+                    start_line, end_line,
                     derived_at_kind,
                     COALESCE(NULLIF(derived_at_sha,''), derived_at_version, '') AS eff_sha,
                     0 AS is_head
@@ -859,12 +863,12 @@ impl StorageBackend for SqliteBackend {
         )?;
 
         // Each row → (Entity, provenance, is_head). row_to_entity reads the
-        // first 12 columns; derived_at_kind/sha/is_head are columns 13/14/15.
+        // first 14 columns (0..=13); derived_at_kind/sha/is_head are columns 14/15/16.
         let rows = stmt.query_map(rusqlite::params![corpus_id], |row| {
             let entity = entity_store::row_to_entity(row)?;
-            let kind: String = row.get(12)?;
-            let sha: String = row.get(13)?;
-            let is_head: i64 = row.get(14)?;
+            let kind: String = row.get(14)?;
+            let sha: String = row.get(15)?;
+            let is_head: i64 = row.get(16)?;
             Ok((entity, kind, sha, is_head != 0))
         })?;
 
@@ -1269,8 +1273,9 @@ impl StorageBackend for SqliteBackend {
               introduced_at_version, last_modified_at_version,
               last_modified_commit_message, last_modified_author,
               derived_at_kind, derived_at_sha,
-              superseded_at_version, superseded_at_sha, superseded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10,?11,NULL,NULL,'concrete',?10,?12,?12,?13)",
+              superseded_at_version, superseded_at_sha, superseded_at,
+              start_line, end_line)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10,?11,NULL,NULL,'concrete',?10,?12,?12,?13,?14,?15)",
             rusqlite::params![
                 chunk.id,
                 chunk.corpus_id,
@@ -1285,6 +1290,8 @@ impl StorageBackend for SqliteBackend {
                 derived_at_version,
                 superseded_at_version,
                 now,
+                chunk.start_line.map(|v| v as i64),
+                chunk.end_line.map(|v| v as i64),
             ],
         )?;
         Ok(())
@@ -1350,8 +1357,9 @@ impl StorageBackend for SqliteBackend {
              (id, corpus_id, canonical_name, kind, aliases, description,
               first_location_uri, last_location_uri, appearance_count, confidence,
               derived_at_version, derived_at_kind, derived_at_sha,
-              superseded_at_version, superseded_at_sha, superseded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'concrete',?11,?12,?12,?13)",
+              superseded_at_version, superseded_at_sha, superseded_at,
+              start_line, end_line)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'concrete',?11,?12,?12,?13,?14,?15)",
             rusqlite::params![
                 entity.id,
                 entity.corpus_id,
@@ -1366,6 +1374,8 @@ impl StorageBackend for SqliteBackend {
                 derived_at_version,
                 superseded_at_version,
                 now,
+                entity.start_line.map(|v| v as i64),
+                entity.end_line.map(|v| v as i64),
             ],
         )?;
         Ok(())

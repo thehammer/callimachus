@@ -46,10 +46,13 @@ pub fn keyword_search(
             ((r.rank - max_rank) / range) as f32
         };
 
-        let kind = db
-            .chunk_get_by_uri(&r.location_uri)?
-            .map(|c| c.kind)
+        let chunk = db.chunk_get_by_uri(&r.location_uri)?;
+        let kind = chunk
+            .as_ref()
+            .map(|c| c.kind.clone())
             .unwrap_or_else(|| "chunk".to_string());
+        let start_line = chunk.as_ref().and_then(|c| c.start_line);
+        let end_line = chunk.as_ref().and_then(|c| c.end_line);
 
         let location = Location::parse(&r.location_uri).unwrap_or_else(|_| Location {
             corpus_id: corpus_id.to_string(),
@@ -61,6 +64,8 @@ pub fn keyword_search(
             snippet: r.snippet.clone(),
             relevance,
             kind,
+            start_line,
+            end_line,
         });
     }
 
@@ -139,6 +144,8 @@ pub fn semantic_search(
             snippet,
             relevance: *similarity,
             kind: chunk.kind.clone(),
+            start_line: chunk.start_line,
+            end_line: chunk.end_line,
         });
     }
 

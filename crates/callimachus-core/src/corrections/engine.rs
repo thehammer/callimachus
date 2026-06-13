@@ -298,6 +298,8 @@ pub(crate) mod test_helpers {
             appearance_count: count,
             confidence,
             derived_at_version: None,
+            start_line: None,
+            end_line: None,
         }
     }
 }

@@ -36,6 +36,14 @@ pub struct Chunk {
     /// from, retained for debuggability. Defaults to `"[]"`.
     #[serde(default = "default_entity_id_list")]
     pub entity_id_list: String,
+    /// 0-based line number of the first line of this chunk within the source
+    /// file.  `None` for non-code corpora and pre-migration rows.
+    #[serde(default)]
+    pub start_line: Option<u32>,
+    /// 0-based line number of the last line of this chunk within the source
+    /// file (inclusive).  `None` for non-code corpora and pre-migration rows.
+    #[serde(default)]
+    pub end_line: Option<u32>,
 }
 
 fn default_entity_id_list() -> String {
@@ -66,6 +74,8 @@ impl Chunk {
             last_modified_at_version: None,
             file_shape_hash: String::new(),
             entity_id_list: default_entity_id_list(),
+            start_line: None,
+            end_line: None,
         }
     }
 }
