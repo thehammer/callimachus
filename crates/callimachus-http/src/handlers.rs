@@ -4,13 +4,18 @@ use axum::{
     extract::{Path, Query, State},
 };
 use callimachus_core::query::{
-    QueryService,
+    CollectionService, QueryService,
     types::{
-        ChapterSummaryInput, CharacterProfileInput, CorpusListInput, CorpusOverviewInput,
-        EntityEdgesInput, EntityInput, EntityMeetInput, FindSceneInput, ReadDepth, ReadInput,
-        RelatedInput, SearchInput, SummarizeInput, SummarizeTarget,
+        ChapterSummaryInput, CharacterProfileInput, CollectionEntityMeetInput,
+        CollectionEntityResolveInput, CollectionListEntry, CollectionListOutput,
+        CollectionOverviewInput, CollectionSearchInput, CorpusListInput, CorpusOverviewInput,
+        CorpusThemesInput, EntitiesWithoutTestsInput, EntityContractsInput, EntityEdgesInput,
+        EntityInput, EntityMeetInput, EntitySearchByAbstractKindInput, ExplainComponentInput,
+        FindInconsistenciesInput, FindSceneInput, FindUnreachableInput, ListAbstractKindsInput,
+        ReadDepth, ReadInput, RelatedInput, SearchInput, SummarizeInput, SummarizeTarget,
     },
 };
+use callimachus_core::types::ToolResult;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -209,6 +214,154 @@ pub async fn find_scene(
     tool_result_to_response(result)
 }
 
+// ── Collection tools ──────────────────────────────────────────────────────────
+
+pub async fn collection_list(
+    State(qs): State<Arc<QueryService>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let backend = qs.backend();
+    let collections = backend.collection_list().map_err(ApiError::from)?;
+    let entries: Vec<CollectionListEntry> = collections
+        .into_iter()
+        .map(|c| {
+            let member_count = c.members.len() as u64;
+            let corpus_count = backend
+                .collection_resolve_corpus_ids(&c.id)
+                .map(|v| v.len() as u64)
+                .unwrap_or(0);
+            CollectionListEntry {
+                id: c.id,
+                name: c.name,
+                kind: c.kind.as_str().to_string(),
+                member_count,
+                corpus_count,
+            }
+        })
+        .collect();
+    tool_result_to_response(ToolResult::ok(CollectionListOutput {
+        collections: entries,
+    }))
+}
+
+pub async fn collection_overview(
+    State(qs): State<Arc<QueryService>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let svc = CollectionService::load(qs.backend(), &id).map_err(ApiError::from)?;
+    let result = svc.collection_overview(CollectionOverviewInput { collection_id: id });
+    tool_result_to_response(result)
+}
+
+pub async fn collection_search(
+    State(qs): State<Arc<QueryService>>,
+    Path(id): Path<String>,
+    Json(mut input): Json<CollectionSearchInput>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    input.collection_id = id;
+    let svc =
+        CollectionService::load(qs.backend(), &input.collection_id).map_err(ApiError::from)?;
+    tool_result_to_response(svc.collection_search(input))
+}
+
+pub async fn collection_entity_resolve(
+    State(qs): State<Arc<QueryService>>,
+    Path(id): Path<String>,
+    Json(mut input): Json<CollectionEntityResolveInput>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    input.collection_id = id;
+    let svc =
+        CollectionService::load(qs.backend(), &input.collection_id).map_err(ApiError::from)?;
+    tool_result_to_response(svc.collection_entity_resolve(input))
+}
+
+pub async fn collection_entity_meet(
+    State(qs): State<Arc<QueryService>>,
+    Path(id): Path<String>,
+    Json(mut input): Json<CollectionEntityMeetInput>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    input.collection_id = id;
+    let svc =
+        CollectionService::load(qs.backend(), &input.collection_id).map_err(ApiError::from)?;
+    tool_result_to_response(svc.collection_entity_meet(input))
+}
+
+// ── Code-analysis tools ───────────────────────────────────────────────────────
+
+pub async fn entity_contracts(
+    State(qs): State<Arc<QueryService>>,
+    Path((corpus_id, entity_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let result = qs.entity_contracts(EntityContractsInput {
+        corpus_id,
+        entity_id,
+    });
+    tool_result_to_response(result)
+}
+
+pub async fn find_inconsistencies(
+    State(qs): State<Arc<QueryService>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let result = qs.find_inconsistencies(FindInconsistenciesInput { corpus_id: id });
+    tool_result_to_response(result)
+}
+
+pub async fn find_unreachable(
+    State(qs): State<Arc<QueryService>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let result = qs.find_unreachable(FindUnreachableInput { corpus_id: id });
+    tool_result_to_response(result)
+}
+
+pub async fn corpus_themes(
+    State(qs): State<Arc<QueryService>>,
+    Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let include_edges = params.get("include_edges").and_then(|v| v.parse().ok());
+    let result = qs.corpus_themes(CorpusThemesInput {
+        corpus_id: id,
+        include_edges,
+    });
+    tool_result_to_response(result)
+}
+
+pub async fn entities_without_tests(
+    State(qs): State<Arc<QueryService>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let result = qs.entities_without_tests(EntitiesWithoutTestsInput { corpus_id: id });
+    tool_result_to_response(result)
+}
+
+pub async fn explain_component(
+    State(qs): State<Arc<QueryService>>,
+    Path(id): Path<String>,
+    Json(mut input): Json<ExplainComponentInput>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    input.corpus_id = id;
+    let result = qs.explain_component(input);
+    tool_result_to_response(result)
+}
+
+// ── Taxonomy tools ────────────────────────────────────────────────────────────
+
+pub async fn entity_search_by_abstract_kind(
+    State(qs): State<Arc<QueryService>>,
+    Json(input): Json<EntitySearchByAbstractKindInput>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let result = qs.entity_search_by_abstract_kind(input);
+    tool_result_to_response(result)
+}
+
+pub async fn list_abstract_kinds(
+    State(qs): State<Arc<QueryService>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let result = qs.list_abstract_kinds(ListAbstractKindsInput {});
+    tool_result_to_response(result)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -307,5 +460,185 @@ mod tests {
             .await;
         // CORS preflight should succeed (2xx or 204)
         assert!(resp.status_code().is_success() || resp.status_code().as_u16() == 204);
+    }
+
+    // ── Collection routes ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn collection_list_empty() {
+        let server = make_server();
+        let resp = server.get("/collections").await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["ok"], true);
+        assert!(body["data"]["collections"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn collection_overview_unknown_returns_404() {
+        let server = make_server();
+        let resp = server.get("/collections/no-such-collection").await;
+        resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+        let body: serde_json::Value = resp.json();
+        assert!(body["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn collection_search_unknown_returns_404() {
+        let server = make_server();
+        // collection_id in body is required by serde; the handler overrides it with the path param
+        let resp = server
+            .post("/collections/no-such/search")
+            .content_type("application/json")
+            .bytes(axum::body::Bytes::from_static(
+                b"{\"collection_id\":\"no-such\",\"query\":\"hello\"}",
+            ))
+            .await;
+        resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn collection_search_missing_query_returns_4xx() {
+        let server = make_server();
+        let resp = server
+            .post("/collections/any/search")
+            .content_type("application/json")
+            .bytes(axum::body::Bytes::from_static(b"{}"))
+            .await;
+        let status = resp.status_code();
+        assert!(status.is_client_error(), "expected 4xx, got {status}");
+    }
+
+    #[tokio::test]
+    async fn collection_entity_resolve_unknown_collection_returns_404() {
+        let server = make_server();
+        let resp = server
+            .post("/collections/no-such/entity/resolve")
+            .content_type("application/json")
+            .bytes(axum::body::Bytes::from_static(
+                b"{\"collection_id\":\"no-such\",\"name\":\"Alice\"}",
+            ))
+            .await;
+        resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn collection_entity_meet_unknown_collection_returns_404() {
+        let server = make_server();
+        let resp = server
+            .post("/collections/no-such/meet")
+            .content_type("application/json")
+            .bytes(axum::body::Bytes::from_static(
+                b"{\"collection_id\":\"no-such\",\"entity_a\":\"Alice\",\"entity_b\":\"Bob\"}",
+            ))
+            .await;
+        resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    }
+
+    // ── Code-analysis routes ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn entity_contracts_unknown_corpus_returns_404() {
+        let server = make_server();
+        let resp = server
+            .get("/corpora/no-corpus/entity/no-entity/contracts")
+            .await;
+        resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+        let body: serde_json::Value = resp.json();
+        assert!(body["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn find_inconsistencies_returns_empty_for_unknown_corpus() {
+        let server = make_server();
+        // These analysis tools don't gate on corpus existence — they return empty results.
+        let resp = server.get("/corpora/no-corpus/inconsistencies").await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["data"]["count"], 0);
+    }
+
+    #[tokio::test]
+    async fn find_unreachable_returns_empty_for_unknown_corpus() {
+        let server = make_server();
+        let resp = server.get("/corpora/no-corpus/unreachable").await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["data"]["count"], 0);
+    }
+
+    #[tokio::test]
+    async fn corpus_themes_returns_empty_for_unknown_corpus() {
+        let server = make_server();
+        let resp = server.get("/corpora/no-corpus/themes").await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["ok"], true);
+        assert!(body["data"]["themes"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn entities_without_tests_returns_empty_for_unknown_corpus() {
+        let server = make_server();
+        let resp = server.get("/corpora/no-corpus/untested").await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["data"]["count"], 0);
+    }
+
+    #[tokio::test]
+    async fn explain_component_unknown_entity_returns_404() {
+        let server = make_server();
+        // corpus_id in body required by serde; handler overrides it with path param
+        let resp = server
+            .post("/corpora/no-corpus/explain")
+            .content_type("application/json")
+            .bytes(axum::body::Bytes::from_static(
+                b"{\"corpus_id\":\"no-corpus\",\"entity_id\":\"nonexistent-entity-id\"}",
+            ))
+            .await;
+        resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    }
+
+    // ── Taxonomy routes ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_abstract_kinds_returns_ok() {
+        let server = make_server();
+        let resp = server.get("/abstract-kinds").await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["ok"], true);
+        assert!(body["data"]["rows"].is_array());
+    }
+
+    #[tokio::test]
+    async fn entity_search_by_abstract_kind_missing_fields_returns_4xx() {
+        let server = make_server();
+        let resp = server
+            .post("/search/by-abstract-kind")
+            .content_type("application/json")
+            .bytes(axum::body::Bytes::from_static(b"{}"))
+            .await;
+        let status = resp.status_code();
+        assert!(status.is_client_error(), "expected 4xx, got {status}");
+    }
+
+    #[tokio::test]
+    async fn entity_search_by_abstract_kind_empty_corpora_returns_ok() {
+        let server = make_server();
+        let resp = server
+            .post("/search/by-abstract-kind")
+            .content_type("application/json")
+            .bytes(axum::body::Bytes::from_static(
+                b"{\"corpus_ids\":[],\"abstract_kind\":\"component\"}",
+            ))
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["ok"], true);
     }
 }

@@ -55,6 +55,40 @@ pub fn build_router(qs: Arc<QueryService>, api_key: Option<String>) -> axum::Rou
             get(handlers::character_profile),
         )
         .route("/corpora/:id/scene", post(handlers::find_scene))
+        // Collection tools (cross-corpus)
+        .route("/collections", get(handlers::collection_list))
+        .route("/collections/:id", get(handlers::collection_overview))
+        .route("/collections/:id/search", post(handlers::collection_search))
+        .route(
+            "/collections/:id/entity/resolve",
+            post(handlers::collection_entity_resolve),
+        )
+        .route(
+            "/collections/:id/meet",
+            post(handlers::collection_entity_meet),
+        )
+        // Code-analysis tools
+        .route(
+            "/corpora/:id/entity/:entity/contracts",
+            get(handlers::entity_contracts),
+        )
+        .route(
+            "/corpora/:id/inconsistencies",
+            get(handlers::find_inconsistencies),
+        )
+        .route("/corpora/:id/unreachable", get(handlers::find_unreachable))
+        .route("/corpora/:id/themes", get(handlers::corpus_themes))
+        .route(
+            "/corpora/:id/untested",
+            get(handlers::entities_without_tests),
+        )
+        .route("/corpora/:id/explain", post(handlers::explain_component))
+        // Taxonomy tools
+        .route(
+            "/search/by-abstract-kind",
+            post(handlers::entity_search_by_abstract_kind),
+        )
+        .route("/abstract-kinds", get(handlers::list_abstract_kinds))
         // Health — always open; auth middleware exempts this path explicitly
         .route("/health", get(handlers::health))
         // Auth middleware runs outermost: rejects bad keys before CORS/trace.
