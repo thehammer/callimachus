@@ -1,6 +1,8 @@
 # Callimachus MCP Tools Reference
 
-All 27 tools are available via both the MCP stdio server (`calli mcp`) and the HTTP REST API (`calli serve`).
+25 of the 27 tools are available on both the MCP stdio server (`calli mcp`) and the HTTP REST API
+(`calli serve`). The two exceptions are `list_scholia` and `apply_scholion` — scholia are write
+operations and remain MCP-only to keep mutating paths off the web surface.
 
 Every tool returns a `ToolResult` envelope:
 
@@ -116,6 +118,12 @@ List corpus-level architectural themes and invariants extracted during the `them
   "upheld_by": [],   // only present when include_edges=true
   "violated_by": []  // only present when include_edges=true
 }
+```
+
+#### HTTP
+```
+GET /corpora/:id/themes
+GET /corpora/:id/themes?include_edges=true
 ```
 
 #### Notes
@@ -435,6 +443,14 @@ Retrieve the pre-indexed contract (risks, assumptions, static signals) and purpo
 }
 ```
 
+#### HTTP
+```
+GET /corpora/:id/entity/:entity/contracts
+```
+
+#### Errors
+- `not_found` (404) if the entity does not exist
+
 ---
 
 ### 12. `entity_search_by_abstract_kind`
@@ -467,6 +483,14 @@ Find entities across one or more corpora filtered by their abstract taxonomy kin
 }
 ```
 
+#### HTTP
+```
+POST /search/by-abstract-kind
+Content-Type: application/json
+
+{ "corpus_ids": ["my-project", "my-docs"], "abstract_kind": "process", "limit": 50 }
+```
+
 ---
 
 ### 13. `list_abstract_kinds`
@@ -488,6 +512,11 @@ Return the full kind taxonomy table: each row maps a concrete adapter kind (e.g.
   ],
   "count": 24
 }
+```
+
+#### HTTP
+```
+GET /abstract-kinds
 ```
 
 ---
@@ -513,6 +542,22 @@ Assemble a **diegesis** — a multi-paragraph narrative explaining a component �
 #### Output (`data` field)
 
 A `DiegesisParagraph` for each BFS node — entity name, purpose statement, summary, and block-level descriptions — assembled into a prose narrative.
+
+#### HTTP
+```
+POST /corpora/:id/explain
+Content-Type: application/json
+
+{ "entity_id": "entity-uuid" }
+// or
+{ "module_prefix": "IndexPipeline", "max_depth": 3 }
+```
+
+Note: `corpus_id` is taken from the `:id` path parameter and need not be in the body.
+
+#### Errors
+- `not_found` (404) if no seed entity is found
+- `invalid_input` (400) if neither `entity_id` nor `module_prefix` is provided
 
 #### CLI equivalent
 ```
@@ -540,6 +585,11 @@ Find code entities that have no inbound `calls` edges — potentially dead or un
 }
 ```
 
+#### HTTP
+```
+GET /corpora/:id/unreachable
+```
+
 ---
 
 ### 16. `entities_without_tests`
@@ -559,6 +609,11 @@ Find code entities that have no inbound `verified_by` edges, indicating no test 
   ],
   "count": 7
 }
+```
+
+#### HTTP
+```
+GET /corpora/:id/untested
 ```
 
 ---
@@ -585,6 +640,11 @@ Find code entities whose contracts signal inconsistency or technical debt: incom
   ],
   "count": 2
 }
+```
+
+#### HTTP
+```
+GET /corpora/:id/inconsistencies
 ```
 
 ---
@@ -683,6 +743,9 @@ Content-Type: application/json
 ## Scholia tools
 
 Scholia are non-destructive corrections applied at query time. They sit alongside the index without altering it, and can be listed or applied without reindexing. See `calli scholion` in the CLI.
+
+> **MCP-only.** Both scholia tools are available on the MCP stdio surface only (`calli mcp`).
+> They are intentionally absent from the HTTP REST API — write operations are kept off the web path.
 
 ### 21. `list_scholia`
 
@@ -820,6 +883,11 @@ List all collections with member counts and kinds.
 }
 ```
 
+#### HTTP
+```
+GET /collections
+```
+
 ---
 
 ### 24. `collection_overview`
@@ -842,6 +910,14 @@ Overview of a collection: member corpora, nested collections, total entity count
   "cross_corpus_links_by_kind": { "same_as": 14, "references": 7 }
 }
 ```
+
+#### HTTP
+```
+GET /collections/:id
+```
+
+#### Errors
+- `not_found` (404) if collection does not exist
 
 ---
 
@@ -874,6 +950,19 @@ Keyword search across all corpora reachable from the collection. Results are ran
 }
 ```
 
+#### HTTP
+```
+POST /collections/:id/search
+Content-Type: application/json
+
+{ "query": "Bequin untouchable", "mode": "keyword", "limit": 20 }
+```
+
+Note: `collection_id` is taken from the `:id` path parameter and need not be in the body.
+
+#### Errors
+- `not_found` (404) if collection does not exist
+
 ---
 
 ### 26. `collection_entity_resolve`
@@ -903,6 +992,19 @@ Resolve an entity name across all corpora in the collection. Returns direct matc
   ]
 }
 ```
+
+#### HTTP
+```
+POST /collections/:id/entity/resolve
+Content-Type: application/json
+
+{ "name": "Bequin" }
+```
+
+Note: `collection_id` is taken from the `:id` path parameter and need not be in the body.
+
+#### Errors
+- `not_found` (404) if collection does not exist
 
 ---
 
@@ -934,41 +1036,51 @@ Find all co-occurrences of two entities across the collection. `SameAs`-aware: e
 }
 ```
 
+#### HTTP
+```
+POST /collections/:id/meet
+Content-Type: application/json
+
+{ "entity_a": "Eisenhorn", "entity_b": "Bequin" }
+```
+
+Note: `collection_id` is taken from the `:id` path parameter and need not be in the body.
+
 #### Errors
-- `not_found` (404) if either entity is not found across any corpus in the collection or they never co-occur
+- `not_found` (404) if collection does not exist, either entity is not found, or they never co-occur
 
 ---
 
 ## Tool summary
 
-| # | Tool | Scope | LLM at query time |
-|---|------|-------|-------------------|
-| 1 | `corpus_list` | global | No |
-| 2 | `corpus_overview` | corpus | No |
-| 3 | `corpus_themes` | corpus | No |
-| 4 | `search` | corpus | No |
-| 5 | `read` | corpus | No |
-| 6 | `related` | corpus | No |
-| 7 | `summarize` | corpus | No |
-| 8 | `entity` | corpus | No |
-| 9 | `entity_edges` | corpus | No |
-| 10 | `entity_meet` | corpus | No |
-| 11 | `entity_contracts` | corpus | No |
-| 12 | `entity_search_by_abstract_kind` | multi-corpus | No |
-| 13 | `list_abstract_kinds` | global | No |
-| 14 | `explain_component` | corpus | No |
-| 15 | `find_unreachable` | corpus | No |
-| 16 | `entities_without_tests` | corpus | No |
-| 17 | `find_inconsistencies` | corpus | No |
-| 18 | `chapter_summary` *(composite)* | corpus | No |
-| 19 | `character_profile` *(composite)* | corpus | No |
-| 20 | `find_scene` *(composite)* | corpus | No |
-| 21 | `list_scholia` | corpus | No |
-| 22 | `apply_scholion` | corpus/collection | No |
-| 23 | `collection_list` | global | No |
-| 24 | `collection_overview` | collection | No |
-| 25 | `collection_search` | collection | No |
-| 26 | `collection_entity_resolve` | collection | No |
-| 27 | `collection_entity_meet` | collection | No |
+| # | Tool | Scope | HTTP | LLM at query time |
+|---|------|-------|------|-------------------|
+| 1 | `corpus_list` | global | `GET /corpora` | No |
+| 2 | `corpus_overview` | corpus | `GET /corpora/:id` | No |
+| 3 | `corpus_themes` | corpus | `GET /corpora/:id/themes` | No |
+| 4 | `search` | corpus | `POST /corpora/:id/search` | No |
+| 5 | `read` | corpus | `GET /corpora/:id/read` | No |
+| 6 | `related` | corpus | `GET /corpora/:id/related` | No |
+| 7 | `summarize` | corpus | `GET /corpora/:id/summary` | No |
+| 8 | `entity` | corpus | `GET /corpora/:id/entity/:name` | No |
+| 9 | `entity_edges` | corpus | `GET /corpora/:id/entity/:id/edges` | No |
+| 10 | `entity_meet` | corpus | `POST /corpora/:id/meet` | No |
+| 11 | `entity_contracts` | corpus | `GET /corpora/:id/entity/:entity/contracts` | No |
+| 12 | `entity_search_by_abstract_kind` | multi-corpus | `POST /search/by-abstract-kind` | No |
+| 13 | `list_abstract_kinds` | global | `GET /abstract-kinds` | No |
+| 14 | `explain_component` | corpus | `POST /corpora/:id/explain` | No |
+| 15 | `find_unreachable` | corpus | `GET /corpora/:id/unreachable` | No |
+| 16 | `entities_without_tests` | corpus | `GET /corpora/:id/untested` | No |
+| 17 | `find_inconsistencies` | corpus | `GET /corpora/:id/inconsistencies` | No |
+| 18 | `chapter_summary` *(composite)* | corpus | `GET /corpora/:id/chapter/:ch` | No |
+| 19 | `character_profile` *(composite)* | corpus | `GET /corpora/:id/character/:name` | No |
+| 20 | `find_scene` *(composite)* | corpus | `POST /corpora/:id/scene` | No |
+| 21 | `list_scholia` | corpus | MCP-only | No |
+| 22 | `apply_scholion` | corpus/collection | MCP-only | No |
+| 23 | `collection_list` | global | `GET /collections` | No |
+| 24 | `collection_overview` | collection | `GET /collections/:id` | No |
+| 25 | `collection_search` | collection | `POST /collections/:id/search` | No |
+| 26 | `collection_entity_resolve` | collection | `POST /collections/:id/entity/resolve` | No |
+| 27 | `collection_entity_meet` | collection | `POST /collections/:id/meet` | No |
 
 All query-time responses are assembled from pre-indexed artifacts. No tool calls an LLM at query time.
