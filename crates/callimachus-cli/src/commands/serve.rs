@@ -19,13 +19,16 @@ pub async fn run(
     // only processes on the same host can reach them.
     let is_loopback = host == "127.0.0.1" || host == "localhost" || host == "::1";
     if api_key.is_none() && !is_loopback {
-        bail!(concat!(
-            "refusing to start: --host {} is not a loopback address and no API key is configured.\n",
-            "\nTo fix, supply a key via one of:",
-            "\n    --api-key <KEY>        pass the key directly",
-            "\n    --api-key-env <VAR>    read the key from an environment variable",
-            "\n    CALLI_API_KEY=<KEY>    set the default env var",
-        ), host);
+        bail!(
+            concat!(
+                "refusing to start: --host {} is not a loopback address and no API key is configured.\n",
+                "\nTo fix, supply a key via one of:",
+                "\n    --api-key <KEY>        pass the key directly",
+                "\n    --api-key-env <VAR>    read the key from an environment variable",
+                "\n    CALLI_API_KEY=<KEY>    set the default env var",
+            ),
+            host
+        );
     }
 
     let db: Arc<dyn StorageBackend> = Arc::new(
@@ -112,8 +115,18 @@ mod tests {
 
         let config = GlobalConfig::default();
         // 0.0.0.0 without a key should be rejected before a listener is opened.
-        let result = run("0.0.0.0", 0, None, std::path::Path::new(":memory:"), &config).await;
-        assert!(result.is_err(), "expected refusal for non-loopback without key");
+        let result = run(
+            "0.0.0.0",
+            0,
+            None,
+            std::path::Path::new(":memory:"),
+            &config,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "expected refusal for non-loopback without key"
+        );
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("not a loopback address"),

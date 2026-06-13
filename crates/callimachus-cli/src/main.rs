@@ -558,9 +558,7 @@ async fn main() -> Result<()> {
         } => {
             // Resolve API key: explicit flag > named env var > default env var.
             let resolved_key = api_key.or_else(|| {
-                let var_name = api_key_env
-                    .as_deref()
-                    .unwrap_or("CALLI_API_KEY");
+                let var_name = api_key_env.as_deref().unwrap_or("CALLI_API_KEY");
                 std::env::var(var_name).ok().filter(|v| !v.is_empty())
             });
             commands::serve::run(&host, port, resolved_key, &db_path, &global_config).await
