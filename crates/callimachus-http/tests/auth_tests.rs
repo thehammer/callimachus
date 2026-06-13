@@ -27,17 +27,21 @@ fn make_qs() -> Arc<QueryService> {
     Arc::new(QueryService::new(db))
 }
 
+fn make_state() -> Arc<callimachus_http::ReloadState> {
+    callimachus_http::ReloadState::fixed(make_qs(), "test".to_string())
+}
+
 /// Build a test server with a required API key.
 #[allow(dead_code)]
 fn make_server_with_key(key: &str) -> TestServer {
-    let router = callimachus_http::build_router(make_qs(), Some(key.to_string()));
+    let router = callimachus_http::build_router(make_state(), Some(key.to_string()));
     TestServer::new(router).expect("test server")
 }
 
 /// Build a test server with no authentication (open mode).
 #[allow(dead_code)]
 fn make_server_open() -> TestServer {
-    let router = callimachus_http::build_router(make_qs(), None);
+    let router = callimachus_http::build_router(make_state(), None);
     TestServer::new(router).expect("test server")
 }
 

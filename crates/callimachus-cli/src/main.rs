@@ -145,6 +145,16 @@ enum Command {
         /// Falls back to CALLI_API_KEY when omitted.
         #[arg(long)]
         api_key_env: Option<String>,
+        /// Path to the reload marker file.
+        ///
+        /// When set, the server polls this file every 5 seconds. The file must
+        /// contain the absolute path to a pinakes generation to serve (one
+        /// line). Rewriting the file to a new path triggers a hot swap: the
+        /// new pinakes is opened, sanity-checked, and atomically substituted
+        /// with zero dropped requests. A failed swap keeps the current
+        /// generation and reports the error in `/health`.
+        #[arg(long)]
+        reload_marker: Option<PathBuf>,
     },
 
     /// Show or modify global configuration.
@@ -555,13 +565,22 @@ async fn main() -> Result<()> {
             port,
             api_key,
             api_key_env,
+            reload_marker,
         } => {
             // Resolve API key: explicit flag > named env var > default env var.
             let resolved_key = api_key.or_else(|| {
                 let var_name = api_key_env.as_deref().unwrap_or("CALLI_API_KEY");
                 std::env::var(var_name).ok().filter(|v| !v.is_empty())
             });
-            commands::serve::run(&host, port, resolved_key, &db_path, &global_config).await
+            commands::serve::run(
+                &host,
+                port,
+                resolved_key,
+                reload_marker,
+                &db_path,
+                &global_config,
+            )
+            .await
         }
         Command::Config { sub } => run_config(&sub, &global_config),
 

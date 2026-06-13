@@ -1,10 +1,11 @@
 use crate::error::{ApiError, tool_result_to_response};
+use crate::reload::{Qs, ReloadState};
 use axum::{
     Json,
     extract::{Path, Query, State},
 };
 use callimachus_core::query::{
-    CollectionService, QueryService,
+    CollectionService,
     types::{
         ChapterSummaryInput, CharacterProfileInput, CollectionEntityMeetInput,
         CollectionEntityResolveInput, CollectionListEntry, CollectionListOutput,
@@ -21,32 +22,52 @@ use std::sync::Arc;
 
 // ── Health ────────────────────────────────────────────────────────────────────
 
+/// Health check handler. Always open; never blocked by auth middleware.
+///
+/// Returns:
+/// - `status`: `"ok"` normally; `"degraded"` when the last reload attempt failed.
+/// - `corpus_count`: number of corpora in the currently-served pinakes.
+/// - `generation`: path of the pinakes file currently being served.
+/// - `loaded_at`: RFC-3339 timestamp of when this generation was loaded.
+/// - `reload_error` *(only when degraded)*: human-readable failure message.
 pub async fn health(
-    State(qs): State<Arc<QueryService>>,
+    State(state): State<Arc<ReloadState>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let qs = state.current_qs();
     let result = qs.corpus_list(CorpusListInput {});
-    match result {
-        callimachus_core::types::ToolResult::Ok(success) => {
-            let count = success.data.len();
-            Ok(Json(
-                serde_json::json!({"status": "ok", "corpus_count": count}),
-            ))
-        }
-        _ => Ok(Json(serde_json::json!({"status": "ok", "corpus_count": 0}))),
+    let count = match &result {
+        callimachus_core::types::ToolResult::Ok(s) => s.data.len(),
+        _ => 0,
+    };
+
+    let status = if state.has_reload_error() {
+        "degraded"
+    } else {
+        "ok"
+    };
+
+    // Merge status + corpus_count with generation / loaded_at / reload_error.
+    let mut body = serde_json::json!({
+        "status": status,
+        "corpus_count": count,
+    });
+    let health_fields = state.health_fields();
+    if let (Some(base), serde_json::Value::Object(extra)) = (body.as_object_mut(), health_fields) {
+        base.extend(extra);
     }
+
+    Ok(Json(body))
 }
 
 // ── Corpus tools ──────────────────────────────────────────────────────────────
 
-pub async fn corpus_list(
-    State(qs): State<Arc<QueryService>>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+pub async fn corpus_list(State(qs): State<Qs>) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.corpus_list(CorpusListInput {});
     tool_result_to_response(result)
 }
 
 pub async fn corpus_overview(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.corpus_overview(CorpusOverviewInput { corpus_id: id });
@@ -56,7 +77,7 @@ pub async fn corpus_overview(
 // ── Search ────────────────────────────────────────────────────────────────────
 
 pub async fn search(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
     Json(mut input): Json<SearchInput>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -68,7 +89,7 @@ pub async fn search(
 // ── Entity tools ──────────────────────────────────────────────────────────────
 
 pub async fn entity(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path((corpus_id, name)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.entity(EntityInput {
@@ -80,7 +101,7 @@ pub async fn entity(
 }
 
 pub async fn entity_edges(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path((corpus_id, entity_id)): Path<(String, String)>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -98,7 +119,7 @@ pub async fn entity_edges(
 }
 
 pub async fn entity_meet(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
     Json(mut input): Json<EntityMeetInput>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -110,7 +131,7 @@ pub async fn entity_meet(
 // ── Read tools ────────────────────────────────────────────────────────────────
 
 pub async fn read(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -134,7 +155,7 @@ pub async fn read(
 }
 
 pub async fn summarize(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -163,7 +184,7 @@ pub async fn summarize(
 }
 
 pub async fn related(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -183,7 +204,7 @@ pub async fn related(
 // ── Composite tools ───────────────────────────────────────────────────────────
 
 pub async fn chapter_summary(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path((id, ch)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.chapter_summary(ChapterSummaryInput {
@@ -194,7 +215,7 @@ pub async fn chapter_summary(
 }
 
 pub async fn character_profile(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path((id, name)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.character_profile(CharacterProfileInput {
@@ -205,7 +226,7 @@ pub async fn character_profile(
 }
 
 pub async fn find_scene(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
     Json(mut input): Json<FindSceneInput>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -216,9 +237,7 @@ pub async fn find_scene(
 
 // ── Collection tools ──────────────────────────────────────────────────────────
 
-pub async fn collection_list(
-    State(qs): State<Arc<QueryService>>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+pub async fn collection_list(State(qs): State<Qs>) -> Result<Json<serde_json::Value>, ApiError> {
     let backend = qs.backend();
     let collections = backend.collection_list().map_err(ApiError::from)?;
     let entries: Vec<CollectionListEntry> = collections
@@ -244,7 +263,7 @@ pub async fn collection_list(
 }
 
 pub async fn collection_overview(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let svc = CollectionService::load(qs.backend(), &id).map_err(ApiError::from)?;
@@ -253,7 +272,7 @@ pub async fn collection_overview(
 }
 
 pub async fn collection_search(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
     Json(mut input): Json<CollectionSearchInput>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -264,7 +283,7 @@ pub async fn collection_search(
 }
 
 pub async fn collection_entity_resolve(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
     Json(mut input): Json<CollectionEntityResolveInput>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -275,7 +294,7 @@ pub async fn collection_entity_resolve(
 }
 
 pub async fn collection_entity_meet(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
     Json(mut input): Json<CollectionEntityMeetInput>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -288,7 +307,7 @@ pub async fn collection_entity_meet(
 // ── Code-analysis tools ───────────────────────────────────────────────────────
 
 pub async fn entity_contracts(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path((corpus_id, entity_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.entity_contracts(EntityContractsInput {
@@ -299,7 +318,7 @@ pub async fn entity_contracts(
 }
 
 pub async fn find_inconsistencies(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.find_inconsistencies(FindInconsistenciesInput { corpus_id: id });
@@ -307,7 +326,7 @@ pub async fn find_inconsistencies(
 }
 
 pub async fn find_unreachable(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.find_unreachable(FindUnreachableInput { corpus_id: id });
@@ -315,7 +334,7 @@ pub async fn find_unreachable(
 }
 
 pub async fn corpus_themes(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -328,7 +347,7 @@ pub async fn corpus_themes(
 }
 
 pub async fn entities_without_tests(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.entities_without_tests(EntitiesWithoutTestsInput { corpus_id: id });
@@ -336,7 +355,7 @@ pub async fn entities_without_tests(
 }
 
 pub async fn explain_component(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Path(id): Path<String>,
     Json(mut input): Json<ExplainComponentInput>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -348,7 +367,7 @@ pub async fn explain_component(
 // ── Taxonomy tools ────────────────────────────────────────────────────────────
 
 pub async fn entity_search_by_abstract_kind(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
     Json(input): Json<EntitySearchByAbstractKindInput>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.entity_search_by_abstract_kind(input);
@@ -356,7 +375,7 @@ pub async fn entity_search_by_abstract_kind(
 }
 
 pub async fn list_abstract_kinds(
-    State(qs): State<Arc<QueryService>>,
+    State(qs): State<Qs>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let result = qs.list_abstract_kinds(ListAbstractKindsInput {});
     tool_result_to_response(result)
@@ -377,7 +396,8 @@ mod tests {
         let db: Arc<dyn StorageBackend> =
             Arc::new(SqliteBackend::open_in_memory().expect("in-memory DB"));
         let qs = Arc::new(QueryService::new(db));
-        let router = crate::build_router(qs, None);
+        let state = crate::reload::ReloadState::fixed(qs, "test".to_string());
+        let router = crate::build_router(state, None);
         TestServer::new(router).expect("test server")
     }
 
