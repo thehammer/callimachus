@@ -372,7 +372,14 @@ enum LinkSubcommand {
 #[derive(Debug, Subcommand)]
 enum ConfigCommand {
     /// Print the active config.
-    Show,
+    ///
+    /// Secret fields (api_key) are masked by default.  Pass --reveal to see
+    /// the full values.
+    Show {
+        /// Print secret fields (api_key, etc.) in full instead of masking them.
+        #[arg(long)]
+        reveal: bool,
+    },
     /// Print the config file path.
     Path,
 }
@@ -937,8 +944,8 @@ fn open_db(path: &std::path::Path) -> Result<Arc<dyn StorageBackend>> {
 
 fn run_config(sub: &ConfigCommand, config: &config::GlobalConfig) -> Result<()> {
     match sub {
-        ConfigCommand::Show => {
-            println!("{}", toml::to_string_pretty(config)?);
+        ConfigCommand::Show { reveal } => {
+            println!("{}", toml::to_string_pretty(&config.for_display(*reveal))?);
         }
         ConfigCommand::Path => {
             println!("{}", config::config_file_path().display());

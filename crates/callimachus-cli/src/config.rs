@@ -3,6 +3,32 @@ use callimachus_core::indexing::model_tier::TierConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+// ---------------------------------------------------------------------------
+// Secret masking
+// ---------------------------------------------------------------------------
+
+/// Mask a secret string for display.
+///
+/// Shows the first 10 and last 4 characters with `…` between them, giving
+/// enough context to identify the key without exposing the full value.
+/// If the value is shorter than 15 characters it is fully redacted as
+/// `[hidden]` to avoid leaking the whole secret through prefix+suffix.
+pub fn mask_secret(val: &str) -> String {
+    if val.len() >= 15 {
+        let prefix = &val[..10];
+        let suffix = &val[val.len() - 4..];
+        format!("{prefix}…{suffix}")
+    } else {
+        "[hidden]".to_string()
+    }
+}
+
+/// Mask an optional secret string.  `None` stays `None`; `Some(val)` is
+/// replaced with `Some(masked_val)`.
+fn mask_opt(val: &Option<String>) -> Option<String> {
+    val.as_deref().map(mask_secret)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GlobalConfig {
     #[serde(default)]
@@ -70,6 +96,26 @@ pub struct LlmConfig {
 }
 
 impl GlobalConfig {
+    /// Return a copy of this config suitable for display: all secret fields are
+    /// masked.  Pass `reveal = true` to skip masking (e.g. for `--reveal`).
+    pub fn for_display(&self, reveal: bool) -> Self {
+        if reveal {
+            return self.clone();
+        }
+        Self {
+            storage: self.storage.clone(),
+            model_tiers: self.model_tiers.clone(),
+            llm: LlmConfig {
+                api_key: mask_opt(&self.llm.api_key),
+                ..self.llm.clone()
+            },
+            embedding: self.embedding.as_ref().map(|e| EmbeddingConfig {
+                api_key: mask_opt(&e.api_key),
+                ..e.clone()
+            }),
+        }
+    }
+
     pub fn load() -> Result<Self> {
         let path = config_file_path();
         if !path.exists() {
@@ -314,6 +360,104 @@ mod tests {
             result.err().map_or_else(String::new, |e| e.to_string())
         );
         unsafe { std::env::remove_var("CALLIMACHUS_TEST_ENV_KEY") };
+    }
+
+    // ── Secret masking tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn mask_secret_long_key() {
+        // 15+ chars → first 10 + … + last 4
+        let key = "sk-ant-api03JCtxxxxxxxx2tKg";
+        let masked = mask_secret(key);
+        assert!(masked.starts_with("sk-ant-api"), "prefix: {masked}");
+        assert!(masked.ends_with("2tKg"), "suffix: {masked}");
+        assert!(masked.contains('…'), "ellipsis: {masked}");
+        assert!(
+            !masked.contains("JCtxxxxxxxx"),
+            "middle not leaked: {masked}"
+        );
+    }
+
+    #[test]
+    fn mask_secret_short_key() {
+        // < 15 chars → fully redacted
+        let key = "short-key";
+        assert_eq!(mask_secret(key), "[hidden]");
+    }
+
+    #[test]
+    fn mask_secret_exactly_15_chars() {
+        let key = "123456789012345"; // exactly 15
+        let masked = mask_secret(key);
+        assert_eq!(masked, "1234567890…2345");
+    }
+
+    #[test]
+    fn for_display_masks_llm_api_key() {
+        let mut config = GlobalConfig::default();
+        config.llm.api_key = Some("sk-ant-api03JCtxxxxxxxx2tKg".to_string());
+        let displayed = config.for_display(false);
+        let key = displayed.llm.api_key.as_deref().unwrap();
+        assert!(key.contains('…'), "should be masked: {key}");
+        assert!(!key.contains("JCtxxxxxxxx"), "middle not leaked: {key}");
+    }
+
+    #[test]
+    fn for_display_reveal_shows_full_key() {
+        let mut config = GlobalConfig::default();
+        config.llm.api_key = Some("sk-ant-api03JCtxxxxxxxx2tKg".to_string());
+        let displayed = config.for_display(true);
+        assert_eq!(
+            displayed.llm.api_key.as_deref(),
+            Some("sk-ant-api03JCtxxxxxxxx2tKg")
+        );
+    }
+
+    #[test]
+    fn for_display_masks_embedding_api_key() {
+        let config = GlobalConfig {
+            embedding: Some(EmbeddingConfig {
+                enabled: true,
+                api_key: Some("pa-voyage-longkeyxxxxxxxx1234".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let displayed = config.for_display(false);
+        let key = displayed
+            .embedding
+            .as_ref()
+            .unwrap()
+            .api_key
+            .as_deref()
+            .unwrap();
+        assert!(key.contains('…'), "should be masked: {key}");
+    }
+
+    #[test]
+    fn for_display_unset_key_stays_unset() {
+        let config = GlobalConfig::default(); // llm.api_key is None
+        let displayed = config.for_display(false);
+        assert!(displayed.llm.api_key.is_none());
+    }
+
+    #[test]
+    fn for_display_does_not_mask_api_key_env() {
+        // api_key_env is the *name* of an env var, not a secret — must not be masked
+        let config = GlobalConfig {
+            embedding: Some(EmbeddingConfig {
+                enabled: true,
+                api_key_env: Some("MY_VOYAGE_KEY".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let displayed = config.for_display(false);
+        assert_eq!(
+            displayed.embedding.as_ref().unwrap().api_key_env.as_deref(),
+            Some("MY_VOYAGE_KEY"),
+            "env var name must not be masked"
+        );
     }
 
     #[test]
