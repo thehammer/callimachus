@@ -1,14 +1,17 @@
-use crate::{auth, handlers};
+use crate::{auth, handlers, reload::ReloadState};
 use axum::{
     body::Body,
     http::Request,
     middleware::Next,
     routing::{get, post},
 };
-use callimachus_core::query::QueryService;
 use std::sync::Arc;
 
 /// Build the Axum router.
+///
+/// The router state is `Arc<ReloadState>`, which supports optional hot-reload
+/// (see [`crate::spawn_reload_watcher`]). All handlers extract [`crate::reload::Qs`]
+/// per-request via `FromRef<Arc<ReloadState>>`; only `/health` reads the full state.
 ///
 /// When `api_key` is `Some(key)`:
 /// - Every route except `GET /health` requires `Authorization: Bearer <key>` or
@@ -19,7 +22,7 @@ use std::sync::Arc;
 /// When `api_key` is `None` (default local-dev mode):
 /// - All routes are open. CORS allows any origin (safe because the server
 ///   binds to 127.0.0.1 by default; see the startup guard in `calli serve`).
-pub fn build_router(qs: Arc<QueryService>, api_key: Option<String>) -> axum::Router {
+pub fn build_router(state: Arc<ReloadState>, api_key: Option<String>) -> axum::Router {
     let key: Option<Arc<String>> = api_key.map(Arc::new);
 
     let cors = if key.is_some() {
@@ -100,5 +103,5 @@ pub fn build_router(qs: Arc<QueryService>, api_key: Option<String>) -> axum::Rou
         ))
         .layer(cors)
         .layer(tower_http::trace::TraceLayer::new_for_http())
-        .with_state(qs)
+        .with_state(state)
 }

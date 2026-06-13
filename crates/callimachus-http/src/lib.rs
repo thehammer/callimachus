@@ -1,8 +1,10 @@
 pub mod auth;
 pub mod error;
 pub mod handlers;
+pub mod reload;
 pub mod router;
 
+pub use reload::{spawn_reload_watcher, ReloadState};
 pub use router::build_router;
 
 /// Start the HTTP server on the given listener.
@@ -11,14 +13,14 @@ pub use router::build_router;
 /// the key via `Authorization: Bearer <key>` or `X-Api-Key: <key>`.
 /// When `api_key` is `None`, all routes are open (local-dev mode).
 ///
-/// Convenience wrapper around `axum::serve` so callers don't need axum as a
-/// direct dependency.
+/// Pass an `Arc<ReloadState>` to enable optional hot-reload; wrap your
+/// `QueryService` via [`ReloadState::fixed`] if no hot-reload is needed.
 pub async fn serve(
     listener: tokio::net::TcpListener,
-    qs: std::sync::Arc<callimachus_core::query::QueryService>,
+    state: std::sync::Arc<ReloadState>,
     api_key: Option<String>,
 ) -> anyhow::Result<()> {
-    let router = build_router(qs, api_key);
+    let router = build_router(state, api_key);
     axum::serve(listener, router).await?;
     Ok(())
 }
