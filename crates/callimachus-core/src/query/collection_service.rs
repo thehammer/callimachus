@@ -8,7 +8,7 @@ use crate::query::types::{
     CollectionSearchOutput, CollectionSearchResult, CorpusOverviewInput,
 };
 use crate::storage::StorageBackend;
-use crate::types::{Collection, ToolResult};
+use crate::types::{Collection, CorpusFreshness, ToolResult};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -200,6 +200,9 @@ pub struct CollectionService {
     corpus_order: Vec<String>,
     /// Maps corpus_id → corpus name.
     corpus_names: HashMap<String, String>,
+    /// Per-corpus index freshness stamps, populated once at load time.
+    /// Covers every member corpus regardless of whether it returned results.
+    all_corpus_freshness: Vec<CorpusFreshness>,
 }
 
 impl CollectionService {
@@ -210,11 +213,22 @@ impl CollectionService {
 
         let mut corpus_services = HashMap::new();
         let mut corpus_names = HashMap::new();
+        let mut all_corpus_freshness = Vec::with_capacity(corpus_order.len());
 
         for corpus_id in &corpus_order {
             if let Some(corpus) = backend.corpus_get(corpus_id)? {
+                all_corpus_freshness.push(CorpusFreshness {
+                    corpus_id: corpus_id.clone(),
+                    last_indexed_at: corpus.last_indexed_at.clone(),
+                });
                 corpus_names.insert(corpus_id.clone(), corpus.name.clone());
                 corpus_services.insert(corpus_id.clone(), QueryService::new(Arc::clone(&backend)));
+            } else {
+                // Corpus was removed after being added to the collection — report null freshness.
+                all_corpus_freshness.push(CorpusFreshness {
+                    corpus_id: corpus_id.clone(),
+                    last_indexed_at: None,
+                });
             }
         }
 
@@ -229,6 +243,7 @@ impl CollectionService {
             links,
             corpus_order,
             corpus_names,
+            all_corpus_freshness,
         })
     }
 
@@ -293,6 +308,7 @@ impl CollectionService {
         all.truncate(limit);
 
         ToolResult::ok(CollectionSearchOutput { results: all })
+            .with_corpus_freshness(self.all_corpus_freshness.clone())
     }
 
     // ── collection_overview ─────────────────────────────────────────────────
@@ -359,6 +375,7 @@ impl CollectionService {
             total_entities,
             cross_corpus_links_by_kind,
         })
+        .with_corpus_freshness(self.all_corpus_freshness.clone())
     }
 
     // ── collection_entity_resolve ───────────────────────────────────────────
@@ -390,7 +407,8 @@ impl CollectionService {
             return ToolResult::ok(CollectionEntityResolveOutput {
                 matches: vec![],
                 related: vec![],
-            });
+            })
+            .with_corpus_freshness(self.all_corpus_freshness.clone());
         }
 
         // Build a set of candidate (corpus_id, entity_id) keys.
@@ -466,6 +484,7 @@ impl CollectionService {
             .collect();
 
         ToolResult::ok(CollectionEntityResolveOutput { matches, related })
+            .with_corpus_freshness(self.all_corpus_freshness.clone())
     }
 
     // ── collection_entity_meet ──────────────────────────────────────────────
@@ -484,7 +503,8 @@ impl CollectionService {
                 first_co_occurrence: None,
                 all: vec![],
                 count: 0,
-            });
+            })
+            .with_corpus_freshness(self.all_corpus_freshness.clone());
         }
 
         // Expand both sets via SameAs closure.
@@ -549,6 +569,7 @@ impl CollectionService {
             all,
             count,
         })
+        .with_corpus_freshness(self.all_corpus_freshness.clone())
     }
 
     // ── private helpers ─────────────────────────────────────────────────────
@@ -1208,6 +1229,134 @@ mod tests {
         );
         let loc = out.data.first_co_occurrence.unwrap();
         assert_eq!(loc.corpus_id, "c1");
+    }
+
+    // ── corpus_freshness on collection_search ───────────────────────────────
+
+    // collection_search includes a freshness entry for every member corpus,
+    // even those that returned zero results for the query.
+    #[test]
+    fn collection_search_carries_freshness_for_all_member_corpora() {
+        let backend = make_backend();
+        seed_corpus(backend.as_ref(), "c1", "First Book");
+        seed_corpus(backend.as_ref(), "c2", "Second Book");
+        backend
+            .corpus_set_last_indexed("c1", "2025-03-10T08:00:00Z")
+            .unwrap();
+        backend
+            .corpus_set_last_indexed("c2", "2025-04-20T12:00:00Z")
+            .unwrap();
+
+        // Seed a chunk in each corpus so fts_rebuild has something to work with.
+        seed_chunk(backend.as_ref(), "c1", "ch/1");
+        seed_chunk(backend.as_ref(), "c2", "ch/1");
+        backend.fts_rebuild("c1").unwrap();
+        backend.fts_rebuild("c2").unwrap();
+
+        make_collection(backend.as_ref(), "col1", "My Series");
+        backend
+            .collection_add_member("col1", "c1", MemberType::Corpus)
+            .unwrap();
+        backend
+            .collection_add_member("col1", "c2", MemberType::Corpus)
+            .unwrap();
+
+        let svc = CollectionService::load(Arc::clone(&backend), "col1").unwrap();
+        let result = svc.collection_search(CollectionSearchInput {
+            collection_id: "col1".into(),
+            query: "content".into(),
+            mode: SearchMode::Keyword,
+            limit: Some(10),
+        });
+
+        let ToolResult::Ok(out) = result else {
+            panic!("expected Ok from collection_search");
+        };
+        assert_eq!(
+            out.corpus_freshness.len(),
+            2,
+            "expected one freshness entry per member corpus"
+        );
+
+        let c1_fresh = out
+            .corpus_freshness
+            .iter()
+            .find(|f| f.corpus_id == "c1")
+            .expect("c1 should appear in corpus_freshness");
+        assert_eq!(
+            c1_fresh.last_indexed_at,
+            Some("2025-03-10T08:00:00Z".to_string()),
+            "c1 last_indexed_at should match the seeded value"
+        );
+
+        let c2_fresh = out
+            .corpus_freshness
+            .iter()
+            .find(|f| f.corpus_id == "c2")
+            .expect("c2 should appear in corpus_freshness");
+        assert_eq!(
+            c2_fresh.last_indexed_at,
+            Some("2025-04-20T12:00:00Z".to_string()),
+            "c2 last_indexed_at should match the seeded value"
+        );
+    }
+
+    // corpus_freshness covers all member corpora even when one of them contributes
+    // zero results to the search — absence of matches must not suppress the freshness entry.
+    #[test]
+    fn collection_search_freshness_includes_corpora_with_no_results() {
+        let backend = make_backend();
+        seed_corpus(backend.as_ref(), "c1", "First Book");
+        seed_corpus(backend.as_ref(), "c2", "Second Book");
+        // Only c1 has content that matches the query; c2 has none.
+        seed_chunk(backend.as_ref(), "c1", "ch/1");
+        // Give c1's chunk searchable content containing the target term.
+        let loc = crate::types::Location::new("c1", "ch/1");
+        let matching_chunk = crate::types::Chunk::new(
+            "c1".into(),
+            None,
+            "chapter".into(),
+            loc,
+            "the unique keyword goblinfire".into(),
+        );
+        backend.chunk_upsert(&matching_chunk).unwrap();
+        seed_chunk(backend.as_ref(), "c2", "ch/1");
+        backend.fts_rebuild("c1").unwrap();
+        backend.fts_rebuild("c2").unwrap();
+
+        make_collection(backend.as_ref(), "col1", "My Series");
+        backend
+            .collection_add_member("col1", "c1", MemberType::Corpus)
+            .unwrap();
+        backend
+            .collection_add_member("col1", "c2", MemberType::Corpus)
+            .unwrap();
+
+        let svc = CollectionService::load(Arc::clone(&backend), "col1").unwrap();
+        let result = svc.collection_search(CollectionSearchInput {
+            collection_id: "col1".into(),
+            query: "goblinfire".into(),
+            mode: SearchMode::Keyword,
+            limit: Some(10),
+        });
+
+        let ToolResult::Ok(out) = result else {
+            panic!("expected Ok from collection_search");
+        };
+        // c1 returned results; c2 did not — but freshness must cover both.
+        assert_eq!(
+            out.corpus_freshness.len(),
+            2,
+            "corpus_freshness must list all member corpora, including those with zero results"
+        );
+        assert!(
+            out.corpus_freshness.iter().any(|f| f.corpus_id == "c1"),
+            "c1 must appear in corpus_freshness"
+        );
+        assert!(
+            out.corpus_freshness.iter().any(|f| f.corpus_id == "c2"),
+            "c2 must appear in corpus_freshness even though it returned no results"
+        );
     }
 
     // Entity "Eisenhorn" exists in both corpus_a and corpus_b under different IDs
