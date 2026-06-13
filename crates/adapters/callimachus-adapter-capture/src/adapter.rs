@@ -59,9 +59,7 @@ impl SourceAdapter for CaptureAdapter {
         let (capture_dir, events_path) = if path.is_dir() {
             let ep = path.join("events.jsonl");
             if !ep.exists() {
-                anyhow::bail!(
-                    "capture source directory does not contain events.jsonl: {source}"
-                );
+                anyhow::bail!("capture source directory does not contain events.jsonl: {source}");
             }
             (path.to_path_buf(), ep)
         } else if path.is_file() {
@@ -247,9 +245,7 @@ mod tests {
     #[test]
     fn parse_location_plain_path() {
         let a = CaptureAdapter::new();
-        let loc = a
-            .parse_location("ep/POST/%2Fapi%2Forders")
-            .unwrap();
+        let loc = a.parse_location("ep/POST/%2Fapi%2Forders").unwrap();
         assert!(loc.corpus_id.is_empty());
         assert_eq!(loc.path, "ep/POST/%2Fapi%2Forders");
     }

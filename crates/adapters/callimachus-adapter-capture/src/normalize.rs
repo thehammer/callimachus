@@ -124,9 +124,9 @@ pub fn is_domain_allowed(host: &str, primary_domains: &[String]) -> bool {
     if primary_domains.is_empty() {
         return true;
     }
-    primary_domains.iter().any(|d| {
-        host == d.as_str() || host.ends_with(&format!(".{d}"))
-    })
+    primary_domains
+        .iter()
+        .any(|d| host == d.as_str() || host.ends_with(&format!(".{d}")))
 }
 
 // ── Signature ─────────────────────────────────────────────────────────────────
@@ -151,8 +151,16 @@ pub fn percent_encode(s: &str) -> String {
             }
             _ => {
                 out.push('%');
-                out.push(char::from_digit((b >> 4) as u32, 16).unwrap().to_ascii_uppercase());
-                out.push(char::from_digit((b & 0xf) as u32, 16).unwrap().to_ascii_uppercase());
+                out.push(
+                    char::from_digit((b >> 4) as u32, 16)
+                        .unwrap()
+                        .to_ascii_uppercase(),
+                );
+                out.push(
+                    char::from_digit((b & 0xf) as u32, 16)
+                        .unwrap()
+                        .to_ascii_uppercase(),
+                );
             }
         }
     }
@@ -166,9 +174,7 @@ mod tests {
     #[test]
     fn normalize_enterprise_id() {
         assert_eq!(
-            normalize_path(
-                "/connect/coordinatedcare/restapi/enterprise/697504401867/details"
-            ),
+            normalize_path("/connect/coordinatedcare/restapi/enterprise/697504401867/details"),
             "/connect/coordinatedcare/restapi/enterprise/{id}/details"
         );
     }
@@ -194,9 +200,7 @@ mod tests {
     #[test]
     fn normalize_no_ids() {
         assert_eq!(
-            normalize_path(
-                "/connect/coordinatedcare/restapi/external/organizationGroups"
-            ),
+            normalize_path("/connect/coordinatedcare/restapi/external/organizationGroups"),
             "/connect/coordinatedcare/restapi/external/organizationGroups"
         );
     }

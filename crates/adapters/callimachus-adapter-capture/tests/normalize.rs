@@ -39,7 +39,9 @@ fn no_ids_unchanged() {
 #[test]
 fn query_string_stripped() {
     assert_eq!(
-        normalize_path("/connect/coordinatedcare/restapi/external/organizationGroups/user?type=NLA_Provider_Group"),
+        normalize_path(
+            "/connect/coordinatedcare/restapi/external/organizationGroups/user?type=NLA_Provider_Group"
+        ),
         "/connect/coordinatedcare/restapi/external/organizationGroups/user"
     );
 }
@@ -155,7 +157,10 @@ fn primary_domains_from_url_filter() {
 
 #[test]
 fn primary_domains_empty_when_no_filter() {
-    assert_eq!(primary_domains(&serde_json::json!({})), Vec::<String>::new());
+    assert_eq!(
+        primary_domains(&serde_json::json!({})),
+        Vec::<String>::new()
+    );
 }
 
 #[test]

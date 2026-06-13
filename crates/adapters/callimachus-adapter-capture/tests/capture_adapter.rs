@@ -75,7 +75,10 @@ async fn chunk_produces_five_endpoint_chunks() {
         5,
         "expected 5 endpoint chunks; got {}: {:?}",
         chunks.len(),
-        chunks.iter().map(|c| c.location.path.clone()).collect::<Vec<_>>()
+        chunks
+            .iter()
+            .map(|c| c.location.path.clone())
+            .collect::<Vec<_>>()
     );
     assert!(chunks.iter().all(|c| c.kind == "endpoint"));
     assert!(chunks.iter().all(|c| c.corpus_id == "curaspan-test"));
@@ -116,7 +119,11 @@ async fn extract_structure_one_entity_per_chunk() {
         let entity = &extracted.structural_entities[0];
         assert_eq!(entity.kind, "endpoint");
         assert_eq!(entity.corpus_id, "curaspan-test");
-        assert!(entity.id.starts_with("ep:"), "entity id should start with 'ep:': {}", entity.id);
+        assert!(
+            entity.id.starts_with("ep:"),
+            "entity id should start with 'ep:': {}",
+            entity.id
+        );
     }
 }
 
@@ -217,9 +224,7 @@ async fn full_pipeline_dry_run_completes() {
 
     // No telemetry
     assert!(
-        all_entities
-            .iter()
-            .all(|e| !e.id.contains("nr-data.net")),
+        all_entities.iter().all(|e| !e.id.contains("nr-data.net")),
         "no telemetry entities"
     );
 }

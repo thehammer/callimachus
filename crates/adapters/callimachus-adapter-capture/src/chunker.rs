@@ -75,10 +75,7 @@ impl NetworkEvent {
     }
 
     fn is_network_event(&self) -> bool {
-        matches!(
-            self.event_type.as_deref(),
-            Some("XHR") | Some("Fetch")
-        )
+        matches!(self.event_type.as_deref(), Some("XHR") | Some("Fetch"))
     }
 
     fn ts(&self) -> f64 {
@@ -145,7 +142,11 @@ pub fn chunk_events(
         .collect();
 
     // Sort by timestamp for deterministic ordering.
-    events.sort_by(|a, b| a.ts().partial_cmp(&b.ts()).unwrap_or(std::cmp::Ordering::Equal));
+    events.sort_by(|a, b| {
+        a.ts()
+            .partial_cmp(&b.ts())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // --- First pass: build groups -----------------------------------------------
     // Key: (uppercase_method, normalized_path)
@@ -218,17 +219,26 @@ pub fn chunk_events(
     // --- Second pass: compute next_signatures -----------------------------------
     // Walk chronologically-sorted events; for adjacent pairs with distinct
     // normalized signatures, record the successor signature.
-    let sorted_sigs: Vec<String> = events.iter().map(|ev| {
-        let method = ev.method.as_deref().unwrap_or("GET").to_uppercase();
-        let norm = normalize_path(ev.path());
-        endpoint_signature(&method, &norm)
-    }).collect();
+    let sorted_sigs: Vec<String> = events
+        .iter()
+        .map(|ev| {
+            let method = ev.method.as_deref().unwrap_or("GET").to_uppercase();
+            let norm = normalize_path(ev.path());
+            endpoint_signature(&method, &norm)
+        })
+        .collect();
 
     for window in sorted_sigs.windows(2) {
         let (a, b) = (&window[0], &window[1]);
         if a != b {
-            let a_method = a.split_once(' ').map(|(m, _)| m.to_string()).unwrap_or_default();
-            let a_path = a.split_once(' ').map(|(_, p)| p.to_string()).unwrap_or_default();
+            let a_method = a
+                .split_once(' ')
+                .map(|(m, _)| m.to_string())
+                .unwrap_or_default();
+            let a_path = a
+                .split_once(' ')
+                .map(|(_, p)| p.to_string())
+                .unwrap_or_default();
             let key = (a_method, a_path);
             if let Some(group) = groups.get_mut(&key) {
                 group.next_signatures.insert(b.clone());

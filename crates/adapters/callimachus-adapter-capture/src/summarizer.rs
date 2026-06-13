@@ -10,10 +10,7 @@ use callimachus_llm::{CompletionRequest, LlmProvider};
 /// - The request schema (method, parameters, body shape).
 /// - The response schema / notable fields.
 /// - Auth requirements inferred from header key names / status codes.
-pub async fn describe_endpoint(
-    chunk: &Chunk,
-    llm: &dyn LlmProvider,
-) -> anyhow::Result<String> {
+pub async fn describe_endpoint(chunk: &Chunk, llm: &dyn LlmProvider) -> anyhow::Result<String> {
     let prompt = format!(
         "You are building a searchable index of a REST API captured from network traffic.\n\n\
          Analyze the following endpoint observation and produce a concise description.\n\n\
@@ -44,10 +41,7 @@ pub async fn describe_endpoint(
 }
 
 /// Summarize an endpoint in 1–2 sentences (for the summarize pass).
-pub async fn summarize_endpoint(
-    chunk: &Chunk,
-    llm: &dyn LlmProvider,
-) -> anyhow::Result<String> {
+pub async fn summarize_endpoint(chunk: &Chunk, llm: &dyn LlmProvider) -> anyhow::Result<String> {
     let prompt = format!(
         "Summarize this REST API endpoint in 1-2 sentences for a searchable index.\n\n\
          <endpoint>\n{content}\n</endpoint>\n\n\
@@ -75,10 +69,7 @@ pub async fn summarize_endpoint(
 ///
 /// The `chunk.content` for a corpus-level summary chunk contains pre-aggregated
 /// child summaries provided by the summarize pass.
-pub async fn summarize_corpus(
-    chunk: &Chunk,
-    llm: &dyn LlmProvider,
-) -> anyhow::Result<String> {
+pub async fn summarize_corpus(chunk: &Chunk, llm: &dyn LlmProvider) -> anyhow::Result<String> {
     let prompt = format!(
         "You are summarizing a REST API for a searchable index.\n\n\
          The following endpoint summaries were captured from network traffic:\n\n\

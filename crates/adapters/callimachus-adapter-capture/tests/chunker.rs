@@ -17,9 +17,15 @@ fn parse_events_keeps_only_xhr_and_fetch() {
     // parse_events returns all XHR/Fetch; domain filtering happens later in chunk_events.
     let jsonl = std::fs::read_to_string(fixture_dir().join("events.jsonl")).unwrap();
     let events = parse_events(&jsonl);
-    assert_eq!(events.len(), 7, "should parse all 7 XHR events, skipping only the page event");
-    assert!(events.iter().all(|e| e.kind == "network"),
-        "all parsed events should be kind=network");
+    assert_eq!(
+        events.len(),
+        7,
+        "should parse all 7 XHR events, skipping only the page event"
+    );
+    assert!(
+        events.iter().all(|e| e.kind == "network"),
+        "all parsed events should be kind=network"
+    );
 }
 
 // ── chunk_events ─────────────────────────────────────────────────────────────
@@ -68,10 +74,12 @@ fn chunker_normalizes_ids_in_path_template() {
             .map(|p| p.contains("config/user/{id}"))
             .unwrap_or(false)
     });
-    assert!(user_chunk.is_some(), "should find chunk with path_template containing config/user/{{id}}");
+    assert!(
+        user_chunk.is_some(),
+        "should find chunk with path_template containing config/user/{{id}}"
+    );
 
-    let content: serde_json::Value =
-        serde_json::from_str(&user_chunk.unwrap().content).unwrap();
+    let content: serde_json::Value = serde_json::from_str(&user_chunk.unwrap().content).unwrap();
     assert_eq!(
         content["call_count"].as_u64().unwrap(),
         2,
@@ -98,7 +106,10 @@ fn chunker_request_headers_contain_only_keys() {
             assert!(!k.contains(':'), "header key should not contain ':': {k}");
             assert!(!k.contains('='), "header key should not contain '=': {k}");
             // Values like "Bearer token123" would appear if we accidentally stored values.
-            assert!(!k.contains("Bearer"), "header values must not be stored: {k}");
+            assert!(
+                !k.contains("Bearer"),
+                "header values must not be stored: {k}"
+            );
         }
     }
 }
@@ -141,5 +152,8 @@ fn chunker_produces_sequencing_context() {
             .map(|arr| !arr.is_empty())
             .unwrap_or(false)
     });
-    assert!(has_next, "at least one chunk should have next_signatures for sequencing edges");
+    assert!(
+        has_next,
+        "at least one chunk should have next_signatures for sequencing edges"
+    );
 }

@@ -167,8 +167,17 @@ mod tests {
         );
         let extracted = extract_structure(&chunk).unwrap();
         assert_eq!(extracted.structural_edges.len(), 2);
-        assert!(extracted.structural_edges.iter().all(|e| e.kind == "precedes"));
-        let targets: Vec<&str> = extracted.structural_edges.iter().map(|e| e.to_entity_id.as_str()).collect();
+        assert!(
+            extracted
+                .structural_edges
+                .iter()
+                .all(|e| e.kind == "precedes")
+        );
+        let targets: Vec<&str> = extracted
+            .structural_edges
+            .iter()
+            .map(|e| e.to_entity_id.as_str())
+            .collect();
         assert!(targets.contains(&"ep:POST /api/orders"));
         assert!(targets.contains(&"ep:GET /api/profile"));
     }
