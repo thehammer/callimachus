@@ -53,7 +53,10 @@ pub fn build_router(qs: Arc<QueryService>) -> axum::Router {
         )
         .route("/corpora/:id/unreachable", get(handlers::find_unreachable))
         .route("/corpora/:id/themes", get(handlers::corpus_themes))
-        .route("/corpora/:id/untested", get(handlers::entities_without_tests))
+        .route(
+            "/corpora/:id/untested",
+            get(handlers::entities_without_tests),
+        )
         .route("/corpora/:id/explain", post(handlers::explain_component))
         // Taxonomy tools
         .route(

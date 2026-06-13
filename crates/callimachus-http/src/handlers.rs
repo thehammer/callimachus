@@ -247,8 +247,7 @@ pub async fn collection_overview(
     State(qs): State<Arc<QueryService>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let svc =
-        CollectionService::load(qs.backend(), &id).map_err(ApiError::from)?;
+    let svc = CollectionService::load(qs.backend(), &id).map_err(ApiError::from)?;
     let result = svc.collection_overview(CollectionOverviewInput { collection_id: id });
     tool_result_to_response(result)
 }
@@ -292,7 +291,10 @@ pub async fn entity_contracts(
     State(qs): State<Arc<QueryService>>,
     Path((corpus_id, entity_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let result = qs.entity_contracts(EntityContractsInput { corpus_id, entity_id });
+    let result = qs.entity_contracts(EntityContractsInput {
+        corpus_id,
+        entity_id,
+    });
     tool_result_to_response(result)
 }
 
