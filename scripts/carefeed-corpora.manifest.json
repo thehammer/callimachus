@@ -1,0 +1,127 @@
+{
+  "_doc": "Carefeed production pinakes manifest — six launch code corpora.",
+  "_usage": "Consumed by scripts/bootstrap-carefeed-pinakes.sh. Edit source paths if your checkout directory differs.",
+
+  "collection_id": "carefeed",
+  "collection_name": "Carefeed",
+
+  "corpora": [
+    {
+      "id": "admin-portal",
+      "name": "Admin Portal",
+      "kind": "code",
+      "source": "/Users/hammer/Code/admin-portal",
+      "baseline": true,
+      "_notes": "Present in working index (last indexed ~2026-05-23). Register + collect; skip re-index. W20 nightly reindex will bring it current."
+    },
+    {
+      "id": "referral-monitor",
+      "name": "Referral Monitor",
+      "kind": "code",
+      "source": "/Users/hammer/Code/referral-monitor",
+      "baseline": true,
+      "_notes": "Present in working index (last indexed ~2026-06-03). Register + collect; skip re-index. W20 nightly reindex will bring it current."
+    },
+    {
+      "id": "payments",
+      "name": "Payments",
+      "kind": "code",
+      "source": "/Users/hammer/Code/payments",
+      "baseline": false,
+      "_notes": "Index fresh."
+    },
+    {
+      "id": "family-portal",
+      "name": "Family Portal",
+      "kind": "code",
+      "source": "/Users/hammer/Code/family-portal",
+      "baseline": false,
+      "_notes": "Index fresh."
+    },
+    {
+      "id": "employee-app",
+      "name": "Employee App",
+      "kind": "code",
+      "source": "/Users/hammer/Code/employee_app",
+      "baseline": false,
+      "_notes": "Index fresh. Note: directory name is employee_app (underscore)."
+    },
+    {
+      "id": "carefeed-core",
+      "name": "Carefeed Core",
+      "kind": "code",
+      "source": "/Users/hammer/Code/carefeed-core-combined",
+      "baseline": false,
+      "_notes": "Index fresh. Combined corpus (carefeed-core + core-packages). Run the parent-dir setup step in the runbook before indexing this corpus."
+    }
+  ],
+
+  "_fast_follow_corpora": [
+    {
+      "_status": "NOT YET APPLICABLE — Jira adapter (kind: jira) not yet shipped",
+      "id": "jira-core",
+      "name": "Jira CORE",
+      "kind": "jira",
+      "source": "https://carefeed.atlassian.net",
+      "baseline": false,
+      "_ingest_params": {
+        "project": "CORE",
+        "api_token_env": "JIRA_API_TOKEN",
+        "user_email": "hammer@carefeed.com"
+      }
+    },
+    {
+      "_status": "NOT YET APPLICABLE — Jira adapter (kind: jira) not yet shipped",
+      "id": "jira-int",
+      "name": "Jira INT",
+      "kind": "jira",
+      "source": "https://carefeed.atlassian.net",
+      "baseline": false,
+      "_ingest_params": {
+        "project": "INT",
+        "api_token_env": "JIRA_API_TOKEN",
+        "user_email": "hammer@carefeed.com"
+      }
+    },
+    {
+      "_status": "NOT YET APPLICABLE — Jira adapter (kind: jira) not yet shipped",
+      "id": "jira-paym",
+      "name": "Jira PAYM",
+      "kind": "jira",
+      "source": "https://carefeed.atlassian.net",
+      "baseline": false,
+      "_ingest_params": {
+        "project": "PAYM",
+        "api_token_env": "JIRA_API_TOKEN",
+        "user_email": "hammer@carefeed.com"
+      }
+    },
+    {
+      "_status": "NOT YET APPLICABLE — Jira adapter (kind: jira) not yet shipped",
+      "id": "jira-app",
+      "name": "Jira APP",
+      "kind": "jira",
+      "source": "https://carefeed.atlassian.net",
+      "baseline": false,
+      "_ingest_params": {
+        "project": "APP",
+        "api_token_env": "JIRA_API_TOKEN",
+        "user_email": "hammer@carefeed.com"
+      }
+    },
+    {
+      "_status": "NOT YET APPLICABLE — Confluence adapter (kind: confluence) not yet shipped",
+      "id": "confluence-engineering",
+      "name": "Confluence Engineering",
+      "kind": "confluence",
+      "source": "https://carefeed.atlassian.net/wiki",
+      "baseline": false,
+      "_ingest_params": {
+        "space_keys": ["ENG", "ARCH"],
+        "api_token_env": "CONFLUENCE_API_TOKEN",
+        "user_email": "hammer@carefeed.com",
+        "_curation_note": "Curate sensitive spaces OUT — only include spaces Hammer approves. Edit space_keys before running."
+      }
+    }
+  ]
+}
