@@ -50,9 +50,17 @@
       "id": "carefeed-core",
       "name": "Carefeed Core",
       "kind": "code",
-      "source": "/Users/hammer/Code/carefeed-core-combined",
+      "source": "/Users/hammer/Code/carefeed-core",
       "baseline": false,
-      "_notes": "Index fresh. Combined corpus (carefeed-core + core-packages). Run the parent-dir setup step in the runbook before indexing this corpus."
+      "_notes": "Indexed fresh with FULL git history (calli ingest --with-history) in the 2026-06-15 bootstrap. Separate corpus from core-packages (full-history walks one git history at a time, so the combined-parent approach was not used)."
+    },
+    {
+      "id": "core-packages",
+      "name": "Core Packages",
+      "kind": "code",
+      "source": "/Users/hammer/Code/core-packages",
+      "baseline": false,
+      "_notes": "Indexed fresh with FULL git history in the 2026-06-15 bootstrap. Shared domain packages; a separate corpus alongside carefeed-core. Both are members of the carefeed collection."
     }
   ],
 

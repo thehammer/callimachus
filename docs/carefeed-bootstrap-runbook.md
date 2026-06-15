@@ -3,9 +3,10 @@
 **Audience:** Hammer (operator). This is a step-by-step checklist for building the production
 pinakes for knowledge.carefeed.com. Every command is literal. Run these in order.
 
-**What this does:** Creates `carefeed-production.pinakes` containing six indexed code corpora
-(`admin-portal`, `referral-monitor`, `payments`, `family-portal`, `employee-app`, `carefeed-core`),
-plus a `carefeed` collection containing all six for Alex's cross-repo queries.
+**What this does:** Creates the production pinakes containing seven indexed code corpora
+(`admin-portal`, `referral-monitor`, `payments`, `family-portal`, `employee-app`, `carefeed-core`,
+`core-packages`), plus a `carefeed` collection containing all seven for Alex's cross-repo queries.
+(See the status callout below — `carefeed-core` and `core-packages` are separate corpora.)
 
 **Estimated time:** 3–6 hours active indexing wall-clock (API), after the cost checkpoint.
 
@@ -306,6 +307,7 @@ Run the verify script after the bootstrap completes:
   ✓ family-portal — ready
   ✓ employee-app — ready
   ✓ carefeed-core — ready
+  ✓ core-packages — ready
 
 ── Check 2: Entities > 0 per corpus (search proxy) ───
   ✓ admin-portal — 3842 entities
@@ -321,10 +323,10 @@ Run the verify script after the bootstrap completes:
   ...
 
 ── Check 5: Line spans present ───────────────────────
-  ✓ 6 launch corpora have entities with line spans
+  ✓ 7 launch corpora have entities with line spans
 
 ── Check 6: Cross-corpus collection proxy ────────────
-  ✓ 6 launch corpora have entities — collection_search would return cross-corpus results
+  ✓ 7 launch corpora have entities — collection_search would return cross-corpus results
 
 ══════════════════════════════════════════════════════
   Results: 29/29 checks passed
