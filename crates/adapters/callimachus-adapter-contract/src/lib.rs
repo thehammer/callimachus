@@ -35,5 +35,10 @@ pub use contract::{
 };
 pub use error::LocationParseError;
 pub use registry::AdapterRegistry;
+
+// Re-export the LLM-provider abstraction the trait's methods name, so an
+// adapter can depend on *only* this crate. `callimachus-llm` carries no
+// `callimachus-core` dependency, so this keeps the contract closure thin.
+pub use callimachus_llm::{self, LlmProvider};
 pub use routing::RoutingInputs;
 pub use types::{Chunk, Corpus, CorpusStatus, Edge, Entity, Location, LocationUri, hash_content};

@@ -352,6 +352,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "callimachus-adapter-trivial"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "callimachus-adapter-book",
+ "callimachus-adapter-capture",
+ "callimachus-adapter-code",
+ "callimachus-adapter-contract",
+ "callimachus-adapter-wiki",
+ "callimachus-core",
+ "callimachus-llm",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "callimachus-adapter-wiki"
 version = "0.1.0"
 dependencies = [

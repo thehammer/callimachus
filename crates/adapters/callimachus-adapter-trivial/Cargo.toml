@@ -1,0 +1,30 @@
+[package]
+name = "callimachus-adapter-trivial"
+description = "A minimal out-of-tree-shaped adapter proving the callimachus-adapter-contract seam: it implements SourceAdapter for the `plain` corpus kind depending ONLY on callimachus-adapter-contract — no callimachus-core."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The whole point of the seam: an adapter needs ONLY the contract crate.
+# No callimachus-core, no rusqlite.
+callimachus-adapter-contract = { path = "../callimachus-adapter-contract" }
+anyhow.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# Test-only: the indexing engine + the in-tree adapters, used solely to prove
+# the trivial adapter composes into a registry alongside the built-ins and
+# indexes end-to-end. None of this leaks into the adapter's own (non-dev)
+# dependency closure — see `cargo tree -p callimachus-adapter-trivial -e no-dev`.
+callimachus-core = { path = "../../callimachus-core" }
+callimachus-llm = { path = "../../callimachus-llm" }
+callimachus-adapter-book = { path = "../callimachus-adapter-book" }
+callimachus-adapter-code = { path = "../callimachus-adapter-code" }
+callimachus-adapter-wiki = { path = "../callimachus-adapter-wiki" }
+callimachus-adapter-capture = { path = "../callimachus-adapter-capture" }
+tokio = { workspace = true }
+tempfile = "3"

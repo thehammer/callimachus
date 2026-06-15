@@ -166,6 +166,31 @@ pub fn default_registry() -> AdapterRegistry {
     registry
 }
 
+/// Why a corpus kind is not serviceable by *this* build, or `None` if it is.
+///
+/// Shared by `corpus add` (which warns but still registers) and
+/// `corpus list`/`status` (which annotate inspection output), so the
+/// availability story is computed one way and worded consistently (PRD A6).
+///
+/// This is intentionally a *dynamic* lookup against the live registry — the
+/// missing-adapter state is never persisted to the database, because a
+/// different binary sharing the same DB may carry the adapter. A persisted
+/// "unindexable" flag would be wrong for that binary.
+pub fn unavailable_kind_reason(kind: &str, registry: &AdapterRegistry) -> Option<String> {
+    if registry.get(kind).is_some() {
+        return None;
+    }
+    if KNOWN_KINDS.contains(&kind) {
+        Some(format!(
+            "no adapter for kind '{kind}' is compiled into this build of calli"
+        ))
+    } else {
+        Some(format!(
+            "'{kind}' is not a recognized Callimachus corpus kind"
+        ))
+    }
+}
+
 /// Resolve the adapter for a corpus through the registry.
 ///
 /// This is the one selection path shared by `index`, `ingest`, `reindex`,
@@ -446,6 +471,136 @@ mod tests {
         assert!(
             msg.contains("pdf") || msg.contains("adapter"),
             "error should mention adapter kind: {msg}"
+        );
+    }
+
+    // ── A6b: distinct error messages for "not in this build" vs "unknown kind" ──
+
+    /// A corpus of a registered kind resolves its adapter successfully.
+    #[test]
+    fn resolve_adapter_returns_ok_for_registered_kind() {
+        let registry = super::default_registry();
+        let corpus = Corpus::new(
+            "code-ok".to_string(),
+            "Code OK".to_string(),
+            "code".to_string(),
+            env!("CARGO_MANIFEST_DIR").to_string(),
+        );
+        let result = super::resolve_adapter(&corpus, &registry);
+        assert!(
+            result.is_ok(),
+            "expected Ok for registered kind 'code', got: {:?}",
+            result.err()
+        );
+    }
+
+    /// A corpus whose kind is in KNOWN_KINDS but has no adapter in this build
+    /// returns Err with a message that names the kind, mentions "build", and
+    /// lists a kind that IS supported (e.g. "code"). It must NOT contain
+    /// "unknown corpus kind".
+    #[test]
+    fn resolve_adapter_for_known_but_absent_kind_error_distinguishes_from_unknown() {
+        let registry = super::default_registry();
+        let corpus = Corpus::new(
+            "docs-corpus".to_string(),
+            "Docs Corpus".to_string(),
+            "docs".to_string(),
+            "/tmp/docs".to_string(),
+        );
+        let result = super::resolve_adapter(&corpus, &registry);
+        assert!(result.is_err(), "expected Err for kind 'docs' (not in this build)");
+
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("docs"),
+            "error must name the offending kind 'docs': {msg}"
+        );
+        assert!(
+            msg.contains("build"),
+            "error must indicate the kind is not in this build: {msg}"
+        );
+        assert!(
+            msg.contains("code"),
+            "error must list a supported kind so the user knows what is available: {msg}"
+        );
+        assert!(
+            !msg.contains("unknown corpus kind"),
+            "error for a known-but-absent kind must not say 'unknown corpus kind' (wrong bucket): {msg}"
+        );
+    }
+
+    /// A corpus whose kind is not recognized at all returns Err with a message
+    /// that names the kind and contains "unknown corpus kind".
+    #[test]
+    fn resolve_adapter_for_completely_unknown_kind_says_unknown() {
+        let registry = super::default_registry();
+        let corpus = Corpus::new(
+            "pdf-corpus".to_string(),
+            "PDF Corpus".to_string(),
+            "pdf".to_string(),
+            "/tmp/pdf".to_string(),
+        );
+        let result = super::resolve_adapter(&corpus, &registry);
+        assert!(result.is_err(), "expected Err for unrecognized kind 'pdf'");
+
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("pdf"),
+            "error must name the offending kind 'pdf': {msg}"
+        );
+        assert!(
+            msg.contains("unknown corpus kind"),
+            "error for an unrecognized kind must say 'unknown corpus kind': {msg}"
+        );
+    }
+
+    // ── A6: availability predicate ──────────────────────────────────────────────
+
+    /// A kind present in the registry has no unavailability reason.
+    #[test]
+    fn unavailable_kind_reason_is_none_for_registered_kind() {
+        let registry = super::default_registry();
+        let reason = super::unavailable_kind_reason("code", &registry);
+        assert!(
+            reason.is_none(),
+            "expected None for 'code' (registered); got: {:?}",
+            reason
+        );
+    }
+
+    /// A kind in KNOWN_KINDS but absent from this build's registry returns
+    /// Some with a message about being compiled into this build.
+    #[test]
+    fn unavailable_kind_reason_for_known_but_absent_kind_mentions_build() {
+        let registry = super::default_registry();
+        let reason = super::unavailable_kind_reason("docs", &registry);
+        assert!(
+            reason.is_some(),
+            "expected Some for 'docs' (known but not in this build)"
+        );
+        let msg = reason.unwrap();
+        assert!(
+            msg.contains("build"),
+            "reason for known-but-absent kind must mention build: {msg}"
+        );
+    }
+
+    /// A completely unrecognized kind returns Some with a message about not being
+    /// a recognized corpus kind.
+    #[test]
+    fn unavailable_kind_reason_for_unknown_kind_mentions_not_recognized() {
+        let registry = super::default_registry();
+        let reason = super::unavailable_kind_reason("pdf", &registry);
+        assert!(
+            reason.is_some(),
+            "expected Some for unrecognized kind 'pdf'"
+        );
+        // The reason should distinguish this case from the "known but absent" case.
+        // It must not claim the kind is absent from the build (that implies it's known).
+        let msg = reason.unwrap();
+        assert!(
+            msg.contains("pdf"),
+            "reason must name the offending kind: {msg}"
         );
     }
 

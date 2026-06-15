@@ -1,6 +1,8 @@
+use crate::commands::index::{default_registry, unavailable_kind_reason};
 use crate::config::GlobalConfig;
 use crate::output::{Table, em_dash, print_kv, print_section};
 use anyhow::{Context, Result, bail};
+use callimachus_adapter_contract::AdapterRegistry;
 use callimachus_core::storage::StorageBackend;
 use callimachus_core::types::corpus::Corpus;
 use clap::Subcommand;
@@ -44,6 +46,9 @@ pub enum CorpusCommand {
 }
 
 pub fn run(cmd: CorpusCommand, db: &dyn StorageBackend, _config: &GlobalConfig) -> Result<()> {
+    // The registry this binary was built with — used to annotate (not gate)
+    // corpora whose adapter isn't compiled into this build.
+    let registry = default_registry();
     match cmd {
         CorpusCommand::Add {
             kind,
@@ -51,9 +56,9 @@ pub fn run(cmd: CorpusCommand, db: &dyn StorageBackend, _config: &GlobalConfig) 
             source,
             config,
             id,
-        } => add(db, kind, name, source, config, id),
-        CorpusCommand::List => list(db),
-        CorpusCommand::Status { corpus_id } => status(db, &corpus_id),
+        } => add(db, &registry, kind, name, source, config, id),
+        CorpusCommand::List => list(db, &registry),
+        CorpusCommand::Status { corpus_id } => status(db, &registry, &corpus_id),
         CorpusCommand::Remove {
             corpus_id,
             keep_source,
@@ -67,6 +72,7 @@ pub fn run(cmd: CorpusCommand, db: &dyn StorageBackend, _config: &GlobalConfig) 
 
 fn add(
     db: &dyn StorageBackend,
+    registry: &AdapterRegistry,
     kind: String,
     name: String,
     source: String,
@@ -127,7 +133,21 @@ fn add(
     println!("  kind:   {}", kind);
     println!("  source: {}", source);
     println!();
-    println!("Run `calli index {}` to build the index.", id);
+
+    // Warn-and-record (PRD A6): registration always succeeds — the corpus may
+    // be indexed by another build that carries the adapter. But if *this* build
+    // can't service the kind, say so loudly rather than letting `calli index`
+    // be the first place the user finds out.
+    if let Some(reason) = unavailable_kind_reason(&kind, registry) {
+        eprintln!(
+            "warning: {reason}. The corpus is registered, but this build of calli \
+             cannot index it — run a build that includes the '{kind}' adapter. \
+             Adapters available in this build: {}.",
+            registry.list().join(", ")
+        );
+    } else {
+        println!("Run `calli index {}` to build the index.", id);
+    }
 
     Ok(())
 }
@@ -136,14 +156,21 @@ fn add(
 // list
 // ---------------------------------------------------------------------------
 
-fn list(db: &dyn StorageBackend) -> Result<()> {
+fn list(db: &dyn StorageBackend, registry: &AdapterRegistry) -> Result<()> {
     let corpora = db.corpus_list()?;
     let mut table = Table::new(vec!["ID", "NAME", "KIND", "STATUS", "LAST INDEXED"]);
     for c in &corpora {
+        // Annotate the kind dynamically when this build has no adapter for it
+        // (PRD A6c). Computed live; nothing is persisted to the DB.
+        let kind_cell = if unavailable_kind_reason(&c.kind, registry).is_some() {
+            format!("{} (no adapter)", c.kind)
+        } else {
+            c.kind.clone()
+        };
         table.add_row(vec![
             c.id.clone(),
             c.name.clone(),
-            c.kind.clone(),
+            kind_cell,
             c.status.to_string(),
             c.last_indexed_at
                 .as_deref()
@@ -152,6 +179,19 @@ fn list(db: &dyn StorageBackend) -> Result<()> {
         ]);
     }
     table.print();
+
+    let missing: Vec<&Corpus> = corpora
+        .iter()
+        .filter(|c| unavailable_kind_reason(&c.kind, registry).is_some())
+        .collect();
+    if !missing.is_empty() {
+        println!();
+        for c in missing {
+            // Safe to unwrap the reason: filtered to Some above.
+            let reason = unavailable_kind_reason(&c.kind, registry).unwrap();
+            println!("⚠ {}: {reason} — not indexable by this build.", c.id);
+        }
+    }
     Ok(())
 }
 
@@ -159,12 +199,17 @@ fn list(db: &dyn StorageBackend) -> Result<()> {
 // status
 // ---------------------------------------------------------------------------
 
-fn status(db: &dyn StorageBackend, corpus_id: &str) -> Result<()> {
+fn status(db: &dyn StorageBackend, registry: &AdapterRegistry, corpus_id: &str) -> Result<()> {
     let corpus = db.corpus_require(corpus_id)?;
 
     print_kv("ID", &corpus.id);
     print_kv("Name", &corpus.name);
     print_kv("Kind", &corpus.kind);
+    // Adapter availability for this build (PRD A6c) — dynamic, never persisted.
+    match unavailable_kind_reason(&corpus.kind, registry) {
+        Some(reason) => print_kv("Adapter", &format!("unavailable — {reason}")),
+        None => print_kv("Adapter", "available in this build"),
+    }
     print_kv("Status", &corpus.status.to_string());
     print_kv("Source", &corpus.source);
     print_kv("Created", &short_date(&corpus.created_at));
@@ -300,5 +345,74 @@ mod tests {
         assert!(validate_id("").is_err());
         assert!(validate_id("has spaces").is_err());
         assert!(validate_id("has/slash").is_err());
+    }
+
+    // ── A6: warn-and-record — unbuilt-but-recognized kinds are still registered ──
+
+    /// Calling `corpus add` with a kind that is in KNOWN_KINDS but has no adapter
+    /// compiled into this build must return Ok and persist the corpus — it never
+    /// rejects the registration. A different build (or a future build of this one)
+    /// that carries the adapter can then index it.
+    #[test]
+    fn corpus_add_with_known_but_unbuilt_kind_succeeds_and_is_persisted() {
+        use callimachus_core::storage::{SqliteBackend, StorageBackend};
+
+        let db = SqliteBackend::open_in_memory().unwrap();
+        // Use a real directory so the source-exists check passes.
+        let source = env!("CARGO_MANIFEST_DIR").to_string();
+
+        let result = super::run(
+            CorpusCommand::Add {
+                kind: "docs".to_string(),
+                name: "Docs Corpus".to_string(),
+                source,
+                config: None,
+                id: Some("docs-corpus".to_string()),
+            },
+            &db,
+            &GlobalConfig::default(),
+        );
+
+        assert!(
+            result.is_ok(),
+            "corpus add must not reject a recognized-but-unbuilt kind; got: {:?}",
+            result.err()
+        );
+        assert!(
+            db.corpus_exists("docs-corpus").unwrap(),
+            "corpus must be persisted in the DB even when no adapter is compiled in"
+        );
+    }
+
+    /// Calling `corpus add` with a fully supported kind (one with an adapter in this
+    /// build) also returns Ok and persists the corpus.
+    #[test]
+    fn corpus_add_with_built_kind_succeeds_and_is_persisted() {
+        use callimachus_core::storage::{SqliteBackend, StorageBackend};
+
+        let db = SqliteBackend::open_in_memory().unwrap();
+        let source = env!("CARGO_MANIFEST_DIR").to_string();
+
+        let result = super::run(
+            CorpusCommand::Add {
+                kind: "code".to_string(),
+                name: "Code Corpus".to_string(),
+                source,
+                config: None,
+                id: Some("code-corpus".to_string()),
+            },
+            &db,
+            &GlobalConfig::default(),
+        );
+
+        assert!(
+            result.is_ok(),
+            "corpus add with built kind 'code' must succeed; got: {:?}",
+            result.err()
+        );
+        assert!(
+            db.corpus_exists("code-corpus").unwrap(),
+            "corpus must be persisted in the DB for a built kind"
+        );
     }
 }
