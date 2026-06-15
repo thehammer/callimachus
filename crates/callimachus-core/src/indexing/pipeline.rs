@@ -381,6 +381,43 @@ impl IndexPipeline {
             }
         );
 
+        // ── Run-time visibility: log the resolved provider + tier + concurrency
+        // configuration so it's obvious from the log how this run is wired.
+        let uses_budget = tiers.haiku.budget().is_some();
+        let provider_kind = if uses_budget {
+            "Anthropic API"
+        } else {
+            "Claude Code CLI subprocess (no API key in config — auto-detected)"
+        };
+        tracing::info!(
+            "[pipeline] provider = {provider_kind}  base_model = {}",
+            self.llm.name()
+        );
+        if opts.tier_config.enabled {
+            tracing::info!(
+                "[pipeline] tier routing: ENABLED  haiku={}  sonnet={}  opus={}",
+                opts.tier_config.haiku_model,
+                opts.tier_config.sonnet_model,
+                opts.tier_config.opus_model
+            );
+        } else {
+            tracing::info!(
+                "[pipeline] tier routing: DISABLED  all entities → {}",
+                self.llm.name()
+            );
+        }
+        tracing::info!(
+            "[pipeline] concurrency cap (semaphore) = {}  budget admission = {}",
+            opts.concurrency
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "64 (default)".to_string()),
+            if uses_budget {
+                "ACTIVE (TokenBudget)"
+            } else {
+                "n/a (claude CLI path)"
+            }
+        );
+
         // Probe rate limits so the token budget is seeded for each model family
         // before the first LLM-heavy pass begins.  Each probe fires a 1-token
         // request which seeds that family's budget from response headers.
