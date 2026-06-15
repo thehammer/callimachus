@@ -10,9 +10,9 @@
 /// *would* be deleted (dry run).
 #[derive(Debug, Default)]
 pub struct PruneStats {
-    /// Number of distinct `superseded_at_version` SHAs that were retained.
+    /// Number of distinct `superseded_at_sha` SHAs that were retained.
     pub supersession_shas_kept: usize,
-    /// Number of distinct `superseded_at_version` SHAs that were pruned.
+    /// Number of distinct `superseded_at_sha` SHAs that were pruned.
     pub supersession_shas_pruned: usize,
     /// Rows removed (or that would be removed) from `entities_history`.
     pub rows_pruned_entities_history: usize,
@@ -68,8 +68,8 @@ mod tests {
         conn.execute(
             "INSERT INTO entities_history \
              (corpus_id, id, canonical_name, kind, aliases, appearance_count, confidence, \
-              derived_at_version, superseded_at_version, superseded_at) \
-             VALUES (?1, ?2, ?3, 'fn', '[]', 1, 1.0, ?4, ?4, ?5)",
+              derived_at_kind, derived_at_sha, superseded_at_sha, superseded_at) \
+             VALUES (?1, ?2, ?3, 'fn', '[]', 1, 1.0, 'concrete', ?4, ?4, ?5)",
             rusqlite::params![
                 corpus_id,
                 format!("ent-{corpus_id}-{sha}"),
@@ -84,8 +84,8 @@ mod tests {
         conn.execute(
             "INSERT INTO edges_history \
              (corpus_id, id, from_entity_id, to_entity_id, kind, location_uri, confidence, \
-              derived_at_version, superseded_at_version, superseded_at) \
-             VALUES (?1, ?2, ?3, ?3, 'calls', 'file://loc', 1.0, ?4, ?4, ?5)",
+              derived_at_kind, derived_at_sha, superseded_at_sha, superseded_at) \
+             VALUES (?1, ?2, ?3, ?3, 'calls', 'file://loc', 1.0, 'concrete', ?4, ?4, ?5)",
             rusqlite::params![
                 corpus_id,
                 format!("edge-{corpus_id}-{sha}"),
@@ -100,9 +100,9 @@ mod tests {
         conn.execute(
             "INSERT INTO entity_purposes_history \
              (corpus_id, entity_id, purpose, model, model_tier, generated_at, \
-              derived_at_version, superseded_at_version, superseded_at) \
+              derived_at_kind, derived_at_sha, superseded_at_sha, superseded_at) \
              VALUES (?1, ?2, 'does things', 'gpt-4', 'standard', '2024-01-01T00:00:00Z', \
-                     ?3, ?3, ?4)",
+                     'concrete', ?3, ?3, ?4)",
             rusqlite::params![
                 corpus_id,
                 format!("ent-{corpus_id}-{sha}"),
@@ -120,13 +120,13 @@ mod tests {
               is_mutating, is_diverging, has_panic_risk, has_unsafe, is_incomplete, \
               panic_call_count, debt_markers, assumptions, risks, \
               model, model_tier, generated_at, \
-              derived_at_version, superseded_at_version, superseded_at) \
+              derived_at_kind, derived_at_sha, superseded_at_sha, superseded_at) \
              VALUES (?1, ?2, \
                      0, 0, 0, 0, 0, \
                      0, 0, 0, 0, 0, \
                      0, '[]', '[]', '[]', \
                      'gpt-4', 'standard', '2024-01-01T00:00:00Z', \
-                     ?3, ?3, ?4)",
+                     'concrete', ?3, ?3, ?4)",
             rusqlite::params![
                 corpus_id,
                 format!("ent-{corpus_id}-{sha}"),
@@ -140,8 +140,8 @@ mod tests {
         conn.execute(
             "INSERT INTO entity_blocks_history \
              (corpus_id, id, entity_id, label, description, position, \
-              derived_at_version, superseded_at_version, superseded_at) \
-             VALUES (?1, ?2, ?3, 'signature', 'fn foo()', 0, ?4, ?4, ?5)",
+              derived_at_kind, derived_at_sha, superseded_at_sha, superseded_at) \
+             VALUES (?1, ?2, ?3, 'signature', 'fn foo()', 0, 'concrete', ?4, ?4, ?5)",
             rusqlite::params![
                 corpus_id,
                 format!("blk-{corpus_id}-{sha}"),
@@ -156,9 +156,9 @@ mod tests {
         conn.execute(
             "INSERT INTO summaries_history \
              (corpus_id, id, target_kind, target_id, depth, text, model, model_tier, \
-              generated_at, derived_at_version, superseded_at_version, superseded_at) \
+              generated_at, derived_at_kind, derived_at_sha, superseded_at_sha, superseded_at) \
              VALUES (?1, ?2, 'entity', ?3, 'brief', 'summary text', 'gpt-4', 'standard', \
-                     '2024-01-01T00:00:00Z', ?4, ?4, ?5)",
+                     '2024-01-01T00:00:00Z', 'concrete', ?4, ?4, ?5)",
             rusqlite::params![
                 corpus_id,
                 format!("sum-{corpus_id}-{sha}"),
@@ -169,15 +169,15 @@ mod tests {
         )
         .expect("insert summaries_history");
 
-        // chunks_history (note: no derived_at_version column; uses introduced_at_version
-        // and last_modified_at_version instead)
+        // chunks_history (uses introduced_at_version / last_modified_at_version,
+        // not introduced_at_version/last_modified_at_version — those are NOT dropped by migration 015)
         conn.execute(
             "INSERT INTO chunks_history \
              (corpus_id, id, kind, location_uri, content, byte_length, created_at, \
               semantic_processed, introduced_at_version, last_modified_at_version, \
-              superseded_at_version, superseded_at) \
+              derived_at_kind, derived_at_sha, superseded_at_sha, superseded_at) \
              VALUES (?1, ?2, 'file', 'file://chunk', 'content', 7, '2024-01-01T00:00:00Z', \
-                     0, ?3, ?3, ?3, ?4)",
+                     0, ?3, ?3, 'concrete', ?3, ?3, ?4)",
             rusqlite::params![
                 corpus_id,
                 format!("chunk-{corpus_id}-{sha}"),
@@ -191,9 +191,9 @@ mod tests {
         conn.execute(
             "INSERT INTO themes_history \
              (corpus_id, id, title, statement, confidence, model_tier, generated_at, \
-              derived_at_version, superseded_at_version, superseded_at) \
+              derived_at_kind, derived_at_sha, superseded_at_sha, superseded_at) \
              VALUES (?1, ?2, ?3, 'a theme statement', 0.9, 'standard', '2024-01-01T00:00:00Z', \
-                     ?4, ?4, ?5)",
+                     'concrete', ?4, ?4, ?5)",
             rusqlite::params![
                 corpus_id,
                 format!("theme-{corpus_id}-{sha}"),
@@ -275,7 +275,7 @@ mod tests {
                     &format!(
                         "SELECT COUNT(*) FROM {table} \
                          WHERE corpus_id = 'corpus-a' \
-                           AND superseded_at_version IN ('sha1','sha2')"
+                           AND superseded_at_sha IN ('sha1','sha2')"
                     ),
                     [],
                     |r| r.get(0),
@@ -291,7 +291,7 @@ mod tests {
                     &format!(
                         "SELECT COUNT(*) FROM {table} \
                          WHERE corpus_id = 'corpus-a' \
-                           AND superseded_at_version IN ('sha3','sha4','sha5')"
+                           AND superseded_at_sha IN ('sha3','sha4','sha5')"
                     ),
                     [],
                     |r| r.get(0),

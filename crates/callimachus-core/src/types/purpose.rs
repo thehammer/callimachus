@@ -1,3 +1,4 @@
+use crate::types::provenance::Provenance;
 use serde::{Deserialize, Serialize};
 
 /// Why an entity exists — the "purpose" layer separate from behavioral summary.
@@ -11,8 +12,8 @@ pub struct EntityPurpose {
     /// Coarse quality tier: "opus" > "sonnet" > "haiku" > "unknown".
     pub model_tier: String,
     pub generated_at: String,
-    /// The manifest `current_version` at which this purpose was last written.
-    /// `None` for rows that pre-date migration 012.
+    /// The honest-provenance tag for this purpose. `None` for rows that
+    /// pre-date migration 013.
     #[serde(default)]
-    pub derived_at_version: Option<String>,
+    pub provenance: Option<Provenance>,
 }

@@ -124,7 +124,7 @@ pub fn to_extracted_structure(
             last_location: Some(chunk.location.clone()),
             appearance_count: 1,
             confidence: 0.9,
-            derived_at_version: None,
+            provenance: None,
             start_line: None,
             end_line: None,
         };
@@ -144,7 +144,7 @@ pub fn to_extracted_structure(
                 kind: "references".to_string(),
                 location: chunk.location.clone(),
                 confidence: 0.8,
-                derived_at_version: None,
+                provenance: None,
                 ..Default::default()
             });
         }
@@ -160,7 +160,7 @@ pub fn to_extracted_structure(
                 kind: "mentions".to_string(),
                 location: chunk.location.clone(),
                 confidence: 0.4,
-                derived_at_version: None,
+                provenance: None,
                 ..Default::default()
             });
         }
@@ -185,7 +185,7 @@ pub fn to_extracted_structure(
             last_location: Some(chunk.location.clone()),
             appearance_count: 1,
             confidence: 0.8,
-            derived_at_version: None,
+            provenance: None,
             start_line: None,
             end_line: None,
         };
@@ -205,7 +205,7 @@ pub fn to_extracted_structure(
                 kind: "references".to_string(),
                 location: chunk.location.clone(),
                 confidence: 0.8,
-                derived_at_version: None,
+                provenance: None,
                 ..Default::default()
             });
         }
