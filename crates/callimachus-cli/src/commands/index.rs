@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use callimachus_adapter_book::BookAdapter;
-use callimachus_adapter_capture::CaptureAdapter;
-use callimachus_adapter_code::CodeAdapter;
-use callimachus_adapter_wiki::WikiAdapter;
+use callimachus_adapter_contract::AdapterRegistry;
 use callimachus_core::{
     adapter::SourceAdapter,
     indexing::{IndexOptions, IndexPipeline},
@@ -46,8 +43,9 @@ pub async fn run(
     let llm = build_provider(provider_config)
         .map_err(|e| anyhow::anyhow!("failed to build LLM provider: {e}"))?;
 
-    // Build adapter.
-    let adapter = build_adapter(&corpus)?;
+    // Resolve adapter via the registry (single selection path for all commands).
+    let registry = default_registry();
+    let adapter = resolve_adapter(&corpus, &registry)?;
 
     // Build index options.
     let passes = resolve_passes(pass)?;
@@ -136,14 +134,73 @@ pub fn build_embedding_provider_config(config: &GlobalConfig) -> EmbeddingProvid
     }
 }
 
-pub fn build_adapter(corpus: &Corpus) -> Result<Arc<dyn SourceAdapter>> {
-    match corpus.kind.as_str() {
-        "book" => Ok(Arc::new(BookAdapter::new())),
-        "capture" => Ok(Arc::new(CaptureAdapter::new())),
-        "code" => Ok(Arc::new(CodeAdapter::new())),
-        "wiki" => Ok(Arc::new(WikiAdapter::new())),
-        other => bail!("adapter not yet available for corpus kind '{other}'"),
+/// Corpus kinds Callimachus recognizes as valid, independent of whether an
+/// adapter for them is compiled into *this* binary.
+///
+/// Used by [`resolve_adapter`] and the `corpus` command to distinguish two
+/// failure modes: a recognized kind whose adapter simply isn't in this build,
+/// versus a kind Callimachus doesn't know about at all. This binary ships the
+/// first four; `docs`/`jira`/`sessions` are recognized future/proprietary
+/// adapters that other builds may carry.
+pub const KNOWN_KINDS: &[&str] = &[
+    "book", "capture", "code", "wiki", "docs", "jira", "sessions",
+];
+
+/// Build the registry of adapters compiled into the default `calli` binary.
+///
+/// This is the **single** place adapter constructors are named. Every command
+/// resolves its adapter through [`resolve_adapter`] against a registry built
+/// here, so adding/removing an adapter from the binary is a one-line change
+/// with no `match corpus.kind` to update (PRD A7).
+pub fn default_registry() -> AdapterRegistry {
+    use callimachus_adapter_book::BookAdapter;
+    use callimachus_adapter_capture::CaptureAdapter;
+    use callimachus_adapter_code::CodeAdapter;
+    use callimachus_adapter_wiki::WikiAdapter;
+
+    let mut registry = AdapterRegistry::new();
+    registry.register(Arc::new(BookAdapter::new()));
+    registry.register(Arc::new(CaptureAdapter::new()));
+    registry.register(Arc::new(CodeAdapter::new()));
+    registry.register(Arc::new(WikiAdapter::new()));
+    registry
+}
+
+/// Resolve the adapter for a corpus through the registry.
+///
+/// This is the one selection path shared by `index`, `ingest`, `reindex`,
+/// `watch`, and `history`. It never panics and never falls back to a default
+/// adapter. On a miss it distinguishes two cases (PRD A6b):
+///
+/// * **Recognized kind, not in this build** — the kind is one Callimachus knows
+///   ([`KNOWN_KINDS`]) but no adapter for it was compiled into this binary.
+/// * **Unknown kind** — the kind is not a recognized Callimachus corpus kind.
+///
+/// Both messages name the offending kind and list the kinds this binary
+/// supports.
+pub fn resolve_adapter(
+    corpus: &Corpus,
+    registry: &AdapterRegistry,
+) -> Result<Arc<dyn SourceAdapter>> {
+    if let Some(adapter) = registry.get(&corpus.kind) {
+        return Ok(adapter);
     }
+
+    let supported = registry.list().join(", ");
+    if KNOWN_KINDS.contains(&corpus.kind.as_str()) {
+        bail!(
+            "no adapter for corpus kind '{kind}' is compiled into this build of calli. \
+             '{kind}' is a recognized Callimachus corpus kind, but this binary was built \
+             without its adapter — use (or build) a calli that includes it. \
+             Adapters available in this build: {supported}.",
+            kind = corpus.kind,
+        );
+    }
+    bail!(
+        "unknown corpus kind '{kind}' — not a recognized Callimachus corpus kind. \
+         Adapters available in this build: {supported}.",
+        kind = corpus.kind,
+    )
 }
 
 pub fn resolve_provider(

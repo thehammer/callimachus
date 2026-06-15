@@ -380,6 +380,7 @@ dependencies = [
  "callimachus-adapter-book",
  "callimachus-adapter-capture",
  "callimachus-adapter-code",
+ "callimachus-adapter-contract",
  "callimachus-adapter-wiki",
  "callimachus-core",
  "callimachus-http",
