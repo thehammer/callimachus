@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-callimachus-core = { path = "../../callimachus-core" }
+callimachus-adapter-contract = { path = "../callimachus-adapter-contract" }
 callimachus-llm = { path = "../../callimachus-llm" }
 anyhow.workspace = true
 serde.workspace = true
@@ -26,3 +26,4 @@ uuid.workspace = true
 [dev-dependencies]
 tokio = { workspace = true }
 callimachus-llm = { path = "../../callimachus-llm" }
+callimachus-core = { path = "../../callimachus-core" }

@@ -1,4 +1,4 @@
-use callimachus_core::types::Chunk;
+use callimachus_adapter_contract::Chunk;
 use callimachus_llm::{CompletionRequest, LlmProvider};
 
 /// Summarize a single wiki section chunk.

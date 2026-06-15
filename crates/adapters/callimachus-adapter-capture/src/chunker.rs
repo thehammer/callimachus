@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use anyhow::Result;
-use callimachus_core::types::{Chunk, Location};
+use callimachus_adapter_contract::{Chunk, Location};
 use serde::Deserialize;
 
 use crate::normalize::{

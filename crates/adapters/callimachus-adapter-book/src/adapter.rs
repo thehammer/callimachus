@@ -1,10 +1,4 @@
-use callimachus_core::{
-    adapter::{
-        DiscoveredSource, EntityMerge, ExtractedSemantic, ExtractedStructure, LocationRef,
-        SourceAdapter,
-    },
-    types::{Chunk, Entity},
-};
+use callimachus_adapter_contract::{Chunk, DiscoveredSource, Entity, EntityMerge, ExtractedSemantic, ExtractedStructure, LocationRef, SourceAdapter};
 use callimachus_llm::LlmProvider;
 
 use crate::{chunker, extractor, resolver, summarizer};
@@ -112,7 +106,7 @@ impl SourceAdapter for BookAdapter {
 
     fn parse_location(&self, uri: &str) -> anyhow::Result<LocationRef> {
         // Expect format: "calli://<corpus_id>/<path>" or just "<path>"
-        if let Ok(loc) = callimachus_core::types::Location::parse(uri) {
+        if let Ok(loc) = callimachus_adapter_contract::Location::parse(uri) {
             return Ok(LocationRef {
                 corpus_id: loc.corpus_id,
                 path: loc.path,

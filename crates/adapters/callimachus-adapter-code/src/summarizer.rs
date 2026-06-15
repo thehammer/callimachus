@@ -1,5 +1,5 @@
 use anyhow::Result;
-use callimachus_core::types::Chunk;
+use callimachus_adapter_contract::Chunk;
 use callimachus_llm::{CompletionRequest, LlmProvider};
 
 use crate::extractor::ExtractedCodeStructure;

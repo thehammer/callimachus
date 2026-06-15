@@ -276,6 +276,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "callimachus-adapter-contract",
  "callimachus-core",
  "callimachus-llm",
  "chrono",
@@ -296,6 +297,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "callimachus-adapter-contract",
  "callimachus-core",
  "callimachus-llm",
  "hex",
@@ -313,6 +315,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "callimachus-adapter-contract",
  "callimachus-core",
  "callimachus-llm",
  "chrono",
@@ -354,6 +357,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "callimachus-adapter-contract",
  "callimachus-core",
  "callimachus-llm",
  "hex",

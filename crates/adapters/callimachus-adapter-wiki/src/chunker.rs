@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use callimachus_core::types::{Chunk, Location};
+use callimachus_adapter_contract::{Chunk, Location};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use regex::Regex;
 use walkdir::WalkDir;

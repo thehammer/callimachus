@@ -1,18 +1,11 @@
 use std::path::Path;
 
 use anyhow::Result;
-use callimachus_core::{
-    adapter::{
-        DiscoveredSource, EntityMerge, ExtractedBlock, ExtractedContract, ExtractedPurpose,
-        ExtractedSemantic, ExtractedStructure, ExtractedTheme, ExtractedThemes, LocationRef,
-        SourceAdapter,
-    },
-    types::{Chunk, Corpus, Entity},
-};
+use callimachus_adapter_contract::{Chunk, Corpus, DiscoveredSource, Entity, EntityMerge, ExtractedBlock, ExtractedContract, ExtractedPurpose, ExtractedSemantic, ExtractedStructure, ExtractedTheme, ExtractedThemes, LocationRef, SourceAdapter};
 use callimachus_llm::{CompletionRequest, LlmProvider};
 
-use callimachus_core::adapter::default_current_version;
-use callimachus_core::indexing::change_manifest::ChangedSource;
+use callimachus_adapter_contract::default_current_version;
+use callimachus_adapter_contract::ChangedSource;
 
 use crate::{
     chunker::{ChunkOptions, chunk_directory},
@@ -620,9 +613,9 @@ Return JSON:
         language: &str,
         content: &str,
         entity_name: &str,
-    ) -> callimachus_core::indexing::model_tier::RoutingInputs {
+    ) -> callimachus_adapter_contract::RoutingInputs {
         let s = contracts::analyze(language, content, entity_name);
-        callimachus_core::indexing::model_tier::RoutingInputs {
+        callimachus_adapter_contract::RoutingInputs {
             has_unsafe: s.has_unsafe,
             is_fallible: s.is_fallible,
             is_public: s.is_public,
@@ -663,7 +656,7 @@ Return JSON:
         let from = match from_version {
             Some(f) => f,
             None => {
-                return callimachus_core::adapter::default_changed_sources(
+                return callimachus_adapter_contract::default_changed_sources(
                     source_path,
                     None,
                     to_version,
@@ -685,7 +678,7 @@ Return JSON:
         }
 
         // Fallback: return all files.
-        callimachus_core::adapter::default_changed_sources(source_path, Some(from), to_version)
+        callimachus_adapter_contract::default_changed_sources(source_path, Some(from), to_version)
     }
 }
 
