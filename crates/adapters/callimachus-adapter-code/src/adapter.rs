@@ -1,11 +1,15 @@
 use std::path::Path;
 
 use anyhow::Result;
-use callimachus_adapter_contract::{Chunk, Corpus, DiscoveredSource, Entity, EntityMerge, ExtractedBlock, ExtractedContract, ExtractedPurpose, ExtractedSemantic, ExtractedStructure, ExtractedTheme, ExtractedThemes, LocationRef, SourceAdapter};
+use callimachus_adapter_contract::{
+    Chunk, Corpus, DiscoveredSource, Entity, EntityMerge, ExtractedBlock, ExtractedContract,
+    ExtractedPurpose, ExtractedSemantic, ExtractedStructure, ExtractedTheme, ExtractedThemes,
+    LocationRef, SourceAdapter,
+};
 use callimachus_llm::{CompletionRequest, LlmProvider};
 
-use callimachus_adapter_contract::default_current_version;
 use callimachus_adapter_contract::ChangedSource;
+use callimachus_adapter_contract::default_current_version;
 
 use crate::{
     chunker::{ChunkOptions, chunk_directory},

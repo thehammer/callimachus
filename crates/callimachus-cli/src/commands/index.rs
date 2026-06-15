@@ -508,7 +508,10 @@ mod tests {
             "/tmp/docs".to_string(),
         );
         let result = super::resolve_adapter(&corpus, &registry);
-        assert!(result.is_err(), "expected Err for kind 'docs' (not in this build)");
+        assert!(
+            result.is_err(),
+            "expected Err for kind 'docs' (not in this build)"
+        );
 
         let msg = result.err().unwrap().to_string();
         assert!(

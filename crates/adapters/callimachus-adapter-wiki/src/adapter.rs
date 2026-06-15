@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use callimachus_adapter_contract::{Chunk, DiscoveredSource, Entity, EntityMerge, ExtractedSemantic, ExtractedStructure, LocationRef, SourceAdapter};
+use callimachus_adapter_contract::{
+    Chunk, DiscoveredSource, Entity, EntityMerge, ExtractedSemantic, ExtractedStructure,
+    LocationRef, SourceAdapter,
+};
 use callimachus_llm::LlmProvider;
 use walkdir::WalkDir;
 

@@ -13,7 +13,9 @@
 /// The chunker embeds a `next_signatures` array in each chunk's JSON content.
 /// For each entry, a `"precedes"` edge is emitted from the current endpoint
 /// to the next, encoding the observed call sequencing.
-use callimachus_adapter_contract::{Chunk, Edge, Entity, ExtractedStructure, Location, LocationRef};
+use callimachus_adapter_contract::{
+    Chunk, Edge, Entity, ExtractedStructure, Location, LocationRef,
+};
 use sha2::{Digest, Sha256};
 
 /// Extract one `Entity` and zero-or-more `"precedes"` `Edge`s from a capture chunk.

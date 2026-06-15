@@ -8,7 +8,10 @@
 /// Corpus kind:     `"capture"`
 use std::path::{Path, PathBuf};
 
-use callimachus_adapter_contract::{Chunk, DiscoveredSource, Entity, EntityMerge, ExtractedSemantic, ExtractedStructure, LocationRef, SourceAdapter};
+use callimachus_adapter_contract::{
+    Chunk, DiscoveredSource, Entity, EntityMerge, ExtractedSemantic, ExtractedStructure,
+    LocationRef, SourceAdapter,
+};
 use callimachus_llm::LlmProvider;
 
 use crate::{chunker, extractor, summarizer};

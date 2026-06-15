@@ -24,8 +24,8 @@ use callimachus_llm::DryRunProvider;
 use callimachus_adapter_book::BookAdapter;
 use callimachus_adapter_capture::CaptureAdapter;
 use callimachus_adapter_code::CodeAdapter;
-use callimachus_adapter_wiki::WikiAdapter;
 use callimachus_adapter_trivial::TrivialAdapter;
+use callimachus_adapter_wiki::WikiAdapter;
 
 /// Build a registry with the four built-in adapters plus `TrivialAdapter`.
 fn five_adapter_registry() -> AdapterRegistry {
