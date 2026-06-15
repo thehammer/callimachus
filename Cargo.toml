@@ -5,6 +5,7 @@ members = [
     "crates/callimachus-mcp",
     "crates/callimachus-http",
     "crates/callimachus-cli",
+    "crates/adapters/callimachus-adapter-contract",
     "crates/adapters/callimachus-adapter-book",
     "crates/adapters/callimachus-adapter-code",
     "crates/adapters/callimachus-adapter-wiki",

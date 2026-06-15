@@ -1,0 +1,18 @@
+[package]
+name = "callimachus-adapter-contract"
+description = "The stable adapter contract for Callimachus — the SourceAdapter trait, its data-type closure, and the adapter registry. Depends only on callimachus-llm; never on callimachus-core."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+callimachus-llm = { path = "../../callimachus-llm" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+sha2.workspace = true
+hex.workspace = true
+chrono.workspace = true
