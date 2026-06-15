@@ -25,3 +25,15 @@ pub enum CalError {
 }
 
 pub type Result<T> = std::result::Result<T, CalError>;
+
+/// Bubble a contract-crate location-parse failure through `CalError`.
+///
+/// `Location::parse` now lives in `callimachus-adapter-contract` and returns
+/// its own storage-free `LocationParseError`. Core call sites that propagate
+/// through the `CalError`-based `Result` keep working via this conversion,
+/// landing in the existing `InvalidLocation` variant.
+impl From<callimachus_adapter_contract::LocationParseError> for CalError {
+    fn from(e: callimachus_adapter_contract::LocationParseError) -> Self {
+        CalError::InvalidLocation(e.0)
+    }
+}

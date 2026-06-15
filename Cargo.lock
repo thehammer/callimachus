@@ -276,6 +276,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "callimachus-adapter-contract",
  "callimachus-core",
  "callimachus-llm",
  "chrono",
@@ -296,6 +297,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "callimachus-adapter-contract",
  "callimachus-core",
  "callimachus-llm",
  "hex",
@@ -313,6 +315,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "callimachus-adapter-contract",
  "callimachus-core",
  "callimachus-llm",
  "chrono",
@@ -335,11 +338,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "callimachus-adapter-contract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "callimachus-llm",
+ "chrono",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "callimachus-adapter-trivial"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "callimachus-adapter-book",
+ "callimachus-adapter-capture",
+ "callimachus-adapter-code",
+ "callimachus-adapter-contract",
+ "callimachus-adapter-wiki",
+ "callimachus-core",
+ "callimachus-llm",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "callimachus-adapter-wiki"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "callimachus-adapter-contract",
  "callimachus-core",
  "callimachus-llm",
  "hex",
@@ -362,6 +398,7 @@ dependencies = [
  "callimachus-adapter-book",
  "callimachus-adapter-capture",
  "callimachus-adapter-code",
+ "callimachus-adapter-contract",
  "callimachus-adapter-wiki",
  "callimachus-core",
  "callimachus-http",
@@ -388,6 +425,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytemuck",
+ "callimachus-adapter-contract",
  "callimachus-llm",
  "chrono",
  "futures",

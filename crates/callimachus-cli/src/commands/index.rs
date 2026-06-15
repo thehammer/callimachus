@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use callimachus_adapter_book::BookAdapter;
-use callimachus_adapter_capture::CaptureAdapter;
-use callimachus_adapter_code::CodeAdapter;
-use callimachus_adapter_wiki::WikiAdapter;
+use callimachus_adapter_contract::AdapterRegistry;
 use callimachus_core::{
     adapter::SourceAdapter,
     indexing::{IndexOptions, IndexPipeline},
@@ -46,8 +43,9 @@ pub async fn run(
     let llm = build_provider(provider_config)
         .map_err(|e| anyhow::anyhow!("failed to build LLM provider: {e}"))?;
 
-    // Build adapter.
-    let adapter = build_adapter(&corpus)?;
+    // Resolve adapter via the registry (single selection path for all commands).
+    let registry = default_registry();
+    let adapter = resolve_adapter(&corpus, &registry)?;
 
     // Build index options.
     let passes = resolve_passes(pass)?;
@@ -136,14 +134,98 @@ pub fn build_embedding_provider_config(config: &GlobalConfig) -> EmbeddingProvid
     }
 }
 
-pub fn build_adapter(corpus: &Corpus) -> Result<Arc<dyn SourceAdapter>> {
-    match corpus.kind.as_str() {
-        "book" => Ok(Arc::new(BookAdapter::new())),
-        "capture" => Ok(Arc::new(CaptureAdapter::new())),
-        "code" => Ok(Arc::new(CodeAdapter::new())),
-        "wiki" => Ok(Arc::new(WikiAdapter::new())),
-        other => bail!("adapter not yet available for corpus kind '{other}'"),
+/// Corpus kinds Callimachus recognizes as valid, independent of whether an
+/// adapter for them is compiled into *this* binary.
+///
+/// Used by [`resolve_adapter`] and the `corpus` command to distinguish two
+/// failure modes: a recognized kind whose adapter simply isn't in this build,
+/// versus a kind Callimachus doesn't know about at all. This binary ships the
+/// first four; `docs`/`jira`/`sessions` are recognized future/proprietary
+/// adapters that other builds may carry.
+pub const KNOWN_KINDS: &[&str] = &[
+    "book", "capture", "code", "wiki", "docs", "jira", "sessions",
+];
+
+/// Build the registry of adapters compiled into the default `calli` binary.
+///
+/// This is the **single** place adapter constructors are named. Every command
+/// resolves its adapter through [`resolve_adapter`] against a registry built
+/// here, so adding/removing an adapter from the binary is a one-line change
+/// with no `match corpus.kind` to update (PRD A7).
+pub fn default_registry() -> AdapterRegistry {
+    use callimachus_adapter_book::BookAdapter;
+    use callimachus_adapter_capture::CaptureAdapter;
+    use callimachus_adapter_code::CodeAdapter;
+    use callimachus_adapter_wiki::WikiAdapter;
+
+    let mut registry = AdapterRegistry::new();
+    registry.register(Arc::new(BookAdapter::new()));
+    registry.register(Arc::new(CaptureAdapter::new()));
+    registry.register(Arc::new(CodeAdapter::new()));
+    registry.register(Arc::new(WikiAdapter::new()));
+    registry
+}
+
+/// Why a corpus kind is not serviceable by *this* build, or `None` if it is.
+///
+/// Shared by `corpus add` (which warns but still registers) and
+/// `corpus list`/`status` (which annotate inspection output), so the
+/// availability story is computed one way and worded consistently (PRD A6).
+///
+/// This is intentionally a *dynamic* lookup against the live registry — the
+/// missing-adapter state is never persisted to the database, because a
+/// different binary sharing the same DB may carry the adapter. A persisted
+/// "unindexable" flag would be wrong for that binary.
+pub fn unavailable_kind_reason(kind: &str, registry: &AdapterRegistry) -> Option<String> {
+    if registry.get(kind).is_some() {
+        return None;
     }
+    if KNOWN_KINDS.contains(&kind) {
+        Some(format!(
+            "no adapter for kind '{kind}' is compiled into this build of calli"
+        ))
+    } else {
+        Some(format!(
+            "'{kind}' is not a recognized Callimachus corpus kind"
+        ))
+    }
+}
+
+/// Resolve the adapter for a corpus through the registry.
+///
+/// This is the one selection path shared by `index`, `ingest`, `reindex`,
+/// `watch`, and `history`. It never panics and never falls back to a default
+/// adapter. On a miss it distinguishes two cases (PRD A6b):
+///
+/// * **Recognized kind, not in this build** — the kind is one Callimachus knows
+///   ([`KNOWN_KINDS`]) but no adapter for it was compiled into this binary.
+/// * **Unknown kind** — the kind is not a recognized Callimachus corpus kind.
+///
+/// Both messages name the offending kind and list the kinds this binary
+/// supports.
+pub fn resolve_adapter(
+    corpus: &Corpus,
+    registry: &AdapterRegistry,
+) -> Result<Arc<dyn SourceAdapter>> {
+    if let Some(adapter) = registry.get(&corpus.kind) {
+        return Ok(adapter);
+    }
+
+    let supported = registry.list().join(", ");
+    if KNOWN_KINDS.contains(&corpus.kind.as_str()) {
+        bail!(
+            "no adapter for corpus kind '{kind}' is compiled into this build of calli. \
+             '{kind}' is a recognized Callimachus corpus kind, but this binary was built \
+             without its adapter — use (or build) a calli that includes it. \
+             Adapters available in this build: {supported}.",
+            kind = corpus.kind,
+        );
+    }
+    bail!(
+        "unknown corpus kind '{kind}' — not a recognized Callimachus corpus kind. \
+         Adapters available in this build: {supported}.",
+        kind = corpus.kind,
+    )
 }
 
 pub fn resolve_provider(
@@ -389,6 +471,139 @@ mod tests {
         assert!(
             msg.contains("pdf") || msg.contains("adapter"),
             "error should mention adapter kind: {msg}"
+        );
+    }
+
+    // ── A6b: distinct error messages for "not in this build" vs "unknown kind" ──
+
+    /// A corpus of a registered kind resolves its adapter successfully.
+    #[test]
+    fn resolve_adapter_returns_ok_for_registered_kind() {
+        let registry = super::default_registry();
+        let corpus = Corpus::new(
+            "code-ok".to_string(),
+            "Code OK".to_string(),
+            "code".to_string(),
+            env!("CARGO_MANIFEST_DIR").to_string(),
+        );
+        let result = super::resolve_adapter(&corpus, &registry);
+        assert!(
+            result.is_ok(),
+            "expected Ok for registered kind 'code', got: {:?}",
+            result.err()
+        );
+    }
+
+    /// A corpus whose kind is in KNOWN_KINDS but has no adapter in this build
+    /// returns Err with a message that names the kind, mentions "build", and
+    /// lists a kind that IS supported (e.g. "code"). It must NOT contain
+    /// "unknown corpus kind".
+    #[test]
+    fn resolve_adapter_for_known_but_absent_kind_error_distinguishes_from_unknown() {
+        let registry = super::default_registry();
+        let corpus = Corpus::new(
+            "docs-corpus".to_string(),
+            "Docs Corpus".to_string(),
+            "docs".to_string(),
+            "/tmp/docs".to_string(),
+        );
+        let result = super::resolve_adapter(&corpus, &registry);
+        assert!(
+            result.is_err(),
+            "expected Err for kind 'docs' (not in this build)"
+        );
+
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("docs"),
+            "error must name the offending kind 'docs': {msg}"
+        );
+        assert!(
+            msg.contains("build"),
+            "error must indicate the kind is not in this build: {msg}"
+        );
+        assert!(
+            msg.contains("code"),
+            "error must list a supported kind so the user knows what is available: {msg}"
+        );
+        assert!(
+            !msg.contains("unknown corpus kind"),
+            "error for a known-but-absent kind must not say 'unknown corpus kind' (wrong bucket): {msg}"
+        );
+    }
+
+    /// A corpus whose kind is not recognized at all returns Err with a message
+    /// that names the kind and contains "unknown corpus kind".
+    #[test]
+    fn resolve_adapter_for_completely_unknown_kind_says_unknown() {
+        let registry = super::default_registry();
+        let corpus = Corpus::new(
+            "pdf-corpus".to_string(),
+            "PDF Corpus".to_string(),
+            "pdf".to_string(),
+            "/tmp/pdf".to_string(),
+        );
+        let result = super::resolve_adapter(&corpus, &registry);
+        assert!(result.is_err(), "expected Err for unrecognized kind 'pdf'");
+
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("pdf"),
+            "error must name the offending kind 'pdf': {msg}"
+        );
+        assert!(
+            msg.contains("unknown corpus kind"),
+            "error for an unrecognized kind must say 'unknown corpus kind': {msg}"
+        );
+    }
+
+    // ── A6: availability predicate ──────────────────────────────────────────────
+
+    /// A kind present in the registry has no unavailability reason.
+    #[test]
+    fn unavailable_kind_reason_is_none_for_registered_kind() {
+        let registry = super::default_registry();
+        let reason = super::unavailable_kind_reason("code", &registry);
+        assert!(
+            reason.is_none(),
+            "expected None for 'code' (registered); got: {:?}",
+            reason
+        );
+    }
+
+    /// A kind in KNOWN_KINDS but absent from this build's registry returns
+    /// Some with a message about being compiled into this build.
+    #[test]
+    fn unavailable_kind_reason_for_known_but_absent_kind_mentions_build() {
+        let registry = super::default_registry();
+        let reason = super::unavailable_kind_reason("docs", &registry);
+        assert!(
+            reason.is_some(),
+            "expected Some for 'docs' (known but not in this build)"
+        );
+        let msg = reason.unwrap();
+        assert!(
+            msg.contains("build"),
+            "reason for known-but-absent kind must mention build: {msg}"
+        );
+    }
+
+    /// A completely unrecognized kind returns Some with a message about not being
+    /// a recognized corpus kind.
+    #[test]
+    fn unavailable_kind_reason_for_unknown_kind_mentions_not_recognized() {
+        let registry = super::default_registry();
+        let reason = super::unavailable_kind_reason("pdf", &registry);
+        assert!(
+            reason.is_some(),
+            "expected Some for unrecognized kind 'pdf'"
+        );
+        // The reason should distinguish this case from the "known but absent" case.
+        // It must not claim the kind is absent from the build (that implies it's known).
+        let msg = reason.unwrap();
+        assert!(
+            msg.contains("pdf"),
+            "reason must name the offending kind: {msg}"
         );
     }
 

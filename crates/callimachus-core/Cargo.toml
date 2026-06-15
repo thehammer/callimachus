@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+callimachus-adapter-contract = { path = "../adapters/callimachus-adapter-contract" }
 callimachus-llm = { path = "../callimachus-llm" }
 anyhow.workspace = true
 thiserror.workspace = true

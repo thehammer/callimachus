@@ -8,7 +8,7 @@ use callimachus_core::{
 use callimachus_llm::build_provider;
 
 use crate::{
-    commands::index::{build_adapter, resolve_provider},
+    commands::index::{default_registry, resolve_adapter, resolve_provider},
     config::GlobalConfig,
 };
 
@@ -30,7 +30,8 @@ pub async fn run(
         .map_err(|e| anyhow::anyhow!("{e}"))
         .map_err(|e| e.context(format!("corpus '{corpus_id}' not found")))?;
 
-    let adapter = build_adapter(&corpus)?;
+    let registry = default_registry();
+    let adapter = resolve_adapter(&corpus, &registry)?;
 
     let provider_config = resolve_provider(provider_override, config)?;
     let llm = build_provider(provider_config)

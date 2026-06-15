@@ -1,11 +1,8 @@
 use std::path::Path;
 
-use callimachus_core::{
-    adapter::{
-        DiscoveredSource, EntityMerge, ExtractedSemantic, ExtractedStructure, LocationRef,
-        SourceAdapter,
-    },
-    types::{Chunk, Entity},
+use callimachus_adapter_contract::{
+    Chunk, DiscoveredSource, Entity, EntityMerge, ExtractedSemantic, ExtractedStructure,
+    LocationRef, SourceAdapter,
 };
 use callimachus_llm::LlmProvider;
 use walkdir::WalkDir;
@@ -204,7 +201,7 @@ impl SourceAdapter for WikiAdapter {
     /// Parse a wiki location URI back into a `LocationRef`.
     fn parse_location(&self, uri: &str) -> anyhow::Result<LocationRef> {
         // Try full calli:// URI first.
-        if let Ok(loc) = callimachus_core::types::Location::parse(uri) {
+        if let Ok(loc) = callimachus_adapter_contract::Location::parse(uri) {
             return Ok(LocationRef {
                 corpus_id: loc.corpus_id,
                 path: loc.path,

@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 callimachus-core = { path = "../callimachus-core" }
+callimachus-adapter-contract = { path = "../adapters/callimachus-adapter-contract" }
 callimachus-llm = { path = "../callimachus-llm" }
 callimachus-mcp = { path = "../callimachus-mcp" }
 callimachus-http = { path = "../callimachus-http" }

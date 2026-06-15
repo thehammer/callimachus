@@ -1,5 +1,5 @@
 /// LLM prompts for capture adapter semantic and summary passes.
-use callimachus_core::types::Chunk;
+use callimachus_adapter_contract::Chunk;
 use callimachus_llm::{CompletionRequest, LlmProvider};
 
 /// Ask the LLM to describe an endpoint given its chunk content (signature,

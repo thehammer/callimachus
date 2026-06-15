@@ -12,7 +12,9 @@ use callimachus_core::{
 use callimachus_llm::{build_embedding_provider, build_provider};
 
 use crate::{
-    commands::index::{build_adapter, build_embedding_provider_config, resolve_provider},
+    commands::index::{
+        build_embedding_provider_config, default_registry, resolve_adapter, resolve_provider,
+    },
     config::GlobalConfig,
 };
 
@@ -35,7 +37,8 @@ pub async fn run(
     let llm = build_provider(provider_config)
         .map_err(|e| anyhow::anyhow!("failed to build LLM provider: {e}"))?;
 
-    let adapter = build_adapter(&corpus)?;
+    let registry = default_registry();
+    let adapter = resolve_adapter(&corpus, &registry)?;
 
     // Detect changes.
     let change_set = change_detector::detect(&corpus, db.as_ref(), since.as_deref())
@@ -147,7 +150,8 @@ mod tests {
 
     /// Regression: `reindex` previously hardcoded the book adapter and bailed
     /// with "supports 'book' only" for any other corpus kind. It must now select
-    /// the code adapter via `build_adapter` and complete a dry-run without error.
+    /// the code adapter via the registry (`resolve_adapter`) and complete a
+    /// dry-run without error.
     #[tokio::test]
     async fn code_corpus_reindex_selects_code_adapter() {
         let db: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::open_in_memory().unwrap());

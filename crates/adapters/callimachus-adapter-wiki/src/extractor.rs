@@ -1,9 +1,6 @@
 use std::path::Path;
 
-use callimachus_core::{
-    adapter::ExtractedStructure,
-    types::{Chunk, Edge, Entity},
-};
+use callimachus_adapter_contract::{Chunk, Edge, Entity, ExtractedStructure};
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -225,7 +222,7 @@ pub fn to_extracted_structure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use callimachus_core::types::{Chunk, Location};
+    use callimachus_adapter_contract::{Chunk, Location};
 
     #[test]
     fn classify_uses_type_field() {

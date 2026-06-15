@@ -1,5 +1,5 @@
 use anyhow::Result;
-use callimachus_core::types::{Chunk, Edge, Entity};
+use callimachus_adapter_contract::{Chunk, Edge, Entity};
 use sha2::{Digest, Sha256};
 use tree_sitter::{Parser, Query, QueryCursor};
 
@@ -1228,7 +1228,7 @@ fn text_from_bytes(source: &[u8], range: std::ops::Range<usize>) -> String {
 mod tests {
     use super::*;
     use crate::languages;
-    use callimachus_core::types::Location;
+    use callimachus_adapter_contract::Location;
 
     fn make_chunk(corpus_id: &str, path: &str, kind: &str, content: &str) -> Chunk {
         Chunk::new(

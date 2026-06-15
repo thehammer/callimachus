@@ -1,4 +1,4 @@
-use callimachus_core::indexing::change_manifest::{ChangeKind, ChangedSource, CommitMeta};
+use callimachus_adapter_contract::{ChangeKind, ChangedSource, CommitMeta};
 use std::path::Path;
 
 /// Basic metadata read from a git repository.

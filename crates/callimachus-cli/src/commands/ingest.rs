@@ -18,7 +18,9 @@ use callimachus_core::{
 };
 use callimachus_llm::{build_embedding_provider, build_provider};
 
-use crate::commands::index::{build_adapter, build_embedding_provider_config, resolve_provider};
+use crate::commands::index::{
+    build_embedding_provider_config, default_registry, resolve_adapter, resolve_provider,
+};
 use crate::config::GlobalConfig;
 
 /// Register the corpus at `(kind, name, path)` if it does not already exist,
@@ -51,7 +53,8 @@ pub async fn run(
     let provider_config = resolve_provider(provider_override, config)?;
     let llm = build_provider(provider_config)
         .map_err(|e| anyhow::anyhow!("failed to build LLM provider: {e}"))?;
-    let adapter = build_adapter(&corpus)?;
+    let registry = default_registry();
+    let adapter = resolve_adapter(&corpus, &registry)?;
 
     // Resolve the pass list: user-supplied --passes overrides the default.
     // Default: History, Chunk, Structure, Semantic, Aliases, Summarize, Purpose, Contract.

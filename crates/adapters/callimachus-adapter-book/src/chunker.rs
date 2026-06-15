@@ -1,5 +1,5 @@
-use callimachus_core::adapter::DiscoveredSource;
-use callimachus_core::types::{Chunk, Location};
+use callimachus_adapter_contract::DiscoveredSource;
+use callimachus_adapter_contract::{Chunk, Location};
 
 const MIN_SCENE_CHARS: usize = 200;
 const MAX_SCENE_CHARS: usize = 4000;

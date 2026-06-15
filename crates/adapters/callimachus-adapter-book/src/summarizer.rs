@@ -1,4 +1,4 @@
-use callimachus_core::types::Chunk;
+use callimachus_adapter_contract::Chunk;
 use callimachus_llm::{CompletionRequest, LlmProvider};
 
 /// Generate a summary at the given depth ("scene", "chapter", "corpus").

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use callimachus_core::types::{Chunk, Location};
+use callimachus_adapter_contract::{Chunk, Location};
 use tree_sitter::{Parser, Query, QueryCursor};
 use walkdir::WalkDir;
 

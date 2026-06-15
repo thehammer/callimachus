@@ -1,4 +1,4 @@
-use callimachus_core::{adapter::EntityMerge, types::Entity};
+use callimachus_adapter_contract::{Entity, EntityMerge};
 use callimachus_llm::{CompletionRequest, LlmProvider};
 use serde::Deserialize;
 

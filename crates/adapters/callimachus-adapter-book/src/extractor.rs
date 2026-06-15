@@ -1,7 +1,4 @@
-use callimachus_core::{
-    adapter::ExtractedSemantic,
-    types::{Chunk, Edge, Entity, Location},
-};
+use callimachus_adapter_contract::{Chunk, Edge, Entity, ExtractedSemantic, Location};
 use callimachus_llm::{CompletionRequest, LlmProvider};
 use serde::Deserialize;
 
