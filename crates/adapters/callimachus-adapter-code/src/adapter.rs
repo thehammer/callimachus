@@ -23,7 +23,7 @@ use crate::{
 
 /// Adapter for source code repositories.
 ///
-/// Supports Rust, TypeScript/JavaScript, Python, and Go.
+/// Supports Rust, TypeScript/JavaScript, Python, Go, PHP, and Dart.
 /// Uses tree-sitter for structural chunking and entity extraction.
 pub struct CodeAdapter;
 
@@ -349,6 +349,7 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
                 "ts" | "tsx" => "typescript",
                 "js" | "jsx" => "javascript",
                 "vue" => "vue",
+                "dart" => "dart",
                 _ => "other",
             })
             .unwrap_or("other");

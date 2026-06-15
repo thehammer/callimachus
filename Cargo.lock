@@ -325,6 +325,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tree-sitter",
+ "tree-sitter-dart-orchard",
  "tree-sitter-go",
  "tree-sitter-php",
  "tree-sitter-python",
@@ -2891,6 +2892,16 @@ dependencies = [
  "cc",
  "regex",
  "regex-syntax",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-dart-orchard"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fcc68a1fd54afbeabc13b64a07b1ef611805690800fa2a57c1d1b90970a902e"
+dependencies = [
+ "cc",
  "tree-sitter-language",
 ]
 

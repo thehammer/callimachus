@@ -454,6 +454,11 @@ fn extract_entities(
     if lang.name == "php" {
         extract_php_methods(chunk, root, source, lang, test_ranges, result);
     }
+
+    // Dart: descend into class bodies to extract methods (including named + factory constructors).
+    if lang.name == "dart" {
+        extract_dart_methods(chunk, root, source, lang, test_ranges, result);
+    }
 }
 
 /// PHP-specific: extract method declarations nested inside class bodies.
@@ -556,6 +561,141 @@ fn extract_php_methods(
     }
 }
 
+/// Dart-specific: extract method declarations nested inside class bodies.
+///
+/// Captures:
+/// - Regular methods: `(class_body (method_signature (function_signature name: ...)))`
+/// - Named constructors: `(class_body (declaration (constructor_signature name: ... name: ...)))`
+///   where the second `name:` is the constructor part (e.g. `Contact.fromJson` → "fromJson").
+/// - Factory constructors: `(class_body (method_signature (factory_constructor_signature ...)))`
+///   where the second unnamed identifier is the factory name (e.g. `factory Contact.empty()` → "empty").
+///
+/// Emits one `method` entity and one `defines` edge (class → method) per captured item.
+/// The file-level `defines` edge for the enclosing class is already emitted by `extract_entities`.
+fn extract_dart_methods(
+    chunk: &Chunk,
+    root: tree_sitter::Node<'_>,
+    source: &[u8],
+    lang: &LangConfig,
+    test_ranges: &[std::ops::Range<usize>],
+    result: &mut ExtractedCodeStructure,
+) {
+    // Query 1: regular methods via function_signature inside method_signature inside class_body.
+    let regular_method_query = r#"
+        (class_definition
+            name: (identifier) @class_name
+            body: (class_body
+                (method_signature
+                    (function_signature name: (identifier) @method_name))))
+    "#;
+
+    // Query 2: named constructors — constructor_signature with two name: fields.
+    // In Dart: `Contact.fromJson(...)` → first name = "Contact", second name = "fromJson".
+    // We capture the second (method part) name.
+    let named_ctor_query = r#"
+        (class_definition
+            name: (identifier) @class_name
+            body: (class_body
+                (declaration
+                    (constructor_signature
+                        name: (identifier)
+                        name: (identifier) @method_name))))
+    "#;
+
+    // Query 3: factory constructors — factory_constructor_signature with class + factory name.
+    // In Dart: `factory Contact.empty()` → first identifier = "Contact", second = "empty".
+    let factory_ctor_query = r#"
+        (class_definition
+            name: (identifier) @class_name
+            body: (class_body
+                (method_signature
+                    (factory_constructor_signature
+                        (identifier)
+                        (identifier) @method_name))))
+    "#;
+
+    let language = (lang.language_fn)();
+
+    for query_str in &[regular_method_query, named_ctor_query, factory_ctor_query] {
+        let query = match tree_sitter::Query::new(&language, query_str) {
+            Ok(q) => q,
+            Err(_) => continue,
+        };
+
+        let pairs: Vec<(std::ops::Range<usize>, std::ops::Range<usize>, usize, usize)> = {
+            let mut cursor = QueryCursor::new();
+            cursor
+                .matches(&query, root, source)
+                .filter_map(|m| {
+                    if m.captures.len() >= 2 {
+                        let method_node = m.captures[1].node;
+                        // Walk up to the method_signature or declaration parent for the full span.
+                        let method_decl = method_node
+                            .parent()
+                            .and_then(|p| p.parent())
+                            .filter(|n| n.kind() == "method_signature" || n.kind() == "declaration")
+                            .unwrap_or(method_node);
+                        Some((
+                            m.captures[0].node.byte_range(),
+                            method_node.byte_range(),
+                            method_decl.start_position().row,
+                            method_decl.end_position().row,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        for (class_range, method_range, method_start_row, method_end_row) in pairs {
+            let class_name = text_from_bytes(source, class_range.clone());
+            let method_name = text_from_bytes(source, method_range.clone());
+            if class_name.is_empty() || method_name.is_empty() {
+                continue;
+            }
+
+            let class_entity_id = entity_id(&chunk.corpus_id, &class_name);
+            let method_entity_id = entity_id(&chunk.corpus_id, &method_name);
+
+            // Emit method entity.
+            let mut method_entity = Entity::new(
+                method_entity_id.clone(),
+                chunk.corpus_id.clone(),
+                method_name.clone(),
+                "method".to_string(),
+            );
+            method_entity.first_location = Some(chunk.location.clone());
+            method_entity.last_location = Some(chunk.location.clone());
+            method_entity.appearance_count = 1;
+            method_entity.confidence = 0.9;
+            method_entity.start_line = Some(method_start_row as u32);
+            method_entity.end_line = Some(method_end_row as u32);
+            result.entities.push(method_entity);
+
+            // Emit defines edge: class → method.
+            let scope = scope_for_pos(method_range.start, test_ranges);
+            let eid = edge_id(
+                &chunk.corpus_id,
+                &class_entity_id,
+                "defines",
+                &method_entity_id,
+                &scope,
+            );
+            let mut defines_edge = Edge::new(
+                eid,
+                chunk.corpus_id.clone(),
+                class_entity_id,
+                method_entity_id,
+                "defines".to_string(),
+                chunk.location.clone(),
+            );
+            defines_edge.origin_scope = scope;
+            result.edges.push(defines_edge);
+        }
+    }
+}
+
 fn extract_inheritance(
     chunk: &Chunk,
     root: tree_sitter::Node<'_>,
@@ -591,6 +731,32 @@ fn extract_inheritance(
             (
                 r#"(interface_declaration name: (name) @iface (base_clause [(name) (qualified_name)] @parent))"#,
                 "extends",
+            ),
+        ],
+        // Dart: class Foo extends Bar with Mixin implements IFoo
+        // - `extends` maps to the `extends` edge kind.
+        // - `with` (mixin application) maps to `implements` (closest existing edge kind;
+        //   `with M` means "this type includes M's members", semantically nearest to implements).
+        // - `implements` maps to the `implements` edge kind.
+        //
+        // Grammar structure (correct Dart order: extends … with … implements …):
+        //   superclass: (superclass
+        //     (type_identifier)          ← the extends target
+        //     (mixins (type_identifier)) ← the with target(s)
+        //   )
+        //   interfaces: (interfaces (type_identifier))  ← the implements target(s)
+        "dart" => &[
+            (
+                r#"(class_definition name: (identifier) @class superclass: (superclass . (type_identifier) @parent))"#,
+                "extends",
+            ),
+            (
+                r#"(class_definition name: (identifier) @class superclass: (superclass (mixins (type_identifier) @mixin)))"#,
+                "implements",
+            ),
+            (
+                r#"(class_definition name: (identifier) @class interfaces: (interfaces (type_identifier) @iface))"#,
+                "implements",
             ),
         ],
         _ => &[],
@@ -935,6 +1101,15 @@ fn extract_imports(
         }
         "go" => r#"(import_declaration (import_spec path: (interpreted_string_literal) @import))"#,
         "php" => r#"(namespace_use_clause [(name) (qualified_name)] @import)"#,
+        // Dart: import/export/part directives all produce imports edges.
+        // The URI is a string_literal nested inside the directive nodes.
+        "dart" => {
+            r#"[
+          (import_or_export (library_import (import_specification (configurable_uri (uri (string_literal) @import)))))
+          (import_or_export (library_export (configurable_uri (uri (string_literal) @import))))
+          (part_directive (uri (string_literal) @import))
+        ]"#
+        }
         _ => return,
     };
 
@@ -1142,6 +1317,16 @@ fn extract_doc_comment(
                 None
             }
         }
+        // Dart: `///` doc comments emit a `documentation_comment` node;
+        // `/** */` block doc comments emit a `block_comment` node.
+        "dart" => {
+            let text = text_from_bytes(source, first_child.byte_range());
+            match first_child.kind() {
+                "documentation_comment" => Some(text.trim().to_string()),
+                "block_comment" if text.starts_with("/**") => Some(text.trim().to_string()),
+                _ => None,
+            }
+        }
         _ => None,
     };
 
@@ -1155,8 +1340,14 @@ fn ts_node_to_entity_kind(ts_kind: &str) -> &'static str {
         "function_item" | "function_declaration" | "function_definition" | "arrow_function" => {
             "function"
         }
+        // Dart top-level functions use `function_signature` (body is a sibling node).
+        "function_signature" => "function",
         "method_declaration" => "method",
         "impl_item" | "struct_item" | "class_declaration" | "class_definition" => "class",
+        // Dart mixins are class-like declarations; map to `class` (closest existing kind).
+        "mixin_declaration" => "class",
+        // Dart extensions are named bags of methods on a type; map to `class`.
+        "extension_declaration" => "class",
         "trait_item" | "interface_declaration" => "interface",
         "trait_declaration" => "trait",
         "enum_declaration" => "enum",
@@ -1181,8 +1372,15 @@ fn extract_name_from_text(text: &str, node_kind: &str) -> Option<String> {
         "function_item" | "function_declaration" | "function_definition" => {
             &["fn", "func", "function", "def"]
         }
+        // Dart top-level functions: `void main()` — `name:` field is reliable, but
+        // for the text fallback we extract the identifier immediately before `(`.
+        // The keyword list approach won't work here (return type varies), so return
+        // None and let the caller use the AST-based name instead.
+        "function_signature" => &[],
         "method_declaration" => &["function", "fn"],
         "struct_item" | "class_declaration" | "class_definition" => &["struct", "class"],
+        "mixin_declaration" => &["mixin"],
+        "extension_declaration" => &["extension"],
         "impl_item" => &["impl"],
         "trait_item" | "interface_declaration" => &["trait", "interface"],
         "trait_declaration" => &["trait"],
@@ -1720,5 +1918,415 @@ fn helper() -> u32 {
                 .map(|e| format!("{}:{}", e.kind, e.canonical_name))
                 .collect::<Vec<_>>()
         );
+    }
+
+    // ── Dart tests ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn dart_class_produces_named_class_entity() {
+        let chunk = make_chunk(
+            "test",
+            "lib/domain/contact.dart",
+            "file",
+            r#"class Contact {
+  final String id;
+  Contact(this.id);
+  void save() {}
+}"#,
+        );
+        let lang = languages::for_extension("dart").unwrap();
+        let result = extract_structure(&chunk, lang).unwrap();
+
+        // No anonymous_ entities.
+        for entity in &result.entities {
+            assert!(
+                !entity.canonical_name.starts_with("anonymous_"),
+                "should not produce anonymous entities, got: {}",
+                entity.canonical_name
+            );
+        }
+
+        let class_entity = result
+            .entities
+            .iter()
+            .find(|e| e.kind == "class" && e.canonical_name == "Contact");
+        assert!(
+            class_entity.is_some(),
+            "should extract class entity named Contact; entities: {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| format!("{}:{}", e.kind, e.canonical_name))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dart_mixin_produces_class_entity() {
+        // Dart mixins map to entity kind `class` (closest existing kind).
+        let chunk = make_chunk(
+            "test",
+            "lib/domain/serializable.dart",
+            "file",
+            r#"mixin Timestamped {
+  DateTime get createdAt;
+  bool get isRecent => true;
+}"#,
+        );
+        let lang = languages::for_extension("dart").unwrap();
+        let result = extract_structure(&chunk, lang).unwrap();
+
+        let mixin_entity = result
+            .entities
+            .iter()
+            .find(|e| e.kind == "class" && e.canonical_name == "Timestamped");
+        assert!(
+            mixin_entity.is_some(),
+            "dart mixin should produce class entity named Timestamped; entities: {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| format!("{}:{}", e.kind, e.canonical_name))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dart_extension_produces_class_entity() {
+        // Dart extensions map to entity kind `class` (closest existing kind).
+        let chunk = make_chunk(
+            "test",
+            "lib/util/extensions.dart",
+            "file",
+            r#"extension StringX on String {
+  bool get isBlank => trim().isEmpty;
+}"#,
+        );
+        let lang = languages::for_extension("dart").unwrap();
+        let result = extract_structure(&chunk, lang).unwrap();
+
+        let ext_entity = result
+            .entities
+            .iter()
+            .find(|e| e.kind == "class" && e.canonical_name == "StringX");
+        assert!(
+            ext_entity.is_some(),
+            "dart extension should produce class entity named StringX; entities: {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| format!("{}:{}", e.kind, e.canonical_name))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dart_enum_produces_enum_entity() {
+        let chunk = make_chunk(
+            "test",
+            "lib/domain/status.dart",
+            "file",
+            r#"enum ContactStatus { active, archived, pending }"#,
+        );
+        let lang = languages::for_extension("dart").unwrap();
+        let result = extract_structure(&chunk, lang).unwrap();
+
+        let enum_entity = result
+            .entities
+            .iter()
+            .find(|e| e.kind == "enum" && e.canonical_name == "ContactStatus");
+        assert!(
+            enum_entity.is_some(),
+            "should extract enum entity named ContactStatus; entities: {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| format!("{}:{}", e.kind, e.canonical_name))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dart_top_level_function_produces_function_entity() {
+        let chunk = make_chunk(
+            "test",
+            "lib/main.dart",
+            "file",
+            r#"void main() {
+  print('hello');
+}"#,
+        );
+        let lang = languages::for_extension("dart").unwrap();
+        let result = extract_structure(&chunk, lang).unwrap();
+
+        let fn_entity = result
+            .entities
+            .iter()
+            .find(|e| e.kind == "function" && e.canonical_name == "main");
+        assert!(
+            fn_entity.is_some(),
+            "should extract function entity named main; entities: {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| format!("{}:{}", e.kind, e.canonical_name))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dart_method_descent_produces_method_entities() {
+        let chunk = make_chunk(
+            "test",
+            "lib/domain/contact.dart",
+            "file",
+            r#"class Contact {
+  final String id;
+  Contact(this.id);
+  Contact.fromJson(Map<String, dynamic> json) : id = json['id'];
+  factory Contact.empty() => Contact('');
+  void save() {}
+  Map<String, dynamic> toJson() => {'id': id};
+}"#,
+        );
+        let lang = languages::for_extension("dart").unwrap();
+        let result = extract_structure(&chunk, lang).unwrap();
+
+        // Regular method `save` should produce a method entity.
+        let save_entity = result
+            .entities
+            .iter()
+            .find(|e| e.kind == "method" && e.canonical_name == "save");
+        assert!(
+            save_entity.is_some(),
+            "should extract method entity named save; entities: {:?}",
+            result
+                .entities
+                .iter()
+                .filter(|e| e.kind == "method")
+                .map(|e| &e.canonical_name)
+                .collect::<Vec<_>>()
+        );
+
+        // Named constructor `fromJson` should produce a method entity.
+        let from_json_entity = result
+            .entities
+            .iter()
+            .find(|e| e.kind == "method" && e.canonical_name == "fromJson");
+        assert!(
+            from_json_entity.is_some(),
+            "should extract method entity named fromJson (named constructor); entities: {:?}",
+            result
+                .entities
+                .iter()
+                .filter(|e| e.kind == "method")
+                .map(|e| &e.canonical_name)
+                .collect::<Vec<_>>()
+        );
+
+        // Factory constructor `empty` should produce a method entity.
+        let empty_entity = result
+            .entities
+            .iter()
+            .find(|e| e.kind == "method" && e.canonical_name == "empty");
+        assert!(
+            empty_entity.is_some(),
+            "should extract method entity named empty (factory constructor); entities: {:?}",
+            result
+                .entities
+                .iter()
+                .filter(|e| e.kind == "method")
+                .map(|e| &e.canonical_name)
+                .collect::<Vec<_>>()
+        );
+
+        // defines edge: Contact → save
+        let contact_to_save = result.edges.iter().any(|e| {
+            e.kind == "defines"
+                && e.from_entity_id.contains("contact")
+                && e.to_entity_id.contains("save")
+        });
+        assert!(
+            contact_to_save,
+            "should have defines edge from Contact to save; defines edges: {:?}",
+            result
+                .edges
+                .iter()
+                .filter(|e| e.kind == "defines")
+                .map(|e| format!("{} → {}", e.from_entity_id, e.to_entity_id))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dart_extends_implements_with_edges() {
+        // Correct Dart order: extends … with … implements …
+        let chunk = make_chunk(
+            "test",
+            "lib/ui/contact_view_model.dart",
+            "file",
+            r#"class ContactViewModel extends StateNotifier with Timestamped implements Disposable {
+  void load() {}
+}"#,
+        );
+        let lang = languages::for_extension("dart").unwrap();
+        let result = extract_structure(&chunk, lang).unwrap();
+
+        // extends: ContactViewModel → StateNotifier
+        assert!(
+            result.edges.iter().any(|e| {
+                e.kind == "extends"
+                    && e.from_entity_id.contains("contactviewmodel")
+                    && e.to_entity_id.contains("statenotifier")
+            }),
+            "should have extends edge ContactViewModel → StateNotifier; edges: {:?}",
+            result
+                .edges
+                .iter()
+                .map(|e| format!("{}:{} → {}", e.kind, e.from_entity_id, e.to_entity_id))
+                .collect::<Vec<_>>()
+        );
+
+        // with (maps to implements): ContactViewModel → Timestamped
+        assert!(
+            result.edges.iter().any(|e| {
+                e.kind == "implements"
+                    && e.from_entity_id.contains("contactviewmodel")
+                    && e.to_entity_id.contains("timestamped")
+            }),
+            "should have implements edge ContactViewModel → Timestamped (from `with`); edges: {:?}",
+            result
+                .edges
+                .iter()
+                .filter(|e| e.kind == "implements")
+                .map(|e| format!("{} → {}", e.from_entity_id, e.to_entity_id))
+                .collect::<Vec<_>>()
+        );
+
+        // implements: ContactViewModel → Disposable
+        assert!(
+            result.edges.iter().any(|e| {
+                e.kind == "implements"
+                    && e.from_entity_id.contains("contactviewmodel")
+                    && e.to_entity_id.contains("disposable")
+            }),
+            "should have implements edge ContactViewModel → Disposable; edges: {:?}",
+            result
+                .edges
+                .iter()
+                .filter(|e| e.kind == "implements")
+                .map(|e| format!("{} → {}", e.from_entity_id, e.to_entity_id))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dart_import_export_part_produces_imports_edges() {
+        let chunk = make_chunk(
+            "test",
+            "lib/domain/contact.dart",
+            "file",
+            r#"import 'package:meta/meta.dart';
+export 'serializable.dart';
+part 'contact.g.dart';"#,
+        );
+        let lang = languages::for_extension("dart").unwrap();
+        let result = extract_structure(&chunk, lang).unwrap();
+
+        let import_edges: Vec<_> = result
+            .edges
+            .iter()
+            .filter(|e| e.kind == "imports")
+            .collect();
+        assert!(
+            !import_edges.is_empty(),
+            "should extract import edges for Dart import/export/part"
+        );
+
+        // import 'package:meta/meta.dart'
+        assert!(
+            import_edges.iter().any(|e| e.to_entity_id.contains("meta")),
+            "should have imports edge to meta; edges: {:?}",
+            import_edges
+                .iter()
+                .map(|e| &e.to_entity_id)
+                .collect::<Vec<_>>()
+        );
+
+        // export 'serializable.dart'
+        assert!(
+            import_edges
+                .iter()
+                .any(|e| e.to_entity_id.contains("serializable")),
+            "should have imports edge to serializable (from export)"
+        );
+    }
+
+    #[test]
+    fn dart_doc_comment_extracted() {
+        let chunk = make_chunk(
+            "test",
+            "lib/domain/contact.dart#Contact",
+            "class",
+            r#"/// A domain model representing a contact in the system.
+class Contact {
+  final String id;
+  Contact(this.id);
+}"#,
+        );
+        let lang = languages::for_extension("dart").unwrap();
+        let result = extract_structure(&chunk, lang).unwrap();
+        assert!(
+            result.doc_comment.is_some(),
+            "should extract Dart doc comment (///)"
+        );
+        assert!(
+            result
+                .doc_comment
+                .as_deref()
+                .unwrap()
+                .contains("domain model"),
+            "doc comment content should contain 'domain model': {:?}",
+            result.doc_comment
+        );
+    }
+
+    #[test]
+    fn dart_entity_ids_use_slug_format() {
+        let chunk = make_chunk(
+            "test",
+            "lib/domain/contact.dart",
+            "file",
+            r#"class Contact {
+  void save() {}
+}"#,
+        );
+        let lang = languages::for_extension("dart").unwrap();
+        let result = extract_structure(&chunk, lang).unwrap();
+
+        for entity in &result.entities {
+            assert!(
+                entity.id.starts_with("test:"),
+                "Dart entity id should start with corpus prefix 'test:': {}",
+                entity.id
+            );
+            assert!(
+                !entity.id.contains(char::is_whitespace),
+                "Dart entity id must not contain whitespace: {}",
+                entity.id
+            );
+        }
+        for edge in &result.edges {
+            assert!(
+                edge.from_entity_id.starts_with("test:"),
+                "edge from_entity_id should start with 'test:': {}",
+                edge.from_entity_id
+            );
+            assert!(
+                edge.to_entity_id.starts_with("test:"),
+                "edge to_entity_id should start with 'test:': {}",
+                edge.to_entity_id
+            );
+        }
     }
 }
