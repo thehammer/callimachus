@@ -11,6 +11,59 @@ plus a `carefeed` collection containing all six for Alex's cross-repo queries.
 
 ---
 
+> ## ⚠️ ACTUAL BOOTSTRAP STATUS — read this first (updated 2026-06-15)
+>
+> The initial bootstrap was executed **manually** during the 2026-06-14/15
+> indexing session, and it **diverged from the HEAD-only procedure written
+> below** in three ways that change what you still need to do:
+>
+> 1. **Full git history, not HEAD-only.** The five fresh corpora were indexed
+>    with `calli ingest code <name> <path> --with-history` (full first-parent
+>    walk), **not** the HEAD-only `calli index` the driver in §3 runs. This was
+>    a deliberate call (archaeology depth). Cost was modest — the diff-aware
+>    pipeline copies unchanged artifacts forward and the layer-2 cache
+>    short-circuits the LLM; the wall-clock cost was git-checkout overhead, not
+>    API spend.
+>
+> 2. **Seven launch corpora, not six — `carefeed-core` and `core-packages` are
+>    SEPARATE.** Full-history can only walk one git history at a time, so the
+>    "combined parent dir" approach in **§1.4 was NOT used and is superseded** —
+>    skip it. The launch set is:
+>    `admin-portal`, `referral-monitor`, `payments`, `family-portal`,
+>    `employee-app`, `carefeed-core`, `core-packages` (7 corpus ids — note the
+>    hyphen in `employee-app`). The `carefeed` collection and the app's
+>    launch-corpora allowlist must list all **seven**; the §5 verify expectations
+>    below (written for six) should read seven.
+>
+> 3. **Actual production pinakes path:**
+>    `~/Code/knowledge/data/carefeed-prod.pinakes` (a copy of
+>    `~/Library/Application Support/callimachus/index.pinakes`), not
+>    `/tmp/carefeed-production.pinakes`.
+>
+> **What is already DONE:** the baseline copy, and the full-history index of all
+> five fresh corpora (`payments`, `family-portal`, `employee-app`,
+> `carefeed-core`, `core-packages`). **Do NOT re-run §3's index steps for these
+> — that would redundantly re-index them HEAD-only.**
+>
+> **What REMAINS of the bootstrap (this is your actual to-do):**
+> - **admin-portal catch-up** — it is a baseline copy ~3+ weeks stale. Bring it
+>   current against fresh `origin/main`:
+>   `calli reindex admin-portal --since <last-indexed-commit-or-date> --pinakes ~/Code/knowledge/data/carefeed-prod.pinakes`
+>   (or let W20's first nightly run catch it up).
+> - **referral-monitor catch-up** — baseline, ~weeks stale; same treatment
+>   (optional / W20 handles it).
+> - **Create the `carefeed` collection** with all **seven** corpora as members
+>   (the driver's collection step still applies — run it, or do it manually).
+> - **Verify** — run `scripts/verify-pinakes.sh` (expect **7** launch corpora,
+>   not 6).
+> - **Publish** generation 0 to S3 (§6, W20's bucket).
+>
+> Sections 1–3 below remain the correct reference for the HEAD-only procedure
+> and the driver mechanics; treat them as documentation of *how* indexing works,
+> not as steps to re-run for the already-indexed corpora.
+
+---
+
 ## 1. Prerequisites
 
 ### 1.1 `calli` binary
