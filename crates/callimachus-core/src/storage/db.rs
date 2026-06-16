@@ -28,6 +28,9 @@ fn migrations() -> Migrations<'static> {
         )),
         M::up(include_str!("../../migrations/016_edge_origin_scope.sql")),
         M::up(include_str!("../../migrations/017_line_spans.sql")),
+        M::up(include_str!(
+            "../../migrations/018_drop_legacy_version_columns.sql"
+        )),
     ])
 }
 

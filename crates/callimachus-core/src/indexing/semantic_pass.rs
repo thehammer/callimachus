@@ -10,6 +10,7 @@ use tokio::task::JoinSet;
 use crate::{
     adapter::{ExtractedSemantic, SourceAdapter},
     storage::{StorageBackend, run_log::PassStats},
+    types::provenance::Provenance,
     types::{Chunk, Corpus},
 };
 
@@ -125,10 +126,10 @@ pub async fn run(
                 Ok(Some(mut sem)) => {
                     if !opts.dry_run {
                         for entity in &mut sem.entities {
-                            entity.derived_at_version = version.clone();
+                            entity.provenance = version.as_deref().map(Provenance::concrete);
                         }
                         for edge in &mut sem.edges {
-                            edge.derived_at_version = version.clone();
+                            edge.provenance = version.as_deref().map(Provenance::concrete);
                         }
                         for entity in &sem.entities {
                             db.entity_upsert(entity)?;
@@ -222,10 +223,10 @@ fn apply_join_result(
         Ok((chunk_id, TaskOutcome::Ok(Some(mut sem)))) => {
             if !dry_run {
                 for entity in &mut sem.entities {
-                    entity.derived_at_version = version.map(str::to_string);
+                    entity.provenance = version.map(Provenance::concrete);
                 }
                 for edge in &mut sem.edges {
-                    edge.derived_at_version = version.map(str::to_string);
+                    edge.provenance = version.map(Provenance::concrete);
                 }
                 for entity in &sem.entities {
                     db.entity_upsert(entity)?;

@@ -127,7 +127,7 @@ pub fn commit(db: &Database, emb: &StoredEmbedding, provenance: &Provenance) -> 
 }
 
 /// Archive every head embedding for `chunk_id` into `embeddings_history`,
-/// stamped `superseded_at_sha = superseded_at_version`. Called by the cascade
+/// stamped `superseded_at_sha = superseded_at_sha`. Called by the cascade
 /// just before a dirty chunk (and, by FK cascade, its embeddings) is deleted, so
 /// the vector survives in history with honest supersession provenance.
 ///
@@ -135,7 +135,7 @@ pub fn commit(db: &Database, emb: &StoredEmbedding, provenance: &Provenance) -> 
 pub(crate) fn archive_for_chunk(
     conn: &Connection,
     chunk_id: &str,
-    superseded_at_version: &str,
+    superseded_at_sha: &str,
 ) -> Result<u64> {
     let now = Utc::now().to_rfc3339();
     let rows = conn.execute(
@@ -148,7 +148,7 @@ pub(crate) fn archive_for_chunk(
                 derived_at_kind, derived_at_sha, ?2, ?3
          FROM embeddings
          WHERE chunk_id = ?1",
-        rusqlite::params![chunk_id, superseded_at_version, now],
+        rusqlite::params![chunk_id, superseded_at_sha, now],
     )?;
     Ok(rows as u64)
 }

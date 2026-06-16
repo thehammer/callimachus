@@ -11,7 +11,7 @@
 //!   performs the same backward backfill.  `--from` and `--back` are mutually
 //!   exclusive; exactly one is required.
 //! * `calli history prune <corpus_id> --keep N [--dry-run]` — delete all
-//!   history rows whose `superseded_at_version` is older than the N-th
+//!   history rows whose `superseded_at_sha` is older than the N-th
 //!   most-recent supersession SHA.  **This operation is destructive and
 //!   irreversible.**  Use `--dry-run` to preview what would be deleted.
 
@@ -94,7 +94,7 @@ pub enum HistoryCommand {
     /// Prune history rows older than the N most-recent supersession SHAs.
     ///
     /// Deletes all rows in every `*_history` table whose
-    /// `superseded_at_version` is older than the N-th most-recent supersession
+    /// `superseded_at_sha` is older than the N-th most-recent supersession
     /// SHA (ordered by `MAX(superseded_at)` across all eight history tables).
     /// All eight tables are pruned atomically inside a single transaction; a
     /// forced failure rolls back every DELETE.

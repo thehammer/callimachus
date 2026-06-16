@@ -62,6 +62,14 @@ invariant is enforced by `Provenance::refine` and `StorageBackend::refine_proven
 The `(derived_at_kind, derived_at_sha)` column pair on every head and history
 table encodes the tagged union. Migration 013 introduced these columns.
 
+Migration 015 completed the cleanup: the legacy `derived_at_version TEXT` and
+`superseded_at_version TEXT` columns (from migration 012) were dropped from all
+head and history tables. The uniqueness indexes on `*_history` tables, which
+previously used `COALESCE(NULLIF(derived_at_sha,''), derived_at_version, '')`
+as the key expression, were recreated as plain column-only indexes on
+`(corpus_id, ..., derived_at_kind, derived_at_sha)`. All Rust types now carry
+`provenance: Option<Provenance>` instead of `derived_at_version: Option<String>`.
+
 ### Writing provenance — the history_layer pattern
 
 All provenance writes go through `crates/callimachus-core/src/indexing/history_layer.rs`.

@@ -22,6 +22,9 @@ pub enum CalError {
 
     #[error("{0}")]
     Other(String),
+
+    #[error("{0}")]
+    Anyhow(#[from] anyhow::Error),
 }
 
 pub type Result<T> = std::result::Result<T, CalError>;

@@ -1,3 +1,4 @@
+use crate::types::provenance::Provenance;
 use serde::{Deserialize, Serialize};
 
 /// Per-entity contract: static signals merged with LLM-inferred semantic data.
@@ -29,8 +30,8 @@ pub struct EntityContract {
     /// Coarse quality tier: "opus" > "sonnet" > "haiku" > "unknown".
     pub model_tier: String,
     pub generated_at: String,
-    /// The manifest `current_version` at which this contract was last written.
-    /// `None` for rows that pre-date migration 012.
+    /// The honest-provenance tag for this contract. `None` for rows that
+    /// pre-date migration 013.
     #[serde(default)]
-    pub derived_at_version: Option<String>,
+    pub provenance: Option<Provenance>,
 }
