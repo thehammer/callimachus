@@ -29,6 +29,9 @@ fn go_language() -> tree_sitter::Language {
 fn php_language() -> tree_sitter::Language {
     tree_sitter_php::LANGUAGE_PHP.into()
 }
+fn dart_language() -> tree_sitter::Language {
+    tree_sitter_dart_orchard::LANGUAGE.into()
+}
 
 // ── Rust ────────────────────────────────────────────────────────────────────
 
@@ -93,6 +96,28 @@ const PHP_CALL_QUERY: &str = r#"
 ]
 "#;
 
+// ── Dart ─────────────────────────────────────────────────────────────────────
+
+/// Top-level Dart constructs captured by the chunker.
+///
+/// `function_signature` matches top-level Dart functions whose signature and
+/// body are separate sibling nodes under `program` (unlike Rust/PHP where the
+/// body is nested inside the item node).
+const DART_TOP_LEVEL_QUERY: &str = r#"
+(program
+  [(class_definition) (mixin_declaration) (enum_declaration) (extension_declaration) (function_signature)] @item)
+"#;
+
+/// Call query for Dart.
+///
+/// Dart call expressions are expressed as `(identifier) (selector (argument_part))`
+/// sibling pairs rather than a single `call_expression` wrapper node.  Capturing
+/// the leading identifier of each expression_statement gives an approximate callee
+/// set suitable for the `calls` edge graph.
+const DART_CALL_QUERY: &str = r#"
+(expression_statement . (identifier) @callee)
+"#;
+
 // ── Registry ────────────────────────────────────────────────────────────────
 
 static SUPPORTED_LANGUAGES: &[LangConfig] = &[
@@ -138,6 +163,13 @@ static SUPPORTED_LANGUAGES: &[LangConfig] = &[
         language_fn: php_language,
         top_level_query: PHP_TOP_LEVEL_QUERY,
         call_query: PHP_CALL_QUERY,
+    },
+    LangConfig {
+        name: "dart",
+        extensions: &["dart"],
+        language_fn: dart_language,
+        top_level_query: DART_TOP_LEVEL_QUERY,
+        call_query: DART_CALL_QUERY,
     },
 ];
 
