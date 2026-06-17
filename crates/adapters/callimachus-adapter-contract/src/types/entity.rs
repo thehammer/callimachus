@@ -1,4 +1,5 @@
 use crate::types::location::Location;
+use crate::types::provenance::Provenance;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,10 +21,10 @@ pub struct Entity {
     pub appearance_count: u32,
     /// Extraction confidence 0.0–1.0.
     pub confidence: f32,
-    /// The manifest `current_version` (git SHA or tree hash) at which this
-    /// entity was last written.  `None` for rows that pre-date migration 012.
+    /// The honest-provenance tag for this entity. `None` for rows that
+    /// pre-date migration 013.
     #[serde(default)]
-    pub derived_at_version: Option<String>,
+    pub provenance: Option<Provenance>,
     /// 0-based line number of the entity's defining node start within its
     /// source file.  `None` for non-code corpora and pre-migration rows.
     #[serde(default)]
@@ -48,7 +49,7 @@ impl Entity {
             last_location: None,
             appearance_count: 0,
             confidence: 0.5,
-            derived_at_version: None,
+            provenance: None,
             start_line: None,
             end_line: None,
         }

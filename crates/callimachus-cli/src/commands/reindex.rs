@@ -96,7 +96,7 @@ pub async fn run(
     };
 
     // Resolve the corpus's current HEAD as a `git:<oid>` version so the Layer-2
-    // passes (purpose/contract/theme) stamp `derived_at_version` and the version
+    // passes (purpose/contract/theme) stamp provenance and the version
     // anchor advances. Without this, reindex wrote NULL-provenance artifacts and
     // never bumped `last_indexed_version`. `all_dirty` keeps every entity a
     // candidate; the per-entity cache still skips unchanged ones, so only changed

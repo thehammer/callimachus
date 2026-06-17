@@ -24,6 +24,11 @@ pub const DEFAULT_EXCLUDE_GLOBS: &[&str] = &[
     "target/**",
     "dist/**",
     "build/**",
+    // Flutter-generated files (build_runner / json_serializable / freezed).
+    // These are machine-generated and add noise; excluded via explicit suffix
+    // check in chunk_directory AND here for glob-based filtering.
+    "**/*.g.dart",
+    "**/*.freezed.dart",
 ];
 
 // ── Options ──────────────────────────────────────────────────────────────────
@@ -143,6 +148,15 @@ pub async fn chunk_directory(
 
         // Apply exclude globs first.
         if is_excluded(&rel_str, &opts.exclude_globs) {
+            continue;
+        }
+
+        // Skip Flutter-generated Dart files (build_runner / freezed).
+        // These are machine-generated and add noise to the index.  The glob
+        // entries in DEFAULT_EXCLUDE_GLOBS also cover this, but an explicit
+        // suffix check is faster and clearer.
+        if rel_str.ends_with(".g.dart") || rel_str.ends_with(".freezed.dart") {
+            tracing::debug!("[chunk] skipping Flutter-generated file: {rel_str}");
             continue;
         }
 
@@ -370,7 +384,7 @@ fn chunk_file(
 
     // Extract item data from AST nodes in a single pass.
     // We extract owned data immediately to avoid tree-sitter cursor lifetime issues.
-    let items: Vec<ItemInfo> = {
+    let raw_items: Vec<ItemInfo> = {
         let mut cursor = QueryCursor::new();
         let source_bytes = content.as_bytes();
         let root_node = tree.root_node();
@@ -389,6 +403,48 @@ fn chunk_file(
                     .collect::<Vec<_>>()
             })
             .collect()
+    };
+
+    // Dart: top-level functions are split into sibling `function_signature` +
+    // `function_body` nodes under `program`.  The query captures only the
+    // signature (no containing wrapper exists), so we extend its byte range to
+    // include the immediately-following body node.  Without this, the signature
+    // alone is typically < min_chunk_bytes and gets dropped silently.
+    let items: Vec<ItemInfo> = if lang.name == "dart" {
+        // Build a map: signature_start_byte → (body_end_byte, body_end_row)
+        let mut body_ext: std::collections::HashMap<usize, (usize, usize)> =
+            std::collections::HashMap::new();
+        let root_node = tree.root_node();
+        let mut walker = root_node.walk();
+        for child in root_node.children(&mut walker) {
+            if child.kind() == "function_signature"
+                && let Some(next) = child.next_sibling()
+                && next.kind() == "function_body"
+            {
+                body_ext.insert(
+                    child.byte_range().start,
+                    (next.byte_range().end, next.end_position().row),
+                );
+            }
+        }
+        raw_items
+            .into_iter()
+            .map(|item| {
+                if item.node_kind == "function_signature"
+                    && let Some(&(end_byte, end_row)) = body_ext.get(&item.byte_range.start)
+                {
+                    return ItemInfo {
+                        byte_range: item.byte_range.start..end_byte,
+                        end_row,
+                        node_kind: item.node_kind,
+                        start_row: item.start_row,
+                    };
+                }
+                item
+            })
+            .collect()
+    } else {
+        raw_items
     };
 
     for item in &items {
@@ -493,12 +549,17 @@ fn node_kind_to_chunk_kind(ts_kind: &str) -> &'static str {
         | "function_definition"
         | "method_declaration"
         | "arrow_function" => "function",
+        // Dart top-level functions use `function_signature` (body is a sibling node).
+        "function_signature" => "function",
         "impl_item" | "struct_item" | "class_declaration" | "class_definition" => "class",
+        // Dart: mixins and extensions map to `class` (closest existing chunk kind).
+        "mixin_declaration" | "extension_declaration" => "class",
         "trait_item" | "interface_declaration" | "trait_declaration" => "interface",
         "mod_item" | "module" | "namespace" | "namespace_definition" => "module",
         "type_declaration" | "type_alias_declaration" => "interface",
         "export_statement" => "module",
         // PHP enum → treat as interface (no separate enum chunk kind).
+        // Dart enum_declaration also maps here (no separate `enum` chunk kind).
         "enum_declaration" => "interface",
         _ => "function",
     }
@@ -514,6 +575,33 @@ fn extract_symbol_from_text(text: &str, node_kind: &str, lang: &LangConfig) -> O
         return None;
     }
 
+    // Dart `function_signature` special case: the symbol name is the last identifier
+    // before the opening parenthesis.  Return types (void, String, int, …) precede
+    // the name and vary, so the keyword-list heuristic below doesn't apply.
+    if node_kind == "function_signature" {
+        if let Some(paren_pos) = text.find('(') {
+            let before_paren = &text[..paren_pos];
+            let last_ident: String = before_paren
+                .split_whitespace()
+                .last()
+                .map(|t| {
+                    t.chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !last_ident.is_empty()
+                && last_ident
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
+            {
+                return Some(last_ident);
+            }
+        }
+        return None;
+    }
+
     // Keywords that precede the symbol name.
     let keywords: &[&str] = match node_kind {
         "function_item" | "function_declaration" | "function_definition" => {
@@ -522,6 +610,9 @@ fn extract_symbol_from_text(text: &str, node_kind: &str, lang: &LangConfig) -> O
         "struct_item" | "class_declaration" | "class_definition" | "impl_item" => {
             &["struct", "class", "impl"]
         }
+        // Dart: mixins and extensions follow the same pattern as class/struct.
+        "mixin_declaration" => &["mixin"],
+        "extension_declaration" => &["extension"],
         "trait_item" | "interface_declaration" | "trait_declaration" => &["trait", "interface"],
         "mod_item" | "namespace_definition" => &["mod", "namespace"],
         "type_declaration" | "type_alias_declaration" => &["type"],
@@ -1081,6 +1172,110 @@ h1 { color: red; }
         let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
         assert!(chunks.iter().any(|c| c.location.uri().contains("a.rs")));
         assert!(chunks.iter().any(|c| c.location.uri().contains("b.rs")));
+    }
+
+    #[tokio::test]
+    async fn dart_generated_files_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        // Hand-written Dart file — should be chunked.
+        std::fs::write(
+            dir.path().join("contact.dart"),
+            r#"class Contact { void save() {} }"#,
+        )
+        .unwrap();
+        // build_runner generated file — must be excluded.
+        std::fs::write(
+            dir.path().join("contact.g.dart"),
+            "// GENERATED CODE - DO NOT MODIFY BY HAND\nclass _$Contact {}",
+        )
+        .unwrap();
+        // freezed generated file — must be excluded.
+        std::fs::write(
+            dir.path().join("contact.freezed.dart"),
+            "// coverage:ignore-file\nclass _$ContactCopyWith {}",
+        )
+        .unwrap();
+
+        let opts = ChunkOptions {
+            min_chunk_bytes: 1,
+            ..ChunkOptions::default()
+        };
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+
+        // No chunk should reference a .g.dart or .freezed.dart file.
+        for c in &chunks {
+            let uri = c.location.uri();
+            assert!(
+                !uri.ends_with(".g.dart"),
+                ".g.dart file must produce zero chunks, got: {uri}"
+            );
+            assert!(
+                !uri.contains(".g.dart#"),
+                ".g.dart symbol chunk must not appear: {uri}"
+            );
+            assert!(
+                !uri.ends_with(".freezed.dart"),
+                ".freezed.dart file must produce zero chunks, got: {uri}"
+            );
+        }
+
+        // The hand-written contact.dart must still produce chunks.
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.location.uri().contains("contact.dart")
+                    && !c.location.uri().contains(".g.dart")
+                    && !c.location.uri().contains(".freezed.dart")),
+            "contact.dart should produce at least one chunk; URIs: {:?}",
+            chunks.iter().map(|c| c.location.uri()).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn dart_file_produces_class_and_function_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let dart_content = r#"import 'package:meta/meta.dart';
+
+class Contact {
+  final String id;
+  Contact(this.id);
+  void save() {}
+}
+
+void main() {
+  final c = Contact('1');
+  c.save();
+}
+"#;
+        std::fs::write(dir.path().join("main.dart"), dart_content).unwrap();
+
+        let opts = ChunkOptions {
+            min_chunk_bytes: 10,
+            ..ChunkOptions::default()
+        };
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+
+        let item_chunks: Vec<_> = chunks.iter().filter(|c| c.kind != "file").collect();
+        assert!(
+            !item_chunks.is_empty(),
+            "Dart file should produce item chunks; all chunks: {:?}",
+            chunks
+                .iter()
+                .map(|c| format!("{}:{}", c.kind, c.location.uri()))
+                .collect::<Vec<_>>()
+        );
+
+        let uris: Vec<_> = item_chunks.iter().map(|c| c.location.uri()).collect();
+        assert!(
+            uris.iter().any(|u| u.contains("#Contact")),
+            "expected #Contact chunk; item URIs: {:?}",
+            uris
+        );
+        assert!(
+            uris.iter().any(|u| u.contains("#main")),
+            "expected #main chunk; item URIs: {:?}",
+            uris
+        );
     }
 
     #[test]

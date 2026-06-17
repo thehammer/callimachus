@@ -1,3 +1,4 @@
+use crate::types::provenance::Provenance;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,10 +49,10 @@ pub struct Summary {
     /// Coarse quality tier: "opus" > "sonnet" > "haiku" > "unknown".
     pub model_tier: String,
     pub generated_at: String,
-    /// The manifest `current_version` at which this summary was last written.
-    /// `None` for rows that pre-date migration 012.
+    /// The honest-provenance tag for this summary. `None` for rows that
+    /// pre-date migration 013.
     #[serde(default)]
-    pub derived_at_version: Option<String>,
+    pub provenance: Option<Provenance>,
 }
 
 impl Default for Summary {
@@ -66,7 +67,7 @@ impl Default for Summary {
             model: String::new(),
             model_tier: String::new(),
             generated_at: String::new(),
-            derived_at_version: None,
+            provenance: None,
         }
     }
 }

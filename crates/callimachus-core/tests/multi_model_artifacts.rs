@@ -60,7 +60,7 @@ fn make_purpose(entity_id: &str, corpus_id: &str, model: &str) -> EntityPurpose 
         model: model.to_string(),
         model_tier: callimachus_llm::model_tier(model).to_string(),
         generated_at: chrono::Utc::now().to_rfc3339(),
-        derived_at_version: None,
+        provenance: None,
     }
 }
 
@@ -87,7 +87,7 @@ fn make_summary(corpus_id: &str, target_id: &str, model: &str) -> Summary {
         model: model.to_string(),
         model_tier: callimachus_llm::model_tier(model).to_string(),
         generated_at: chrono::Utc::now().to_rfc3339(),
-        derived_at_version: None,
+        provenance: None,
     }
 }
 
