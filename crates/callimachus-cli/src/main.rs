@@ -87,6 +87,14 @@ enum Command {
         /// Pin Layer-2 LLM calls to deterministic sampling.
         #[arg(long)]
         stable_sampling: bool,
+        /// Override the source path used for reindexing.
+        ///
+        /// When set, the corpus's stored source is ignored and this path is used
+        /// for change detection, git rev-parse, and chunk discovery. Nothing is
+        /// written back to the corpus row. Useful when the clone path differs from
+        /// the registered source (e.g. in container-based indexing environments).
+        #[arg(long)]
+        source: Option<String>,
     },
 
     /// Watch a corpus source and reindex on changes.
@@ -540,6 +548,7 @@ async fn main() -> Result<()> {
             dry_run,
             provider,
             stable_sampling,
+            source,
         } => {
             let db = open_db(&db_path)?;
             commands::reindex::run(
@@ -548,6 +557,7 @@ async fn main() -> Result<()> {
                 dry_run,
                 provider,
                 stable_sampling,
+                source,
                 db,
                 &global_config,
             )
