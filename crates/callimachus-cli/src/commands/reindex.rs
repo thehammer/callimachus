@@ -219,11 +219,11 @@ mod tests {
 
         super::run(
             "src-override-test",
-            None,                           // since
-            true,                           // dry_run
-            Some("dry-run".to_string()),    // provider_override
-            false,                          // stable_sampling
-            Some(override_path.clone()),    // source_override — valid temp dir
+            None,                        // since
+            true,                        // dry_run
+            Some("dry-run".to_string()), // provider_override
+            false,                       // stable_sampling
+            Some(override_path.clone()), // source_override — valid temp dir
             db,
             &GlobalConfig::default(),
         )
@@ -246,11 +246,11 @@ mod tests {
 
         let err = super::run(
             "src-bad-override-test",
-            None,                                         // since
-            true,                                         // dry_run
-            Some("dry-run".to_string()),                  // provider_override
-            false,                                        // stable_sampling
-            Some("/nonexistent/path/12345".to_string()),  // source_override — bad path
+            None,                                        // since
+            true,                                        // dry_run
+            Some("dry-run".to_string()),                 // provider_override
+            false,                                       // stable_sampling
+            Some("/nonexistent/path/12345".to_string()), // source_override — bad path
             db,
             &GlobalConfig::default(),
         )
