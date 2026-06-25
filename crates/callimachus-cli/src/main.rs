@@ -87,6 +87,14 @@ enum Command {
         /// Pin Layer-2 LLM calls to deterministic sampling.
         #[arg(long)]
         stable_sampling: bool,
+        /// Override the source path baked into the corpus record.
+        ///
+        /// Use this when the corpus was seeded with an absolute path that does
+        /// not exist in the current environment (e.g. an indexer container that
+        /// clones repos to a temporary directory). The override is applied
+        /// in-memory only — the corpus record in the pinakes is not mutated.
+        #[arg(long)]
+        source: Option<String>,
     },
 
     /// Watch a corpus source and reindex on changes.
@@ -540,6 +548,7 @@ async fn main() -> Result<()> {
             dry_run,
             provider,
             stable_sampling,
+            source,
         } => {
             let db = open_db(&db_path)?;
             commands::reindex::run(
@@ -548,6 +557,7 @@ async fn main() -> Result<()> {
                 dry_run,
                 provider,
                 stable_sampling,
+                source,
                 db,
                 &global_config,
             )

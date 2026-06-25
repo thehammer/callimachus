@@ -25,6 +25,7 @@ pub async fn run(
     dry_run: bool,
     provider_override: Option<String>,
     stable_sampling: bool,
+    source_override: Option<String>,
     db: Arc<dyn StorageBackend>,
     config: &GlobalConfig,
 ) -> Result<()> {
@@ -32,6 +33,27 @@ pub async fn run(
         .corpus_require(corpus_id)
         .map_err(|e| anyhow::anyhow!("{e}"))
         .map_err(|e| e.context(format!("corpus '{corpus_id}' not found")))?;
+
+    // Apply --source override in-memory only.  The stored corpus record is never mutated.
+    let corpus = if let Some(ref override_path) = source_override {
+        if !std::path::Path::new(override_path).exists() {
+            bail!(
+                "--source path does not exist: {override_path}\n\
+                 Refusing to proceed — an absent source path would cause all \
+                 existing chunks to be treated as orphaned and deleted."
+            );
+        }
+        eprintln!(
+            "note: using --source override '{}' (stored path: '{}')",
+            override_path, corpus.source
+        );
+        callimachus_adapter_contract::types::Corpus {
+            source: override_path.clone(),
+            ..corpus
+        }
+    } else {
+        corpus
+    };
 
     let provider_config = resolve_provider(provider_override, config)?;
     let llm = build_provider(provider_config)
@@ -169,10 +191,76 @@ mod tests {
             true,                        // dry_run
             Some("dry-run".to_string()), // provider_override (no API key needed)
             false,                       // stable_sampling
+            None,                        // source_override
             db,
             &GlobalConfig::default(),
         )
         .await
         .unwrap();
+    }
+
+    /// A dry-run with `--source` pointing at an existing temp dir must succeed
+    /// and use the override path (not the stored source).
+    #[tokio::test]
+    async fn source_override_valid_path_dry_run_succeeds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let override_path = dir.path().to_str().unwrap().to_string();
+
+        let db: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        // Seed the corpus with a *different* (non-existent) stored source to
+        // prove the override replaces it.
+        let corpus = Corpus::new(
+            "src-override-test".to_string(),
+            "Source Override Test".to_string(),
+            "code".to_string(),
+            "/nonexistent/stored/path".to_string(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        super::run(
+            "src-override-test",
+            None,                           // since
+            true,                           // dry_run
+            Some("dry-run".to_string()),    // provider_override
+            false,                          // stable_sampling
+            Some(override_path.clone()),    // source_override — valid temp dir
+            db,
+            &GlobalConfig::default(),
+        )
+        .await
+        .expect("dry-run with valid --source override should succeed");
+    }
+
+    /// A `--source` pointing at a non-existent path must fail loudly and must
+    /// NOT proceed to change detection (which would wipe all chunks).
+    #[tokio::test]
+    async fn source_override_nonexistent_path_fails_loudly() {
+        let db: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        let corpus = Corpus::new(
+            "src-bad-override-test".to_string(),
+            "Bad Source Override Test".to_string(),
+            "code".to_string(),
+            env!("CARGO_MANIFEST_DIR").to_string(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        let err = super::run(
+            "src-bad-override-test",
+            None,                                         // since
+            true,                                         // dry_run
+            Some("dry-run".to_string()),                  // provider_override
+            false,                                        // stable_sampling
+            Some("/nonexistent/path/12345".to_string()),  // source_override — bad path
+            db,
+            &GlobalConfig::default(),
+        )
+        .await
+        .expect_err("bad --source override must return an error");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not exist") || msg.contains("/nonexistent/path/12345"),
+            "error message should mention the bad path; got: {msg}"
+        );
     }
 }
