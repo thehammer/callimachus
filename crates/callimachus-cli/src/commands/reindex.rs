@@ -212,10 +212,10 @@ mod tests {
 
         let result = super::run(
             "override-test",
-            None,                        // since
-            true,                        // dry_run
-            Some("dry-run".to_string()), // provider_override
-            false,                       // stable_sampling
+            None,                                               // since
+            true,                                               // dry_run
+            Some("dry-run".to_string()),                        // provider_override
+            false,                                              // stable_sampling
             Some(tmpdir.path().to_string_lossy().into_owned()), // source_override — real path
             db,
             &GlobalConfig::default(),
@@ -247,7 +247,7 @@ mod tests {
 
         let result = super::run(
             "bad-override-test",
-            None,                        // since
+            None,                                                  // since
             false,                       // dry_run — would wipe if it got that far
             Some("dry-run".to_string()), // provider_override
             false,                       // stable_sampling
