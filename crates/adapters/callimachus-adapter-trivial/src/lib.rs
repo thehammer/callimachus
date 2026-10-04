@@ -11,6 +11,7 @@
 //! Each `*.txt` file under the source path becomes one `document` chunk and one
 //! structural `document` entity. No LLM is required, so it indexes cleanly
 //! under a dry-run provider.
+#![allow(clippy::double_must_use)] // async_trait expansion + newer clippy; see callimachus-llm/src/lib.rs
 
 use std::path::Path;
 use std::sync::Arc;

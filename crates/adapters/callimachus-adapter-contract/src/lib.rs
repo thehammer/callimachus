@@ -17,6 +17,7 @@
 //! `callimachus-core` depends on this crate and re-exports every type here at
 //! its historical path, so the rest of the workspace is unaffected by the
 //! extraction.
+#![allow(clippy::double_must_use)] // async_trait expansion + newer clippy; see callimachus-llm/src/lib.rs
 
 pub mod change;
 pub mod contract;

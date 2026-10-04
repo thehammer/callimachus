@@ -1,3 +1,4 @@
+#![allow(clippy::double_must_use)] // async_trait expansion + newer clippy; see callimachus-llm/src/lib.rs
 pub mod adapter;
 
 /// The current pipeline version. Bump this with each new phase that adds
