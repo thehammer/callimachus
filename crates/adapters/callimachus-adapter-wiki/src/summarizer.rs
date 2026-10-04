@@ -15,7 +15,7 @@ pub async fn summarize_section(
          <content>\n{content}\n</content>\n\n\
          Write a 1-2 sentence summary of this section. Focus on the key concept or information.\n\
          Return ONLY the summary text.",
-        content = &chunk.content,
+        content = chunk.content,
     );
 
     let resp = llm
