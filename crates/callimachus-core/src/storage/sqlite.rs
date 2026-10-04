@@ -1235,8 +1235,8 @@ impl StorageBackend for SqliteBackend {
               last_modified_commit_message, last_modified_author,
               derived_at_kind, derived_at_sha,
               superseded_at_sha, superseded_at,
-              start_line, end_line)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10,?11,NULL,NULL,'concrete',?10,?12,?13,?14,?15)",
+              start_line, end_line, language)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10,?11,NULL,NULL,'concrete',?10,?12,?13,?14,?15,?16)",
             rusqlite::params![
                 chunk.id,
                 chunk.corpus_id,
@@ -1253,6 +1253,7 @@ impl StorageBackend for SqliteBackend {
                 now,
                 chunk.start_line.map(|v| v as i64),
                 chunk.end_line.map(|v| v as i64),
+                chunk.language,
             ],
         )?;
         Ok(())

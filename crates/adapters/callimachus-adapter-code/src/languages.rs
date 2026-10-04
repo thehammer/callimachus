@@ -1,4 +1,8 @@
+use callimachus_adapter_contract::Chunk;
+
+
 /// Configuration for a supported programming language.
+#[derive(Debug)]
 pub struct LangConfig {
     pub name: &'static str,
     pub extensions: &'static [&'static str],
@@ -31,6 +35,12 @@ fn php_language() -> tree_sitter::Language {
 }
 fn dart_language() -> tree_sitter::Language {
     tree_sitter_dart_orchard::LANGUAGE.into()
+}
+fn bash_language() -> tree_sitter::Language {
+    tree_sitter_bash::LANGUAGE.into()
+}
+fn make_language() -> tree_sitter::Language {
+    tree_sitter_make::LANGUAGE.into()
 }
 
 // ── Rust ────────────────────────────────────────────────────────────────────
@@ -118,6 +128,32 @@ const DART_CALL_QUERY: &str = r#"
 (expression_statement . (identifier) @callee)
 "#;
 
+// ── Bash ────────────────────────────────────────────────────────────────────
+
+/// Top-level shell functions (`foo() { … }`, `function foo { … }`).
+const BASH_TOP_LEVEL_QUERY: &str = r#"
+(program (function_definition) @item)
+"#;
+
+/// Every command invocation; the callee set is filtered against known
+/// function names by the extractor, so external commands (`ls`, `git`) drop out.
+const BASH_CALL_QUERY: &str = r#"
+(command name: (command_name) @callee)
+"#;
+
+// ── Make ────────────────────────────────────────────────────────────────────
+
+/// Top-level rules (`target: prereqs` plus recipe).
+const MAKE_TOP_LEVEL_QUERY: &str = r#"
+(makefile (rule) @item)
+"#;
+
+/// Makefiles have no call syntax worth modelling; `$(call …)` is the closest
+/// construct and is rare.  Kept as a valid query that seldom matches.
+const MAKE_CALL_QUERY: &str = r#"
+(function_call function: (_) @callee)
+"#;
+
 // ── Registry ────────────────────────────────────────────────────────────────
 
 static SUPPORTED_LANGUAGES: &[LangConfig] = &[
@@ -171,6 +207,20 @@ static SUPPORTED_LANGUAGES: &[LangConfig] = &[
         top_level_query: DART_TOP_LEVEL_QUERY,
         call_query: DART_CALL_QUERY,
     },
+    LangConfig {
+        name: "bash",
+        extensions: &["sh", "bash"],
+        language_fn: bash_language,
+        top_level_query: BASH_TOP_LEVEL_QUERY,
+        call_query: BASH_CALL_QUERY,
+    },
+    LangConfig {
+        name: "make",
+        extensions: &["mk"],
+        language_fn: make_language,
+        top_level_query: MAKE_TOP_LEVEL_QUERY,
+        call_query: MAKE_CALL_QUERY,
+    },
 ];
 
 /// Extensions that are not tree-sitter parsed but should be captured as single
@@ -181,8 +231,7 @@ pub const TEXT_EXTENSIONS: &[&str] = &[
     "json", "yaml", "yml", // Infrastructure
     "tf", "tfvars", "hcl", // Database
     "sql", // Templates
-    "ftl", "html", // Scripts
-    "sh",   // Styles
+    "ftl", "html", // Styles
     "css", "scss", // Docs
     "md",
 ];
@@ -204,4 +253,81 @@ pub fn all_extensions() -> impl Iterator<Item = &'static str> {
     SUPPORTED_LANGUAGES
         .iter()
         .flat_map(|lc| lc.extensions.iter().copied())
+}
+
+// ── Detection ───────────────────────────────────────────────────────────────
+
+/// How a detected file is processed by the chunker.
+#[derive(Debug, Clone, Copy)]
+pub enum DetectionKind {
+    /// Parsed with a tree-sitter grammar into item chunks.
+    Grammar(&'static LangConfig),
+    /// Captured as a single file-level chunk (text passthrough).
+    Text,
+    /// Vue single-file component (script block parsed as TypeScript).
+    Vue,
+}
+
+/// The outcome of language detection: how to process the file plus a stable
+/// language label that is persisted on every chunk (`Chunk::language`).
+#[derive(Debug, Clone, Copy)]
+pub struct Detection {
+    pub kind: DetectionKind,
+    pub label: &'static str,
+}
+
+/// Step 1 of [`detect`]: decide by file extension alone (grammar extension,
+/// `vue`, or a [`TEXT_EXTENSIONS`] entry).  Needs no file content, so callers
+/// can use it to avoid sniffing files whose extension is already conclusive.
+pub fn detect_by_extension(rel_path: &str) -> Option<Detection> {
+    let _ = rel_path;
+    unimplemented!("detect_by_extension")
+}
+
+/// Detect a file's language by extension, then shebang (when `head` — the
+/// start of the file's content — is given), then well-known filename, then the
+/// plain-text extension allow-list.  The first match wins; `None` means the
+/// file is not indexed.
+pub fn detect(rel_path: &str, head: Option<&str>) -> Option<Detection> {
+    let _ = (rel_path, head);
+    unimplemented!("detect")
+}
+
+/// Resolve the language of an emitted chunk: the persisted `chunk.language`
+/// when present, otherwise detection from the chunk's path (fragment
+/// stripped) and content.  The fallback covers rows written before
+/// migration 019, which all have extensions.
+pub fn language_of_chunk(chunk: &Chunk) -> Option<Detection> {
+    let _ = chunk;
+    unimplemented!("language_of_chunk")
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    /// Every registered grammar must load under the workspace's tree-sitter ABI
+    /// and its queries must compile against that grammar.
+    #[test]
+    fn all_grammars_load_and_queries_compile() {
+        for lc in SUPPORTED_LANGUAGES {
+            let language = (lc.language_fn)();
+            let mut parser = tree_sitter::Parser::new();
+            parser
+                .set_language(&language)
+                .unwrap_or_else(|e| panic!("{}: set_language failed: {e}", lc.name));
+            tree_sitter::Query::new(&language, lc.top_level_query)
+                .unwrap_or_else(|e| panic!("{}: top-level query: {e:?}", lc.name));
+            tree_sitter::Query::new(&language, lc.call_query)
+                .unwrap_or_else(|e| panic!("{}: call query: {e:?}", lc.name));
+        }
+    }
+
+    #[test]
+    fn sh_is_grammar_backed_not_text() {
+        assert_eq!(for_extension("sh").map(|l| l.name), Some("bash"));
+        assert_eq!(for_extension("bash").map(|l| l.name), Some("bash"));
+        assert_eq!(for_extension("mk").map(|l| l.name), Some("make"));
+        assert!(!TEXT_EXTENSIONS.contains(&"sh"));
+    }
 }
