@@ -1,0 +1,17 @@
+#!/usr/bin/env -S python3.12 -u
+"""Report generator for the script_project fixture."""
+import sys
+
+
+def run_report(rows):
+    total = 0
+    for row in rows:
+        total += int(row.get("amount", 0))
+        print("row", row.get("id"), "amount", row.get("amount"))
+    print("total", total)
+    return total
+
+
+if __name__ == "__main__":
+    run_report([{"id": 1, "amount": 3}, {"id": 2, "amount": 4}])
+    sys.exit(0)

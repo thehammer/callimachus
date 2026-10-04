@@ -5,10 +5,18 @@ use callimachus_adapter_contract::{Chunk, Location};
 use tree_sitter::{Parser, Query, QueryCursor};
 use walkdir::WalkDir;
 
-use crate::languages::{self, LangConfig, TEXT_EXTENSIONS};
+use crate::languages::{self, DetectionKind, LangConfig};
 
 /// Files larger than this are truncated before being stored as a text chunk.
 const MAX_TEXT_FILE_BYTES: usize = 256 * 1024;
+
+/// Files whose extension did not decide their language are only considered
+/// (shebang / well-known filename sniffing) when they are at most this big.
+const MAX_SNIFF_FILE_BYTES: u64 = 1024 * 1024;
+
+/// How much of a sniffed file is read to look for a NUL byte (binary check)
+/// and the shebang line.
+const SNIFF_HEAD_BYTES: u64 = 8 * 1024;
 
 /// Default file globs that are always excluded from chunking. Per-corpus
 /// `exclude_globs` from corpus metadata are appended to (not substituted
@@ -129,7 +137,11 @@ fn enumerate_files(source_path: &Path, opts: &ChunkOptions) -> Vec<PathBuf> {
 
 /// Walk `source_path` and emit one or more `Chunk` objects per source file.
 ///
-/// Files with unrecognised extensions are skipped silently.
+/// The language of each file is detected by [`languages::detect`]: extension,
+/// then shebang, then well-known filename, then a plain-text extension list.
+/// Files matching none of these, binaries (NUL byte in the first 8 KiB) and
+/// extensionless files over 1 MiB are skipped silently.  Every emitted chunk
+/// carries the detected language label in `Chunk::language`.
 /// `corpus_id` scopes all chunk location URIs.
 pub async fn chunk_directory(
     source_path: &Path,
@@ -165,45 +177,94 @@ pub async fn chunk_directory(
             continue;
         }
 
-        // Detect language by extension.
-        let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-        // Read file contents.
-        let content = match std::fs::read_to_string(&abs_path) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("could not read {}: {e}", abs_path.display());
-                continue;
-            }
-        };
-
-        // Vue SFCs get special handling: extract their script block and parse as
-        // TypeScript, but also always emit a file-level chunk for the raw .vue content.
-        if ext == "vue" {
-            let file_chunks = chunk_vue_file(corpus_id, &rel_str, &content, opts);
-            chunks.extend(file_chunks);
-            continue;
-        }
-
-        let lang = match languages::for_extension(ext) {
-            Some(l) => l,
+        // Detect the language.  The extension decides first and needs no I/O;
+        // only files it cannot decide (no / unknown extension) are sniffed for a
+        // shebang, and binaries / oversized files are dropped before any full read.
+        let detection = match languages::detect_by_extension(&rel_str) {
+            Some(d) => d,
             None => {
-                // Text files without a tree-sitter grammar get a single file-level chunk.
-                if is_text_extension(ext)
-                    && let Some(chunk) = emit_text_file_chunk(&abs_path, corpus_id, &rel_str)
-                {
-                    chunks.push(chunk);
+                let Some(head) = sniff_head(&abs_path, &rel_str) else {
+                    continue;
+                };
+                match languages::detect(&rel_str, Some(&head)) {
+                    Some(d) => d,
+                    None => continue,
                 }
-                continue;
             }
         };
 
-        // Chunk this file.
-        let file_chunks = chunk_file(corpus_id, &rel_str, &content, lang, opts);
+        let mut file_chunks = match detection.kind {
+            // Text files without a tree-sitter grammar get a single file-level chunk.
+            DetectionKind::Text => emit_text_file_chunk(&abs_path, corpus_id, &rel_str)
+                .into_iter()
+                .collect(),
+            DetectionKind::Grammar(lang) => match read_source(&abs_path) {
+                Some(content) => chunk_file(corpus_id, &rel_str, &content, lang, opts),
+                None => continue,
+            },
+            // Vue SFCs: a file chunk for the raw .vue plus item chunks from the
+            // script block parsed as TypeScript.
+            DetectionKind::Vue => match read_source(&abs_path) {
+                Some(content) => chunk_vue_file(corpus_id, &rel_str, &content, opts),
+                None => continue,
+            },
+        };
+
+        // Persist the detected language on every chunk so later passes, which
+        // only see a URI or a chunk body, resolve the same language.
+        for chunk in &mut file_chunks {
+            chunk.language = Some(detection.label.to_string());
+        }
         chunks.extend(file_chunks);
     }
 
     Ok(chunks)
+}
+
+fn read_source(abs_path: &Path) -> Option<String> {
+    match std::fs::read_to_string(abs_path) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            tracing::warn!("could not read {}: {e}", abs_path.display());
+            None
+        }
+    }
+}
+
+/// Read the first line of a file whose extension did not decide its language.
+///
+/// Returns `None` (file skipped) when the file is over [`MAX_SNIFF_FILE_BYTES`],
+/// unreadable, or looks binary (NUL byte within the first [`SNIFF_HEAD_BYTES`]).
+/// Binaries under `bin/` are expected, so skips log at debug level only.
+fn sniff_head(abs_path: &Path, rel_str: &str) -> Option<String> {
+    use std::io::Read;
+
+    let len = match std::fs::metadata(abs_path) {
+        Ok(m) => m.len(),
+        Err(e) => {
+            tracing::debug!("[chunk] cannot stat {rel_str}: {e}");
+            return None;
+        }
+    };
+    if len > MAX_SNIFF_FILE_BYTES {
+        tracing::debug!("[chunk] skipping {rel_str}: {len} bytes exceeds sniff limit");
+        return None;
+    }
+
+    let mut buf = Vec::new();
+    let read =
+        std::fs::File::open(abs_path).and_then(|f| f.take(SNIFF_HEAD_BYTES).read_to_end(&mut buf));
+    if let Err(e) = read {
+        tracing::debug!("[chunk] cannot read {rel_str}: {e}");
+        return None;
+    }
+    if buf.contains(&0) {
+        tracing::debug!("[chunk] skipping binary file {rel_str}");
+        return None;
+    }
+
+    let line_end = buf.iter().position(|&b| b == b'\n').unwrap_or(buf.len());
+    Some(String::from_utf8_lossy(&buf[..line_end]).into_owned())
 }
 
 // ── Vue SFC chunking ─────────────────────────────────────────────────────────
@@ -569,7 +630,13 @@ fn node_kind_to_chunk_kind(ts_kind: &str) -> &'static str {
 ///
 /// Parses the first token after common keywords.
 fn extract_symbol_from_text(text: &str, node_kind: &str, lang: &LangConfig) -> Option<String> {
-    let _ = lang; // reserved for language-specific logic
+    // Shell functions and Makefile rules have their own header syntax; the
+    // keyword scan below would pick up words from their bodies.
+    match lang.name {
+        "bash" => return extract_bash_function_name(text),
+        "make" => return extract_make_target_name(text),
+        _ => {}
+    }
     let tokens: Vec<&str> = text.split_whitespace().collect();
     if tokens.is_empty() {
         return None;
@@ -677,6 +744,34 @@ fn extract_symbol_from_text(text: &str, node_kind: &str, lang: &LangConfig) -> O
     None
 }
 
+/// Name of a shell function from its definition text: handles `foo() {`,
+/// `function foo {` and `function foo() {`.
+fn extract_bash_function_name(text: &str) -> Option<String> {
+    let text = text.trim_start();
+    let rest = text
+        .strip_prefix("function")
+        .filter(|r| r.starts_with(char::is_whitespace))
+        .unwrap_or(text)
+        .trim_start();
+    let name: String = rest
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '(' && *c != '{')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// First target of a Makefile rule (`build: deps` → `build`).  Targets built
+/// from variables or pattern wildcards (`$(OBJ)`, `%.o`) yield `None` so the
+/// caller falls back to a positional name.
+fn extract_make_target_name(text: &str) -> Option<String> {
+    let header = text.lines().next()?;
+    let target = header.split(':').next()?.split_whitespace().next()?;
+    target
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
+        .then(|| target.to_string())
+}
+
 // ── Parse file path from chunk location ───────────────────────────────────────
 
 /// Given a chunk location path like `src/foo/bar.rs#MyFunc`, return the relative
@@ -772,11 +867,6 @@ fn wildcard_match(pattern: &str, segment: &str) -> bool {
 }
 
 // ── Text passthrough helpers ─────────────────────────────────────────────────
-
-/// Returns true when `ext` is in the text-passthrough extension list.
-fn is_text_extension(ext: &str) -> bool {
-    TEXT_EXTENSIONS.contains(&ext)
-}
 
 /// Read `abs_path` and return a single file-level chunk.
 ///
@@ -921,21 +1011,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn text_passthrough_no_sub_chunks() {
+    async fn sh_file_is_grammar_chunked_into_function_chunks() {
         let dir = tempfile::tempdir().unwrap();
-        // A shell file with function-like syntax — must not produce sub-chunks.
+        // A shell file is parsed with the bash grammar: one file chunk plus one
+        // chunk per function.
         let sh_content = "#!/bin/bash\nmy_func() {\n  echo hello\n}\nmy_func\n";
         std::fs::write(dir.path().join("script.sh"), sh_content).unwrap();
 
-        let opts = ChunkOptions::default();
+        let opts = ChunkOptions {
+            min_chunk_bytes: 10,
+            ..ChunkOptions::default()
+        };
         let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
 
-        assert_eq!(
-            chunks.len(),
-            1,
-            "shell file should produce exactly one chunk"
-        );
+        let file_chunks: Vec<_> = chunks.iter().filter(|c| c.kind == "file").collect();
+        assert_eq!(file_chunks.len(), 1, "expected exactly one file chunk");
+        assert_eq!(file_chunks[0].location.path, "src/script.sh");
+        assert_eq!(file_chunks[0].language.as_deref(), Some("bash"));
+
+        let func = chunks
+            .iter()
+            .find(|c| c.location.path == "src/script.sh#my_func")
+            .unwrap_or_else(|| panic!("expected a #my_func chunk, got {:?}", paths(&chunks)));
+        assert_eq!(func.kind, "function");
+        assert_eq!(func.language.as_deref(), Some("bash"));
+    }
+
+    #[tokio::test]
+    async fn yaml_file_stays_text_passthrough_with_single_chunk() {
+        let dir = tempfile::tempdir().unwrap();
+        // YAML that merely looks function-like must not be split into sub-chunks.
+        let yaml = "name: demo\nsteps:\n  - run: my_func() { echo hello; }\n";
+        std::fs::write(dir.path().join("ci.yaml"), yaml).unwrap();
+
+        let chunks = chunk_directory(dir.path(), "test", &ChunkOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(chunks.len(), 1, "yaml should produce exactly one chunk");
         assert_eq!(chunks[0].kind, "file");
+        assert_eq!(chunks[0].content, yaml);
+        assert_eq!(chunks[0].language.as_deref(), Some("text"));
     }
 
     #[tokio::test]
@@ -1309,6 +1425,528 @@ void main() {
             assert!(
                 !is_excluded(path, &defaults),
                 "expected {path:?} to NOT be excluded by default globs"
+            );
+        }
+    }
+
+    // ── Language detection (shebang / filename / allow-list) ──────────────────
+
+    fn paths(chunks: &[Chunk]) -> Vec<String> {
+        chunks.iter().map(|c| c.location.path.clone()).collect()
+    }
+
+    fn small_opts() -> ChunkOptions {
+        ChunkOptions {
+            min_chunk_bytes: 10,
+            ..ChunkOptions::default()
+        }
+    }
+
+    fn write(dir: &Path, rel: &str, content: impl AsRef<[u8]>) {
+        let p = dir.join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(p, content).unwrap();
+    }
+
+    /// Chunks belonging to `file_path` (the file chunk and all its item chunks).
+    fn chunks_of<'a>(chunks: &'a [Chunk], file_path: &str) -> Vec<&'a Chunk> {
+        chunks
+            .iter()
+            .filter(|c| c.location.path.split('#').next() == Some(file_path))
+            .collect()
+    }
+
+    fn item_names(chunks: &[Chunk], file_path: &str) -> Vec<String> {
+        chunks
+            .iter()
+            .filter_map(|c| {
+                let (file, frag) = c.location.path.split_once('#')?;
+                (file == file_path).then(|| frag.to_string())
+            })
+            .collect()
+    }
+
+    const BASH_SCRIPT: &str = "#!/usr/bin/env bash\n\
+        set -euo pipefail\n\
+        \n\
+        foo() {\n  echo \"foo ran\"\n}\n\
+        \n\
+        function bar {\n  echo \"bar ran\"\n}\n\
+        \n\
+        function baz() {\n  foo\n  bar\n}\n\
+        \n\
+        baz\n";
+
+    #[tokio::test]
+    async fn extensionless_bash_script_is_chunked_with_bash_grammar() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "bin/tool", BASH_SCRIPT);
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        let file_chunks: Vec<_> = chunks.iter().filter(|c| c.kind == "file").collect();
+        assert_eq!(file_chunks.len(), 1, "got {:?}", paths(&chunks));
+        assert_eq!(file_chunks[0].location.path, "src/bin/tool");
+        assert_eq!(file_chunks[0].content, BASH_SCRIPT);
+
+        let names = item_names(&chunks, "src/bin/tool");
+        for expected in ["foo", "bar", "baz"] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "expected a #{expected} function chunk (covers `name() {{`, `function name {{` and `function name() {{`), got {names:?}"
+            );
+        }
+        for c in chunks.iter().filter(|c| c.kind != "file") {
+            assert_eq!(c.kind, "function", "{}", c.location.path);
+        }
+        for c in &chunks {
+            assert_eq!(c.language.as_deref(), Some("bash"), "{}", c.location.path);
+        }
+    }
+
+    #[tokio::test]
+    async fn bash_function_name_is_not_confused_by_keywords_in_its_body() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "bin/tool",
+            "#!/usr/bin/env bash\n\
+             build_it() {\n  # wraps the class and def helpers, plus a function or two\n  echo \"building\"\n}\n",
+        );
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        assert!(
+            paths(&chunks).iter().any(|p| p == "src/bin/tool#build_it"),
+            "got {:?}",
+            paths(&chunks)
+        );
+    }
+
+    #[tokio::test]
+    async fn extensionless_python_script_with_env_split_shebang_is_chunked_as_python() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "bin/pyscript",
+            "#!/usr/bin/env -S python3.12 -u\nimport sys\n\ndef run_report(rows):\n    return len(rows)\n",
+        );
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        assert!(
+            paths(&chunks)
+                .iter()
+                .any(|p| p == "src/bin/pyscript#run_report"),
+            "got {:?}",
+            paths(&chunks)
+        );
+        for c in &chunks {
+            assert_eq!(c.language.as_deref(), Some("python"), "{}", c.location.path);
+        }
+    }
+
+    #[tokio::test]
+    async fn extension_wins_over_shebang_when_chunking() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "foo.py",
+            "#!/usr/bin/env bash\n\ndef greet(name):\n    return \"hello \" + name\n",
+        );
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        let greet = chunks
+            .iter()
+            .find(|c| c.location.path == "src/foo.py#greet")
+            .unwrap_or_else(|| panic!("expected #greet, got {:?}", paths(&chunks)));
+        assert_eq!(greet.kind, "function");
+        for c in &chunks {
+            assert_eq!(c.language.as_deref(), Some("python"), "{}", c.location.path);
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_interpreter_shebang_is_not_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "bin/awk-thing",
+            "#!/usr/bin/awk -f\nBEGIN { print 1 }\n",
+        );
+        write(dir.path(), "main.rs", "fn main() {}");
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        assert!(chunks_of(&chunks, "src/bin/awk-thing").is_empty());
+        assert!(!chunks.is_empty(), "main.rs should still be chunked");
+    }
+
+    #[tokio::test]
+    async fn ruby_and_perl_shebang_scripts_are_text_passthrough_with_their_label() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "bin/rb",
+            "#!/usr/bin/env ruby\ndef hi\n  puts 1\nend\n",
+        );
+        write(dir.path(), "bin/pl", "#!/usr/bin/perl\nprint \"hi\\n\";\n");
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        let rb = chunks_of(&chunks, "src/bin/rb");
+        assert_eq!(rb.len(), 1, "got {:?}", paths(&chunks));
+        assert_eq!(rb[0].kind, "file");
+        assert_eq!(rb[0].language.as_deref(), Some("ruby"));
+        let pl = chunks_of(&chunks, "src/bin/pl");
+        assert_eq!(pl.len(), 1, "got {:?}", paths(&chunks));
+        assert_eq!(pl[0].language.as_deref(), Some("perl"));
+    }
+
+    #[tokio::test]
+    async fn makefiles_are_chunked_per_target_with_make_grammar() {
+        let makefile = "all: build test\n\
+            \n\
+            build: deps\n\tcargo build --release\n\
+            \n\
+            test: build\n\tcargo test --all\n";
+        let dir = tempfile::tempdir().unwrap();
+        for rel in ["a/Makefile", "b/GNUmakefile", "c/makefile", "d/rules.mk"] {
+            write(dir.path(), rel, makefile);
+        }
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        for rel in ["a/Makefile", "b/GNUmakefile", "c/makefile", "d/rules.mk"] {
+            let file_path = format!("src/{rel}");
+            let names = item_names(&chunks, &file_path);
+            for target in ["all", "build", "test"] {
+                assert!(
+                    names.iter().any(|n| n == target),
+                    "{rel}: expected a #{target} chunk, got {names:?}"
+                );
+            }
+            let of_file = chunks_of(&chunks, &file_path);
+            assert!(
+                of_file.iter().any(|c| c.kind == "file"),
+                "{rel}: no file chunk"
+            );
+            for c in of_file {
+                assert_eq!(c.language.as_deref(), Some("make"), "{}", c.location.path);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn well_known_filenames_and_allow_listed_extensions_are_single_text_chunks() {
+        let cases = [
+            ("Dockerfile", "dockerfile"),
+            ("Dockerfile.dev", "dockerfile"),
+            ("svc/Dockerfile.prod", "dockerfile"),
+            ("Caddyfile", "caddyfile"),
+            ("Caddyfile.edge", "caddyfile"),
+            ("Procfile", "procfile"),
+            ("stack.env", "text"),
+            ("site.conf", "text"),
+            ("x.tpl", "text"),
+            ("x.tmpl", "text"),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, _) in cases {
+            write(dir.path(), rel, format!("# {rel}\nFOO=bar\nweb: run it\n"));
+        }
+
+        let chunks = chunk_directory(dir.path(), "test", &ChunkOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(chunks.len(), cases.len(), "got {:?}", paths(&chunks));
+        for (rel, label) in cases {
+            let file_path = format!("src/{rel}");
+            let of_file = chunks_of(&chunks, &file_path);
+            assert_eq!(of_file.len(), 1, "{rel}: got {:?}", paths(&chunks));
+            assert_eq!(of_file[0].kind, "file", "{rel}");
+            assert_eq!(of_file[0].language.as_deref(), Some(label), "{rel}");
+            assert_eq!(
+                of_file[0].content,
+                format!("# {rel}\nFOO=bar\nweb: run it\n")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bare_dotfile_env_is_not_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), ".env", "SECRET=hunter2\n");
+
+        let chunks = chunk_directory(dir.path(), "test", &ChunkOptions::default())
+            .await
+            .unwrap();
+
+        assert!(chunks.is_empty(), "got {:?}", paths(&chunks));
+    }
+
+    #[tokio::test]
+    async fn extensionless_file_without_shebang_is_not_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "NOTES", "Scratch notes.\nNothing executable.\n");
+        write(dir.path(), "LICENSE", "Permission is hereby granted...\n");
+        write(dir.path(), "weird.xyz", "some content");
+        write(dir.path(), "main.rs", "fn main() {}");
+
+        let chunks = chunk_directory(dir.path(), "test", &ChunkOptions::default())
+            .await
+            .unwrap();
+
+        assert!(!chunks.is_empty(), "main.rs should still be chunked");
+        for c in &chunks {
+            assert!(
+                c.location.path.starts_with("src/main.rs"),
+                "only main.rs should be chunked, got {}",
+                c.location.path
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn binary_extensionless_file_is_not_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut elf: Vec<u8> = b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0".to_vec();
+        elf.extend((0..2048u32).map(|i| (i % 251) as u8));
+        write(dir.path(), "bin/blob", &elf);
+        // A shebang line does not rescue a file that contains NUL bytes.
+        let mut sneaky = b"#!/bin/bash\necho hi\n".to_vec();
+        sneaky.extend_from_slice(&[0, 0, 0, 1, 2, 3]);
+        write(dir.path(), "bin/sneaky", &sneaky);
+        write(dir.path(), "main.rs", "fn main() {}");
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        assert!(chunks_of(&chunks, "src/bin/blob").is_empty());
+        assert!(chunks_of(&chunks, "src/bin/sneaky").is_empty());
+        assert!(!chunks.is_empty(), "main.rs should still be chunked");
+    }
+
+    #[tokio::test]
+    async fn oversized_extensionless_file_is_not_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut big = String::from("#!/usr/bin/env bash\n");
+        while big.len() <= 1024 * 1024 + 1024 {
+            big.push_str("# padding line to make this file large\n");
+        }
+        write(dir.path(), "bin/huge", &big);
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        assert!(chunks.is_empty(), "got {:?}", paths(&chunks));
+    }
+
+    #[tokio::test]
+    async fn extensionless_script_just_under_the_sniff_limit_is_still_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut script = String::from("#!/usr/bin/env bash\n");
+        while script.len() < 600 * 1024 {
+            script.push_str("# padding line to make this file biggish\n");
+        }
+        write(dir.path(), "bin/large", &script);
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        let of_file = chunks_of(&chunks, "src/bin/large");
+        assert!(of_file.iter().any(|c| c.kind == "file"), "no file chunk");
+        assert!(
+            of_file
+                .iter()
+                .all(|c| c.language.as_deref() == Some("bash")),
+            "all chunks should be labelled bash"
+        );
+    }
+
+    #[tokio::test]
+    async fn known_extension_files_are_not_subject_to_the_sniff_size_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = "x".repeat(1024 * 1024 + 10 * 1024);
+        write(dir.path(), "big.md", &big);
+
+        let chunks = chunk_directory(dir.path(), "test", &ChunkOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(chunks.len(), 1, "got {:?}", paths(&chunks));
+        assert_eq!(chunks[0].language.as_deref(), Some("text"));
+        assert_eq!(chunks[0].byte_length, big.len());
+    }
+
+    #[tokio::test]
+    async fn excluded_directories_are_not_sniffed_into_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "node_modules/pkg/bin/cli",
+            "#!/usr/bin/env node\nfunction main() { return 1; }\n",
+        );
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        assert!(chunks.is_empty(), "got {:?}", paths(&chunks));
+    }
+
+    #[tokio::test]
+    async fn git_tracked_extensionless_script_is_detected_by_shebang() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with(dir.path(), &[("tool", BASH_SCRIPT)], &[]);
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        assert!(
+            paths(&chunks).iter().any(|p| p == "src/tool#foo"),
+            "got {:?}",
+            paths(&chunks)
+        );
+    }
+
+    #[tokio::test]
+    async fn vue_chunks_are_labelled_vue() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Foo.vue",
+            "<template><div>hello</div></template>\n<script setup lang=\"ts\">\nfunction greet(): string {\n    return \"hello world from greet function\";\n}\n</script>\n",
+        );
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        assert!(chunks.len() >= 2, "got {:?}", paths(&chunks));
+        for c in &chunks {
+            assert_eq!(c.language.as_deref(), Some("vue"), "{}", c.location.path);
+        }
+    }
+
+    #[tokio::test]
+    async fn every_chunk_carries_the_label_of_its_file() {
+        let files: [(&str, &str, &str); 14] = [
+            ("a.rs", "fn main() { println!(\"hello\"); }\n", "rust"),
+            (
+                "a.ts",
+                "export function f(): number { return 1; }\n",
+                "typescript",
+            ),
+            ("a.tsx", "function C() { return <div/>; }\n", "typescript"),
+            ("a.js", "function f() { return 1; }\n", "javascript"),
+            ("a.jsx", "function f() { return <b/>; }\n", "javascript"),
+            ("a.mjs", "function f() { return 1; }\n", "javascript"),
+            ("a.py", "def f():\n    return 1\n", "python"),
+            ("a.go", "package main\n\nfunc f() int { return 1 }\n", "go"),
+            ("a.php", "<?php\nfunction f() { return 1; }\n", "php"),
+            ("a.dart", "void main() { print('x'); }\n", "dart"),
+            ("a.sh", "f() {\n  echo one\n}\n", "bash"),
+            ("a.bash", "function f {\n  echo one\n}\n", "bash"),
+            ("a.mk", "all: dep\n\techo hi\n", "make"),
+            ("data.json", "{\"a\": 1}", "text"),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, content, _) in files {
+            write(dir.path(), rel, content);
+        }
+
+        let chunks = chunk_directory(dir.path(), "test", &small_opts())
+            .await
+            .unwrap();
+
+        for (rel, _, label) in files {
+            let of_file = chunks_of(&chunks, &format!("src/{rel}"));
+            assert!(!of_file.is_empty(), "{rel}: no chunks");
+            for c in of_file {
+                assert_eq!(c.language.as_deref(), Some(label), "{}", c.location.path);
+            }
+        }
+        for c in &chunks {
+            assert!(c.language.is_some(), "{} has no language", c.location.path);
+        }
+    }
+
+    #[tokio::test]
+    async fn split_parts_of_large_bash_functions_keep_the_bash_language() {
+        let body = |name: &str| {
+            let mut s = format!("{name}() {{\n");
+            for i in 0..8 {
+                s.push_str(&format!(
+                    "  echo \"{name} step {i} of the long running job\"\n"
+                ));
+            }
+            s.push_str("}\n\n");
+            s
+        };
+        let script = format!(
+            "#!/usr/bin/env bash\n{}{}{}small_one() {{\n  echo \"short but over the minimum size\"\n  true\n}}\n",
+            body("alpha"),
+            body("beta"),
+            body("gamma"),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "bin/tool", &script);
+
+        let opts = ChunkOptions {
+            max_chunk_bytes: 200,
+            min_chunk_bytes: 50,
+            ..ChunkOptions::default()
+        };
+        let chunks = chunk_directory(dir.path(), "test", &opts).await.unwrap();
+
+        let parts: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.location.path.contains("/part"))
+            .collect();
+        assert!(
+            !parts.is_empty(),
+            "oversized functions should be split into /partN chunks, got {:?}",
+            paths(&chunks)
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.kind != "file" && !c.location.path.contains("/part")),
+            "the small function should remain a plain item chunk, got {:?}",
+            paths(&chunks)
+        );
+        for c in &chunks {
+            assert_eq!(c.language.as_deref(), Some("bash"), "{}", c.location.path);
+            let resolved = languages::language_of_chunk(c)
+                .unwrap_or_else(|| panic!("language_of_chunk is None for {}", c.location.path));
+            assert_eq!(resolved.label, "bash", "{}", c.location.path);
+            assert!(
+                matches!(resolved.kind, languages::DetectionKind::Grammar(l) if l.name == "bash"),
+                "{} should resolve to the bash grammar",
+                c.location.path
             );
         }
     }

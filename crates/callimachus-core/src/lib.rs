@@ -2,7 +2,12 @@ pub mod adapter;
 
 /// The current pipeline version. Bump this with each new phase that adds
 /// indexing passes or schema changes requiring a re-run.
-pub const PIPELINE_VERSION: u32 = 3;
+///
+/// 4: the code adapter detects language by shebang and well-known filename
+/// (extensionless scripts, Makefiles, Dockerfiles, …) and `.sh` is
+/// grammar-chunked; existing corpora must re-run the static passes to pick
+/// those files up.
+pub const PIPELINE_VERSION: u32 = 4;
 pub mod corrections;
 pub mod error;
 pub mod indexing;

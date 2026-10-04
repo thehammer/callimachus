@@ -265,11 +265,10 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
     let llm_opus = &ctx.llm_opus;
     let tier_config = &ctx.tier_config;
     let full = ctx.full;
-    let language = detect_language(entity);
 
-    let content = match entity.first_location.as_ref() {
+    let (content, chunk_language) = match entity.first_location.as_ref() {
         Some(loc) => match db.chunk_get_by_uri(&loc.uri()) {
-            Ok(Some(chunk)) => chunk.content,
+            Ok(Some(chunk)) => (chunk.content, chunk.language),
             _ => {
                 // No content available — store a default contract immediately.
                 // We return a sentinel so the serial sink knows to tally it.
@@ -285,9 +284,13 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
         }
     };
 
+    // Prefer the language the adapter persisted on the chunk (covers extensionless
+    // scripts); fall back to the URI extension for rows written before it existed.
+    let language = chunk_language.unwrap_or_else(|| detect_language(entity).to_string());
+
     let in_deg = db.entity_in_degree(corpus_id, &entity.id).unwrap_or(0);
     let out_deg = db.entity_out_degree(corpus_id, &entity.id).unwrap_or(0);
-    let mut routing = adapter.static_routing_inputs(language, &content, &entity.canonical_name);
+    let mut routing = adapter.static_routing_inputs(&language, &content, &entity.canonical_name);
     routing.kind = entity.kind.clone();
     routing.in_degree = in_deg;
     routing.out_degree = out_deg;

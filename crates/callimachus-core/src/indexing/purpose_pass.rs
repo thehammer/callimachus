@@ -206,9 +206,9 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
     let tier_config = &ctx.tier_config;
     let full = ctx.full;
     // Fetch content via first location.
-    let content = match entity.first_location.as_ref() {
+    let (content, chunk_language) = match entity.first_location.as_ref() {
         Some(loc) => match db.chunk_get_by_uri(&loc.uri()) {
-            Ok(Some(chunk)) => chunk.content,
+            Ok(Some(chunk)) => (chunk.content, chunk.language),
             _ => return PurposeOutcome::Skip,
         },
         None => return PurposeOutcome::Skip,
@@ -218,11 +218,16 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
     let in_deg = db.entity_in_degree(corpus_id, &entity.id).unwrap_or(0);
     let out_deg = db.entity_out_degree(corpus_id, &entity.id).unwrap_or(0);
     let first_loc_uri = entity.first_location.as_ref().map(|l| l.uri());
-    let language = first_loc_uri
-        .as_deref()
-        .map(detect_language_from_uri)
-        .unwrap_or("unknown");
-    let mut routing = adapter.static_routing_inputs(language, &content, &entity.canonical_name);
+    // Prefer the language the adapter persisted on the chunk (covers extensionless
+    // scripts); fall back to the URI extension for rows written before it existed.
+    let language = chunk_language.unwrap_or_else(|| {
+        first_loc_uri
+            .as_deref()
+            .map(detect_language_from_uri)
+            .unwrap_or("unknown")
+            .to_string()
+    });
+    let mut routing = adapter.static_routing_inputs(&language, &content, &entity.canonical_name);
     routing.kind = entity.kind.clone();
     routing.in_degree = in_deg;
     routing.out_degree = out_deg;

@@ -3,6 +3,7 @@ use callimachus_adapter_contract::Chunk;
 use callimachus_llm::{CompletionRequest, LlmProvider};
 
 use crate::extractor::ExtractedCodeStructure;
+use crate::languages;
 
 /// Generate a 1-3 sentence summary for a code chunk using the LLM.
 ///
@@ -181,16 +182,27 @@ Return ONLY the summary text, no JSON, no preamble."#,
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// Human-readable language name for prompts, from the chunk's persisted
+/// language (or path/shebang detection for rows that predate it).
 fn detect_language_from_chunk(chunk: &Chunk) -> String {
-    // Pull extension from the location path.
-    let path = chunk.location.path.split('#').next().unwrap_or("");
-    let ext = path.rsplit('.').next().unwrap_or("");
-    match ext {
-        "rs" => "Rust",
-        "ts" | "tsx" => "TypeScript",
-        "js" | "jsx" | "mjs" => "JavaScript",
-        "py" => "Python",
-        "go" => "Go",
+    let label = languages::language_of_chunk(chunk).map(|d| d.label);
+    match label {
+        Some("rust") => "Rust",
+        Some("typescript") => "TypeScript",
+        Some("javascript") => "JavaScript",
+        Some("python") => "Python",
+        Some("go") => "Go",
+        Some("php") => "PHP",
+        Some("dart") => "Dart",
+        Some("bash") => "Bash",
+        Some("make") => "Make",
+        Some("vue") => "Vue",
+        Some("ruby") => "Ruby",
+        Some("perl") => "Perl",
+        Some("dockerfile") => "Dockerfile",
+        Some("caddyfile") => "Caddyfile",
+        Some("procfile") => "Procfile",
+        Some("text") => "Text",
         _ => "unknown",
     }
     .to_string()
