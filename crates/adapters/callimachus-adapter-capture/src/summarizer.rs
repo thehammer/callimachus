@@ -22,7 +22,7 @@ pub async fn describe_endpoint(chunk: &Chunk, llm: &dyn LlmProvider) -> anyhow::
          4. Authentication/authorization requirements inferred from the request header keys or HTTP status codes.\n\n\
          Focus on what an engineer would need to know to call this endpoint or understand its contract.\n\
          Return ONLY the description text.",
-        content = &chunk.content,
+        content = chunk.content,
     );
 
     let resp = llm
@@ -47,7 +47,7 @@ pub async fn summarize_endpoint(chunk: &Chunk, llm: &dyn LlmProvider) -> anyhow:
          <endpoint>\n{content}\n</endpoint>\n\n\
          Focus on what the endpoint does and what data it returns.\n\
          Return ONLY the summary text.",
-        content = &chunk.content,
+        content = chunk.content,
     );
 
     let resp = llm
@@ -80,7 +80,7 @@ pub async fn summarize_corpus(chunk: &Chunk, llm: &dyn LlmProvider) -> anyhow::R
          - Authentication patterns observed.\n\
          - Any notable patterns (versioning, entity IDs, path conventions).\n\n\
          Return ONLY the summary text.",
-        content = &chunk.content,
+        content = chunk.content,
     );
 
     let resp = llm
