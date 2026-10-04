@@ -361,6 +361,7 @@ mod tests {
             entity_id_list: "[]".into(),
             start_line: None,
             end_line: None,
+            language: None,
         };
         db.chunk_upsert(&chunk).unwrap();
     }

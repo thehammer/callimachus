@@ -86,6 +86,36 @@ fn apply_step(corpus_id: &str, step: u32, dry_run: bool, _db: &dyn StorageBacken
             }
             Ok(())
         }
+        4 => {
+            // Phase 4 — the code adapter detects language by shebang and well-known
+            // filename, and `.sh` files are now parsed with a bash grammar.  Files
+            // that were previously skipped (extensionless scripts under `bin/`,
+            // `Makefile`, `Dockerfile.*`, `Caddyfile`, `*.env`, …) only appear in a
+            // corpus after the chunk and structure passes run over them again.
+            //
+            // `calli reindex` is NOT enough: it re-runs structure and the LLM passes
+            // only for *dirty* paths, so an unchanged `bin/foo` would get chunks but
+            // no entities.  Running a single pass without `history` makes the pipeline
+            // treat every path as dirty.  Each pass skips work it already did
+            // (existing chunk ids, already-summarized chunks, entities that already
+            // have a purpose / contract for the model) unless `--full` is given, so
+            // only new files cost LLM calls.  The `aliases` and `theme` passes are
+            // corpus-level and run once more.
+            if dry_run {
+                println!(
+                    "    [dry-run] step 4: chunk + structure (and LLM passes) must be re-run \
+                     for corpus {corpus_id} to index extensionless scripts"
+                );
+            } else {
+                println!(
+                    "    step 4: note — files newly detected by shebang or filename are not \
+                     picked up by `calli reindex` (it only revisits dirty paths).  Run:\n      \
+                     for p in chunk structure semantic aliases summarize purpose contract theme; \
+                     do calli index {corpus_id} --pass $p; done"
+                );
+            }
+            Ok(())
+        }
         other => {
             bail!("unknown upgrade step {other} — rebuild with a newer binary");
         }

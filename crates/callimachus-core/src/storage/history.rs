@@ -599,14 +599,14 @@ pub(crate) fn archive_chunk(
             last_modified_commit_message, last_modified_author,
             derived_at_kind, derived_at_sha,
             superseded_at_sha, superseded_at,
-            start_line, end_line)
+            start_line, end_line, language)
          SELECT id, corpus_id, parent_path, kind, location_uri, content,
                 byte_length, created_at, semantic_processed, source_hash,
                 introduced_at_version, last_modified_at_version,
                 last_modified_commit_message, last_modified_author,
                 derived_at_kind, derived_at_sha,
                 ?2, ?3,
-                start_line, end_line
+                start_line, end_line, language
          FROM chunks
          WHERE id = ?1",
         params![chunk_id, superseded_at_sha, now],
@@ -880,5 +880,79 @@ mod tests {
             fetched.provenance.as_ref().map(|p| p.sha()),
             Some("git:abc")
         );
+    }
+
+    // ── chunk language round-trip (migration 019) ────────────────────────────
+
+    /// `language` survives upsert → read, and archiving to history copies it.
+    #[test]
+    fn chunk_language_round_trips_and_archives() {
+        use crate::types::Corpus;
+        use crate::types::chunk::Chunk;
+        use crate::types::location::Location;
+
+        let db = SqliteBackend::open_in_memory().unwrap();
+        let corpus = Corpus::new(
+            "corp".to_string(),
+            "T".to_string(),
+            "code".to_string(),
+            "/tmp".to_string(),
+        );
+        db.corpus_insert(&corpus).unwrap();
+
+        let mut chunk = Chunk::new(
+            "corp".to_string(),
+            None,
+            "file".to_string(),
+            Location::new("corp", "src/bin/tool"),
+            "#!/usr/bin/env bash\necho hi\n".to_string(),
+        );
+        chunk.language = Some("bash".to_string());
+        db.chunk_upsert(&chunk).unwrap();
+
+        let fetched = db
+            .chunk_get_by_uri(&chunk.location.uri())
+            .unwrap()
+            .expect("chunk present");
+        assert_eq!(fetched.language.as_deref(), Some("bash"));
+
+        assert!(db.archive_chunk(&chunk.id, "git:v2").unwrap());
+        let guard = db.db_for_test();
+        let archived: Option<String> = guard
+            .conn()
+            .query_row(
+                "SELECT language FROM chunks_history WHERE id = ?1",
+                [&chunk.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(archived.as_deref(), Some("bash"));
+    }
+
+    /// Chunks without a language (pre-019 rows, other adapters) read back as `None`.
+    #[test]
+    fn chunk_without_language_reads_back_none() {
+        use crate::types::Corpus;
+        use crate::types::chunk::Chunk;
+        use crate::types::location::Location;
+
+        let db = SqliteBackend::open_in_memory().unwrap();
+        db.corpus_insert(&Corpus::new(
+            "corp".to_string(),
+            "T".to_string(),
+            "code".to_string(),
+            "/tmp".to_string(),
+        ))
+        .unwrap();
+        let chunk = Chunk::new(
+            "corp".to_string(),
+            None,
+            "file".to_string(),
+            Location::new("corp", "src/a.rs"),
+            "fn a() {}".to_string(),
+        );
+        db.chunk_upsert(&chunk).unwrap();
+        let fetched = db.chunk_get_by_uri(&chunk.location.uri()).unwrap().unwrap();
+        assert_eq!(fetched.language, None);
     }
 }

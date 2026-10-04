@@ -44,6 +44,11 @@ pub struct Chunk {
     /// file (inclusive).  `None` for non-code corpora and pre-migration rows.
     #[serde(default)]
     pub end_line: Option<u32>,
+    /// Detected source language label (e.g. `bash`, `python`, `make`).  `None`
+    /// for non-code corpora and rows written before migration 019; consumers
+    /// then fall back to detecting from the location path.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 fn default_entity_id_list() -> String {
@@ -76,6 +81,7 @@ impl Chunk {
             entity_id_list: default_entity_id_list(),
             start_line: None,
             end_line: None,
+            language: None,
         }
     }
 }

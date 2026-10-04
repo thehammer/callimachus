@@ -29,6 +29,8 @@ hex.workspace = true
 git2 = { version = "0.19", default-features = false }
 tree-sitter-php = "0.23"
 tree-sitter-dart-orchard = "0.3"
+tree-sitter-bash = "0.23"
+tree-sitter-make = "1.1"
 
 [dev-dependencies]
 tokio = { workspace = true }

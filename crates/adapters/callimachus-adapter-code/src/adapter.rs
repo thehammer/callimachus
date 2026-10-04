@@ -20,8 +20,11 @@ use crate::{
 
 /// Adapter for source code repositories.
 ///
-/// Supports Rust, TypeScript/JavaScript, Python, Go, PHP, and Dart.
-/// Uses tree-sitter for structural chunking and entity extraction.
+/// Supports Rust, TypeScript/JavaScript, Python, Go, PHP, Dart, Bash and Make.
+/// Uses tree-sitter for structural chunking and entity extraction.  Language is
+/// detected by extension, then shebang (so extensionless scripts such as
+/// `bin/deploy` are indexed), then well-known filename (`Makefile`, `Dockerfile`,
+/// `Caddyfile`, …); see [`languages::detect`].
 pub struct CodeAdapter;
 
 impl CodeAdapter {
@@ -78,9 +81,9 @@ impl SourceAdapter for CodeAdapter {
 
     /// Structural extraction — parse the chunk with tree-sitter.
     async fn extract_structure(&self, chunk: &Chunk) -> Result<ExtractedStructure> {
-        // Detect language from the chunk location URI.
-        let ext = extract_extension_from_chunk(chunk);
-        let lang = match ext.and_then(languages::for_extension) {
+        // Language comes from the persisted `chunk.language`, falling back to
+        // path detection for rows that predate it.
+        let lang = match grammar_of_chunk(chunk) {
             Some(l) => l,
             None => {
                 return Ok(ExtractedStructure {
@@ -141,8 +144,7 @@ impl SourceAdapter for CodeAdapter {
         match depth {
             "function" | "class" | "interface" => {
                 // Per-symbol summary.
-                let ext = extract_extension_from_chunk(chunk);
-                let structure = if let Some(lang) = ext.and_then(languages::for_extension) {
+                let structure = if let Some(lang) = grammar_of_chunk(chunk) {
                     extractor::extract_structure(chunk, lang).unwrap_or_default()
                 } else {
                     extractor::ExtractedCodeStructure::default()
@@ -214,17 +216,11 @@ impl SourceAdapter for CodeAdapter {
         // Infer language from the entity's location URI so we don't run the
         // Rust tree-sitter grammar on PHP/JS/TS/Vue content (the external scanner
         // can loop indefinitely on non-Rust input).
-        let first_loc_uri = entity.first_location.as_ref().map(|loc| loc.uri());
-        let lang = first_loc_uri
-            .as_deref()
-            .unwrap_or("")
-            .rsplit('.')
-            .next()
-            .map(|ext| match ext {
-                "rs" => "rust",
-                _ => "other",
-            })
-            .unwrap_or("other");
+        let lang = if entity_language(entity, content, None) == "rust" {
+            "rust"
+        } else {
+            "other"
+        };
         let signals = contracts::analyze(lang, content, &entity.canonical_name);
         let wants_blocks = signals.branch_count >= 3 || signals.body_lines >= 20;
 
@@ -330,29 +326,15 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
         content: &str,
         summary: Option<&str>,
         purpose: Option<&str>,
-        _signals: &serde_json::Value,
+        signals: &serde_json::Value,
         llm: &dyn LlmProvider,
     ) -> Result<Option<ExtractedContract>> {
-        // Detect language from the entity's URI extension (same pattern as extract_purpose).
-        let contract_loc_uri = entity.first_location.as_ref().map(|loc| loc.uri());
-        let lang = contract_loc_uri
-            .as_deref()
-            .unwrap_or("")
-            .rsplit('.')
-            .next()
-            .map(|ext| match ext {
-                "rs" => "rust",
-                "php" => "php",
-                "ts" | "tsx" => "typescript",
-                "js" | "jsx" => "javascript",
-                "vue" => "vue",
-                "dart" => "dart",
-                _ => "other",
-            })
-            .unwrap_or("other");
+        // Prefer the language the contract pass resolved from the persisted chunk
+        // language; otherwise detect from the entity's URI.
+        let lang = entity_language(entity, content, Some(signals));
 
         // Run language-aware static analysis.
-        let static_signals = contracts::analyze(lang, content, &entity.canonical_name);
+        let static_signals = contracts::analyze(&lang, content, &entity.canonical_name);
 
         let summary_section = summary
             .map(|s| format!("Summary: {s}\n"))
@@ -374,9 +356,9 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
             static_signals.is_test,
         );
 
-        let language = lang;
+        let language = lang.as_str();
 
-        let language_note = match lang {
+        let language_note = match lang.as_str() {
             "php" => {
                 "Note: 'has_panic_risk' means unhandled exception risk (findOrFail, abort(), throw new). 'is_mutating' covers Eloquent writes and $this-> assignments."
             }
@@ -689,12 +671,37 @@ Return JSON:
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Extract the file extension from a chunk's location path.
+/// The tree-sitter grammar for a chunk, when its language is grammar-backed.
+fn grammar_of_chunk(chunk: &Chunk) -> Option<&'static languages::LangConfig> {
+    match languages::language_of_chunk(chunk)?.kind {
+        languages::DetectionKind::Grammar(lang) => Some(lang),
+        _ => None,
+    }
+}
+
+/// Language label for an entity, used to pick the static analyser.
 ///
-/// Location path looks like: `src/foo/bar.rs` or `src/foo/bar.rs#MyFunc`
-fn extract_extension_from_chunk(chunk: &Chunk) -> Option<&str> {
-    let path = chunk.location.path.split('#').next().unwrap_or("");
-    path.rsplit('.').next()
+/// Prefers `signals["language"]` (the contract pass resolves it from the
+/// chunk's persisted language) when it is a known value; otherwise detects from
+/// the entity's first-location path and the content.  Returns `"other"` when
+/// nothing matches.
+fn entity_language(entity: &Entity, content: &str, signals: Option<&serde_json::Value>) -> String {
+    if let Some(l) = signals
+        .and_then(|s| s.get("language"))
+        .and_then(|l| l.as_str())
+        .filter(|l| !l.is_empty() && *l != "unknown")
+    {
+        return l.to_string();
+    }
+    entity
+        .first_location
+        .as_ref()
+        .and_then(|loc| {
+            let path = loc.path.split('#').next().unwrap_or("");
+            languages::detect(path, Some(content))
+        })
+        .map_or("other", |d| d.label)
+        .to_string()
 }
 
 /// Build chunk options from corpus config JSON.

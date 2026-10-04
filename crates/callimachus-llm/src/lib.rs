@@ -1,3 +1,7 @@
+// `async_trait` expands `async fn` into a `#[must_use]` fn returning a boxed future, which
+// newer stable clippy flags as `double_must_use`. Macro-generated, so allow it crate-wide.
+#![allow(clippy::double_must_use)]
+
 mod anthropic;
 pub mod budget;
 mod claude_code;

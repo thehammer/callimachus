@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Deployment helper for the script_project fixture.
+set -euo pipefail
+
+log_line() {
+  local level="$1"
+  shift
+  printf '%s [%s] %s\n' "$(date +%H:%M:%S)" "$level" "$*" >&2
+}
+
+build_image() {
+  local tag="$1"
+  log_line info "building image ${tag}"
+  docker build --tag "registry.example.test/app:${tag}" --file Dockerfile.dev .
+}
+
+function push_image {
+  local tag="$1"
+  log_line info "pushing image ${tag}"
+  docker push "registry.example.test/app:${tag}"
+}
+
+function deploy() {
+  local tag="${1:-latest}"
+  build_image "$tag"
+  push_image "$tag"
+  log_line info "deployment of ${tag} complete"
+}
+
+deploy "$@"

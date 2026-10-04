@@ -31,6 +31,7 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../../migrations/018_drop_legacy_version_columns.sql"
         )),
+        M::up(include_str!("../../migrations/019_chunk_language.sql")),
     ])
 }
 
