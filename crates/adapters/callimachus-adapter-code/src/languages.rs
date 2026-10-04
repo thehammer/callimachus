@@ -287,7 +287,10 @@ const TEXT_LABELS: &[&str] = &[
 ];
 
 /// Plain-text extensions beyond [`TEXT_EXTENSIONS`], checked last by [`detect`].
-const PLAIN_TEXT_EXTENSIONS: &[&str] = &["env", "conf", "tpl", "tmpl"];
+///
+/// `env` is deliberately absent: `prod.env` / `secrets.env` files routinely hold
+/// credentials and must never be indexed.
+const PLAIN_TEXT_EXTENSIONS: &[&str] = &["conf", "tpl", "tmpl"];
 
 fn grammar(name: &str) -> Option<Detection> {
     let lc = for_name(name)?;
@@ -599,7 +602,6 @@ mod detect_tests {
             "Dockerfile.dev",
             "Caddyfile.edge",
             "Procfile",
-            "stack.env",
             "site.conf",
             "x.tmpl",
             "x.tpl",
@@ -925,8 +927,20 @@ mod detect_tests {
 
     #[test]
     fn allow_listed_extensions_are_text() {
-        for path in ["stack.env", "site.conf", "x.tpl", "x.tmpl", "a/b/app.conf"] {
+        for path in ["site.conf", "x.tpl", "x.tmpl", "a/b/app.conf"] {
             assert_eq!(detected(path, None), Outcome::Text("text"), "{path}");
+        }
+    }
+
+    #[test]
+    fn env_files_are_never_detected() {
+        for path in ["stack.env", "prod.env", "secrets.env", "a/b/local.env"] {
+            assert_eq!(detected(path, None), Outcome::Undetected, "{path}");
+            assert_eq!(
+                detected(path, Some("SECRET=hunter2\n")),
+                Outcome::Undetected,
+                "{path}"
+            );
         }
     }
 

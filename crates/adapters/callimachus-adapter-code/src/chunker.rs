@@ -1663,7 +1663,6 @@ void main() {
             ("Caddyfile", "caddyfile"),
             ("Caddyfile.edge", "caddyfile"),
             ("Procfile", "procfile"),
-            ("stack.env", "text"),
             ("site.conf", "text"),
             ("x.tpl", "text"),
             ("x.tmpl", "text"),
@@ -1692,9 +1691,11 @@ void main() {
     }
 
     #[tokio::test]
-    async fn bare_dotfile_env_is_not_indexed() {
+    async fn env_files_are_not_indexed() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), ".env", "SECRET=hunter2\n");
+        write(dir.path(), "prod.env", "SECRET=hunter2\n");
+        write(dir.path(), "secrets.env", "SECRET=hunter2\n");
 
         let chunks = chunk_directory(dir.path(), "test", &ChunkOptions::default())
             .await

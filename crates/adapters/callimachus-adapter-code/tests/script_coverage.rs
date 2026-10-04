@@ -9,7 +9,7 @@
 //!   Makefile         — targets build, test, clean
 //!   Dockerfile.dev   — text passthrough, label "dockerfile"
 //!   Caddyfile.edge   — text passthrough, label "caddyfile"
-//!   stack.env        — text passthrough, label "text"
+//!   stack.env        — .env files may hold secrets: must NOT be indexed
 //!   site.conf        — text passthrough, label "text"
 //!   NOTES            — extensionless, no shebang: must NOT be indexed
 //!   weird.xyz        — unknown extension: must NOT be indexed
@@ -86,6 +86,10 @@ async fn script_fixture_chunking_does_not_error_and_skips_unrecognised_files() {
         of_file(&chunks, "src/weird.xyz").is_empty(),
         "unknown extension must not be indexed"
     );
+    assert!(
+        of_file(&chunks, "src/stack.env").is_empty(),
+        ".env files may hold secrets and must not be indexed"
+    );
 }
 
 #[tokio::test]
@@ -141,7 +145,6 @@ async fn config_files_are_single_text_chunks_with_their_label() {
     for (path, label) in [
         ("src/Dockerfile.dev", "dockerfile"),
         ("src/Caddyfile.edge", "caddyfile"),
-        ("src/stack.env", "text"),
         ("src/site.conf", "text"),
     ] {
         let of = of_file(&chunks, path);
