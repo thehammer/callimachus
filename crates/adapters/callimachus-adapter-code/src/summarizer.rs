@@ -186,26 +186,34 @@ Return ONLY the summary text, no JSON, no preamble."#,
 /// language (or path/shebang detection for rows that predate it).
 fn detect_language_from_chunk(chunk: &Chunk) -> String {
     let label = languages::language_of_chunk(chunk).map(|d| d.label);
-    match label {
-        Some("rust") => "Rust",
-        Some("typescript") => "TypeScript",
-        Some("javascript") => "JavaScript",
-        Some("python") => "Python",
-        Some("go") => "Go",
-        Some("php") => "PHP",
-        Some("dart") => "Dart",
-        Some("bash") => "Bash",
-        Some("make") => "Make",
-        Some("vue") => "Vue",
-        Some("ruby") => "Ruby",
-        Some("perl") => "Perl",
-        Some("dockerfile") => "Dockerfile",
-        Some("caddyfile") => "Caddyfile",
-        Some("procfile") => "Procfile",
-        Some("text") => "Text",
-        _ => "unknown",
-    }
-    .to_string()
+    label
+        .and_then(display_name)
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// Display name for a persisted language label.  Every label in
+/// [`languages::all_labels`] must have an entry (enforced by a test).
+fn display_name(label: &str) -> Option<&'static str> {
+    Some(match label {
+        "rust" => "Rust",
+        "typescript" => "TypeScript",
+        "javascript" => "JavaScript",
+        "python" => "Python",
+        "go" => "Go",
+        "php" => "PHP",
+        "dart" => "Dart",
+        "bash" => "Bash",
+        "make" => "Make",
+        "vue" => "Vue",
+        "ruby" => "Ruby",
+        "perl" => "Perl",
+        "dockerfile" => "Dockerfile",
+        "caddyfile" => "Caddyfile",
+        "procfile" => "Procfile",
+        "text" => "Text",
+        _ => return None,
+    })
 }
 
 fn extract_symbol_from_location(path: &str) -> String {
@@ -214,5 +222,20 @@ fn extract_symbol_from_location(path: &str) -> String {
     } else {
         // No symbol: use the filename.
         path.rsplit('/').next().unwrap_or(path).to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_registered_language_label_has_a_display_name() {
+        for label in languages::all_labels() {
+            assert!(
+                display_name(label).is_some(),
+                "language label {label:?} has no display name in summarizer::display_name"
+            );
+        }
     }
 }

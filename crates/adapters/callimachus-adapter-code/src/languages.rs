@@ -254,6 +254,16 @@ pub fn all_extensions() -> impl Iterator<Item = &'static str> {
         .flat_map(|lc| lc.extensions.iter().copied())
 }
 
+/// Every language label that can be persisted on a chunk: grammar names,
+/// `vue`, and the text-passthrough labels.
+pub fn all_labels() -> impl Iterator<Item = &'static str> {
+    SUPPORTED_LANGUAGES
+        .iter()
+        .map(|lc| lc.name)
+        .chain(std::iter::once("vue"))
+        .chain(TEXT_LABELS.iter().copied())
+}
+
 // ── Detection ───────────────────────────────────────────────────────────────
 
 /// How a detected file is processed by the chunker.
