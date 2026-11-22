@@ -77,14 +77,23 @@ pub fn extract(
             analyse_function(chunk, *item, source, &enum_constants, test_ranges, result);
         }
     }
+
+    // Keep the first entity emitted per id (declarations before free-identifier
+    // stubs); a HashSet keeps this linear on large files.
+    let mut seen = HashSet::new();
+    result.entities.retain(|e| seen.insert(e.id.clone()));
 }
 
 // ── Declarations ─────────────────────────────────────────────────────────────
 
 /// Top-level items, looking through preprocessor conditionals and `extern "C"`.
 fn top_level_items(root: Node<'_>) -> Vec<Node<'_>> {
-    fn walk<'t>(node: Node<'t>, out: &mut Vec<Node<'t>>) {
+    let mut out = Vec::new();
+    // Explicit stack: nesting depth is attacker-controlled in source files.
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
         let mut cursor = node.walk();
+        let mut containers = Vec::new();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
                 "function_definition"
@@ -98,13 +107,13 @@ fn top_level_items(root: Node<'_>) -> Vec<Node<'_>> {
                 | "preproc_else"
                 | "preproc_elif"
                 | "linkage_specification"
-                | "declaration_list" => walk(child, out),
+                | "declaration_list" => containers.push(child),
                 _ => {}
             }
         }
+        stack.extend(containers.into_iter().rev());
     }
-    let mut out = Vec::new();
-    walk(root, &mut out);
+    out.sort_by_key(|n| n.start_byte());
     out
 }
 
@@ -385,9 +394,6 @@ fn push_entity(
     node: Option<Node<'_>>,
     confidence: f32,
 ) {
-    if result.entities.iter().any(|e| e.id == id) {
-        return;
-    }
     let mut entity = Entity::new(
         id.to_string(),
         chunk.corpus_id.clone(),
