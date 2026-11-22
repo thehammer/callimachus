@@ -53,6 +53,16 @@ pub fn upsert(db: &Database, entity: &Entity) -> Result<()> {
              END,
              ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, 'concrete'), COALESCE(?13, ''), ?14, ?15)
          ON CONFLICT(id) DO UPDATE SET
+             -- A low-confidence `variable` stub (e.g. a free identifier seen
+             -- before its definition) yields to a definition, so the final
+             -- kind does not depend on indexing order. Evaluated before
+             -- `confidence` is updated (SQLite reads the old row values).
+             kind              = CASE WHEN entities.kind = 'variable' AND entities.confidence <= 0.5
+                                       AND excluded.confidence > 0.5 AND excluded.kind != 'variable'
+                                      THEN excluded.kind ELSE entities.kind END,
+             abstract_kind     = CASE WHEN entities.kind = 'variable' AND entities.confidence <= 0.5
+                                       AND excluded.confidence > 0.5 AND excluded.kind != 'variable'
+                                      THEN excluded.abstract_kind ELSE entities.abstract_kind END,
              aliases           = json_patch(aliases, excluded.aliases),
              description       = COALESCE(excluded.description, description),
              last_location_uri = COALESCE(excluded.last_location_uri, last_location_uri),

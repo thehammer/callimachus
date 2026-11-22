@@ -325,3 +325,33 @@ fn refine_provenance_stub_returns_unchanged() {
         "refine_provenance must return Unchanged (stub) in this PR"
     );
 }
+
+// ── Entity kind is independent of upsert order ────────────────────────────────
+
+fn kind_entity(kind: &str, confidence: f32) -> Entity {
+    let mut e = Entity::new("c1:fun_x".into(), "c1".into(), "FUN_x".into(), kind.into());
+    e.confidence = confidence;
+    e.appearance_count = 1;
+    e
+}
+
+#[test]
+fn definition_beats_variable_stub_in_either_upsert_order() {
+    for stub_first in [true, false] {
+        let backend = make_backend();
+        seed_corpus(&backend, "c1");
+        let stub = kind_entity("variable", 0.5);
+        let def = kind_entity("function", 0.9);
+        let order = if stub_first {
+            [&stub, &def]
+        } else {
+            [&def, &stub]
+        };
+        for e in order {
+            backend.entity_upsert(e).unwrap();
+        }
+        let got = backend.entity_get_by_id("c1:fun_x").unwrap().unwrap();
+        assert_eq!(got.kind, "function", "stub_first={stub_first}");
+        assert!(got.confidence >= 0.9);
+    }
+}

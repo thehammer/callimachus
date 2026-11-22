@@ -42,9 +42,23 @@ index) and field access (`.` and `->`). Compound assignment is a write only.
 Everything else is a `reads`. A function that does both gets both edges; many
 reads of one name collapse into a single edge.
 
-Known limitations: a function name used as a value (`cb = FUN_0001;`) is
-recorded as a read of a same-named entity, and macros used as constants look
-like globals.
+Known limitations:
+
+- A function name used as a value (`cb = FUN_0001;`) is recorded as a read of a
+  same-named entity (the entity upsert keeps a definition's kind whichever
+  file is indexed first). Macros used as constants look like globals.
+- Enum constants are known only within the chunk that defines them.
+- There is one `bound` set per function: a local declared in an inner block
+  hides a same-named global everywhere in that function.
+- `*p = v` and `p->f = v` count as writes of `p`; pointer and pointee are not
+  distinguished. Address arithmetic writes (`*(int *)(g + 4) = v`) count as
+  writes of the left-most base `g`.
+- A call through an unbound global name is a `calls` edge to that name.
+- A parenthesized unbound name before an operand, `(uint)(x)`, is treated as a
+  cast to an undeclared typedef, not a call; `sizeof(name)` with an unbound
+  name is treated as a type.
+- `reads`/`writes` edges are not part of the SCIP export.
+- C entities carry no doc comments yet.
 
 These are ordinary edge kinds, so the existing queries and MCP tools list
 them (filter by `kind`: `reads`, `writes`, `calls`).
