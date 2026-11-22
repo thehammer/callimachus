@@ -271,7 +271,7 @@ callimachus/
     callimachus-cli/            calli binary
     adapters/
       callimachus-adapter-book/ EPUB + plain text
-      callimachus-adapter-code/ Rust, Python, JS/TS, Go, PHP, Dart, Bash, Make, Vue (tree-sitter);
+      callimachus-adapter-code/ Rust, Python, JS/TS, Go, C, PHP, Dart, Bash, Make, Vue (tree-sitter);
                                 extensionless scripts via shebang
       callimachus-adapter-wiki/ Markdown wikis
   data/

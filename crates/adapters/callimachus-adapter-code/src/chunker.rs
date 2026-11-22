@@ -397,6 +397,23 @@ fn chunk_vue_file(
 
 // ── File-level chunking ──────────────────────────────────────────────────────
 
+/// The compiled top-level query for `lang`, cached for the process lifetime.
+///
+/// Compiling a tree-sitter query costs milliseconds; recompiling it per file
+/// dominated chunking of large flat corpora (thousands of small files).
+fn top_level_query(lang: &LangConfig) -> Result<std::sync::Arc<Query>, tree_sitter::QueryError> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<&'static str, Arc<Query>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(q) = cache.lock().unwrap().get(lang.name) {
+        return Ok(q.clone());
+    }
+    let q = Arc::new(Query::new(&(lang.language_fn)(), lang.top_level_query)?);
+    cache.lock().unwrap().insert(lang.name, q.clone());
+    Ok(q)
+}
+
 fn chunk_file(
     corpus_id: &str,
     rel_path: &str,
@@ -435,7 +452,7 @@ fn chunk_file(
     };
 
     // Compile the top-level item query.
-    let query = match Query::new(&language, lang.top_level_query) {
+    let query = match top_level_query(lang) {
         Ok(q) => q,
         Err(e) => {
             tracing::warn!("top-level query error for {}: {e:?}", lang.name);
@@ -622,6 +639,12 @@ fn node_kind_to_chunk_kind(ts_kind: &str) -> &'static str {
         // PHP enum → treat as interface (no separate enum chunk kind).
         // Dart enum_declaration also maps here (no separate `enum` chunk kind).
         "enum_declaration" => "interface",
+        // C: typedefs and tagged type definitions are type-like; file-scope
+        // declarations are variables.
+        "type_definition" | "struct_specifier" | "union_specifier" | "enum_specifier" => {
+            "interface"
+        }
+        "declaration" => "variable",
         _ => "function",
     }
 }
@@ -633,6 +656,7 @@ fn extract_symbol_from_text(text: &str, node_kind: &str, lang: &LangConfig) -> O
     // Shell functions and Makefile rules have their own header syntax; the
     // keyword scan below would pick up words from their bodies.
     match lang.name {
+        "c" => return crate::c::item_name(text),
         "bash" => return extract_bash_function_name(text),
         "make" => return extract_make_target_name(text),
         _ => {}
