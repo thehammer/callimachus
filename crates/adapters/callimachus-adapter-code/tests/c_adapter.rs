@@ -451,3 +451,99 @@ async fn two_thousand_file_flat_directory_is_chunked_and_extracted_in_time() {
         "took {elapsed:?}"
     );
 }
+
+// ── Casts to undeclared typedefs ─────────────────────────────────────────────
+
+fn assert_no_indirect(r: &ExtractedCodeStructure) {
+    assert!(
+        !r.edges.iter().any(|e| e.to_entity_id == indirect_id()),
+        "unexpected <indirect> edge"
+    );
+}
+
+#[test]
+fn cast_to_unknown_typedef_is_not_a_call_and_operand_is_read() {
+    let r = extract("int FUN_00001c04(void) { return (uint)(DAT_x); }\n");
+    assert_no_indirect(&r);
+    assert_no_ref(&r, "FUN_00001c04", "uint");
+    assert!(reads(&r, "FUN_00001c04", "DAT_x"));
+}
+
+#[test]
+fn cast_of_shifted_global_reads_the_global() {
+    let r = extract("int FUN_00001c04(void) { return (uint)(DAT_a >> 8); }\n");
+    assert_no_indirect(&r);
+    assert!(reads(&r, "FUN_00001c04", "DAT_a"));
+    assert_no_ref(&r, "FUN_00001c04", "uint");
+}
+
+#[test]
+fn cast_of_bare_global_to_unknown_typedef_reads_it() {
+    let r = extract("int FUN_00001c04(void) { return (byte)DAT_x; }\n");
+    assert_no_indirect(&r);
+    assert!(reads(&r, "FUN_00001c04", "DAT_x"));
+    assert_no_ref(&r, "FUN_00001c04", "byte");
+}
+
+#[test]
+fn cast_to_undefined4_of_parenthesized_global_reads_it() {
+    let r = extract("int FUN_00001c04(void) { return (undefined4)(DAT_f); }\n");
+    assert_no_indirect(&r);
+    assert!(reads(&r, "FUN_00001c04", "DAT_f"));
+    assert_no_ref(&r, "FUN_00001c04", "undefined4");
+}
+
+#[test]
+fn sizeof_unknown_typedef_is_not_a_ref() {
+    let r = extract("int FUN_00001c04(void) { return sizeof(ushort); }\n");
+    assert_no_ref(&r, "FUN_00001c04", "ushort");
+    assert_no_indirect(&r);
+}
+
+#[test]
+fn bound_parenthesized_callee_stays_indirect() {
+    let r = extract("void FUN_00001c04(void (*cb)(int)) { (cb)(1); }\n");
+    assert!(
+        r.edges
+            .iter()
+            .any(|e| e.kind == "calls" && e.to_entity_id == indirect_id())
+    );
+}
+
+// ── Writes through address arithmetic ────────────────────────────────────────
+
+#[test]
+fn write_through_cast_pointer_plus_offset_targets_base() {
+    let r = extract("void FUN_00001c04(int v) { *(int *)(DAT_base + 0x10) = v; }\n");
+    assert!(writes(&r, "FUN_00001c04", "DAT_base"));
+}
+
+#[test]
+fn write_through_address_of_plus_index_targets_base_not_index() {
+    let r = extract("void FUN_00001c04(int v, int i) { *(short *)((int)&DAT_base + i) = v; }\n");
+    assert!(writes(&r, "FUN_00001c04", "DAT_base"));
+}
+
+#[test]
+fn offset_identifier_on_the_right_stays_a_read() {
+    let r = extract("void FUN_00001c04(int v) { *(int *)(DAT_base + DAT_off) = v; }\n");
+    assert!(writes(&r, "FUN_00001c04", "DAT_base"));
+    assert!(reads(&r, "FUN_00001c04", "DAT_off"));
+    assert!(!writes(&r, "FUN_00001c04", "DAT_off"));
+}
+
+// ── Prototypes / extern inside a body ────────────────────────────────────────
+
+#[test]
+fn prototype_inside_body_keeps_later_call_direct() {
+    let r = extract("int FUN_00001c04(void) { int FUN_b(int); return FUN_b(1); }\n");
+    assert!(has_edge(&r, "calls", "FUN_00001c04", "FUN_b"));
+    assert_no_indirect(&r);
+}
+
+#[test]
+fn extern_declaration_inside_body_keeps_later_call_direct() {
+    let r = extract("int FUN_00001c04(void) { extern int FUN_b(int); return FUN_b(1); }\n");
+    assert!(has_edge(&r, "calls", "FUN_00001c04", "FUN_b"));
+    assert_no_indirect(&r);
+}
