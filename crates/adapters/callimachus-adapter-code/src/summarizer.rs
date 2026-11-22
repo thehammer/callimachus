@@ -201,6 +201,7 @@ fn display_name(label: &str) -> Option<&'static str> {
         "javascript" => "JavaScript",
         "python" => "Python",
         "go" => "Go",
+        "c" => "C",
         "php" => "PHP",
         "dart" => "Dart",
         "bash" => "Bash",

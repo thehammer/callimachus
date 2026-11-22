@@ -12,7 +12,7 @@ use crate::languages::LangConfig;
 /// Slugifies to lowercase, keeping alphanumeric characters and underscores,
 /// and replacing everything else with `_`.  The result is
 /// `{corpus_id}:{slug}`.
-fn entity_id(corpus_id: &str, name: &str) -> String {
+pub(crate) fn entity_id(corpus_id: &str, name: &str) -> String {
     let slug: String = name
         .to_lowercase()
         .chars()
@@ -38,7 +38,13 @@ fn entity_id(corpus_id: &str, name: &str) -> String {
 /// function in the same file produce N edges with the **same** id, which the
 /// post-extraction aggregation step then collapses into one row with
 /// `occurrence_count = N`.
-fn edge_id(corpus_id: &str, from_id: &str, kind: &str, to_id: &str, origin_scope: &str) -> String {
+pub(crate) fn edge_id(
+    corpus_id: &str,
+    from_id: &str,
+    kind: &str,
+    to_id: &str,
+    origin_scope: &str,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(from_id.as_bytes());
     hasher.update(b"|");
@@ -168,7 +174,7 @@ fn item_has_test_attr(node: tree_sitter::Node<'_>, source: &[u8]) -> bool {
 
 /// Returns `"test"` when `byte_pos` falls inside one of the test-scope ranges;
 /// `"production"` otherwise.
-fn scope_for_pos(byte_pos: usize, test_ranges: &[std::ops::Range<usize>]) -> String {
+pub(crate) fn scope_for_pos(byte_pos: usize, test_ranges: &[std::ops::Range<usize>]) -> String {
     if test_ranges.iter().any(|r| r.contains(&byte_pos)) {
         "test".to_string()
     } else {
@@ -251,6 +257,25 @@ pub fn extract_structure(
         vec![]
     };
 
+    // C has its own extractor: declarator-aware names, global reads/writes and
+    // indirect calls.  It replaces the generic entity/call passes.
+    if lang_config.name == "c" {
+        let file_path = chunk.location.path.split('#').next().unwrap_or("");
+        let mut file_entity = Entity::new(
+            entity_id(&chunk.corpus_id, file_path),
+            chunk.corpus_id.clone(),
+            file_path.to_string(),
+            "file".to_string(),
+        );
+        file_entity.first_location = Some(chunk.location.clone());
+        file_entity.last_location = Some(chunk.location.clone());
+        file_entity.confidence = 1.0;
+        result.entities.push(file_entity);
+        crate::c::extract(chunk, root, source, &test_ranges, &mut result);
+        finish(&mut result);
+        return Ok(result);
+    }
+
     // Extract top-level named entities.
     extract_entities(chunk, root, source, lang_config, &test_ranges, &mut result);
 
@@ -265,15 +290,17 @@ pub fn extract_structure(
         extract_php_instantiations(chunk, root, source, lang_config, &test_ranges, &mut result);
     }
 
-    // Aggregate edges: collapse entries with the same deterministic id into a
-    // single row, summing occurrence_counts.  Keep the first edge's location
-    // and confidence.
-    //
-    // Because edge ids encode (from, kind, to, origin_scope), N call sites to
-    // the same function become one edge with occurrence_count = N.  On
-    // incremental reindex the cascade deletes the file's edges before this
-    // batch is emitted, so overwrite upsert in the storage layer is correct
-    // and idempotent — see edge_store::upsert for the storage-side invariant.
+    finish(&mut result);
+
+    // Extract doc comment for the top-level symbol.
+    result.doc_comment = extract_doc_comment(root, source, lang_config.name);
+
+    Ok(result)
+}
+
+/// Collapse edges sharing a deterministic id into one row, summing
+/// occurrence counts (see the comment on `edge_id`).
+fn finish(result: &mut ExtractedCodeStructure) {
     let mut aggregated: std::collections::HashMap<String, Edge> = std::collections::HashMap::new();
     for edge in result.edges.drain(..) {
         aggregated
@@ -282,11 +309,6 @@ pub fn extract_structure(
             .or_insert(edge);
     }
     result.edges = aggregated.into_values().collect();
-
-    // Extract doc comment for the top-level symbol.
-    result.doc_comment = extract_doc_comment(root, source, lang_config.name);
-
-    Ok(result)
 }
 
 // ── Captured node data ────────────────────────────────────────────────────────

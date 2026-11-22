@@ -29,6 +29,9 @@ fn python_language() -> tree_sitter::Language {
 fn go_language() -> tree_sitter::Language {
     tree_sitter_go::LANGUAGE.into()
 }
+fn c_language() -> tree_sitter::Language {
+    tree_sitter_c::LANGUAGE.into()
+}
 fn php_language() -> tree_sitter::Language {
     tree_sitter_php::LANGUAGE_PHP.into()
 }
@@ -191,6 +194,13 @@ static SUPPORTED_LANGUAGES: &[LangConfig] = &[
         language_fn: go_language,
         top_level_query: GO_TOP_LEVEL_QUERY,
         call_query: GO_CALL_QUERY,
+    },
+    LangConfig {
+        name: "c",
+        extensions: &["c", "h"],
+        language_fn: c_language,
+        top_level_query: crate::c::C_TOP_LEVEL_QUERY,
+        call_query: crate::c::C_CALL_QUERY,
     },
     LangConfig {
         name: "php",
@@ -539,6 +549,8 @@ mod detect_tests {
             ("a.mjs", "javascript"),
             ("a.py", "python"),
             ("a.go", "go"),
+            ("a.c", "c"),
+            ("a.h", "c"),
             ("a.php", "php"),
             ("a.dart", "dart"),
             ("a.sh", "bash"),
@@ -999,6 +1011,7 @@ mod detect_tests {
             "javascript",
             "python",
             "go",
+            "c",
             "php",
             "dart",
             "bash",
