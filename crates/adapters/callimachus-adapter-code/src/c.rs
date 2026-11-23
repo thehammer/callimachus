@@ -17,6 +17,31 @@ use crate::extractor::{ExtractedCodeStructure, edge_id, entity_id, scope_for_pos
 /// Canonical name of the synthetic callee for calls through pointers.
 pub const INDIRECT_NAME: &str = "<indirect>";
 
+/// Decompiler naming conventions recognised as carrying an address: a name is
+/// one of these prefixes (case-insensitive) followed by 4-16 hex digits.
+pub const ADDRESS_PREFIXES: &[&str] = &[
+    "_DAT_", "DAT_", "PTR_DAT_", "PTR_", "RAM_", "FUN_", "LAB_", "SUB_",
+];
+
+/// Address encoded in a decompiler-style name (`_DAT_00c00004`, `FUN_000071d0`).
+/// The value is returned as written; no masking or width normalisation.
+pub fn address_of_name(name: &str) -> Option<u64> {
+    let lower = name.to_ascii_lowercase();
+    ADDRESS_PREFIXES.iter().find_map(|p| {
+        let digits = lower.strip_prefix(&p.to_ascii_lowercase())?;
+        if (4..=16).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+            u64::from_str_radix(digits, 16).ok()
+        } else {
+            None
+        }
+    })
+}
+
+/// Canonical alias form of an address: lowercase hex, no leading zeros.
+pub fn canonical_address(v: u64) -> String {
+    format!("0x{v:x}")
+}
+
 /// Tree-sitter query for top-level items; used by the chunker.
 pub const C_TOP_LEVEL_QUERY: &str = r#"
 (translation_unit
@@ -225,6 +250,7 @@ fn collect_enum_constants(root: Node<'_>, source: &[u8]) -> HashSet<String> {
 struct Access {
     reads: bool,
     writes: bool,
+    uses_table: bool,
 }
 
 fn analyse_function(
@@ -257,6 +283,8 @@ fn analyse_function(
     let mut accesses: BTreeMap<String, Access> = BTreeMap::new();
     let mut direct_calls: Vec<(String, usize)> = Vec::new();
     let mut indirect_calls: Vec<usize> = Vec::new();
+    // Address -> table stub target for pointer literals.
+    let mut literal_tables: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
 
     let mut stack = vec![body];
     while let Some(n) = stack.pop() {
@@ -299,10 +327,21 @@ fn analyse_function(
                     continue;
                 }
             }
+            "number_literal" => {
+                if let Some(v) = parse_int_literal(&text_of(n, source))
+                    && v >= 0x100
+                    && is_pointer_literal(n, source)
+                {
+                    literal_tables.insert(v);
+                }
+                continue;
+            }
             "identifier" => {
                 let name = text_of(n, source);
                 if !bound.contains(&name) && !enum_constants.contains(&name) {
+                    let table = is_table_use(n, &name);
                     let access = accesses.entry(name).or_default();
+                    access.uses_table |= table;
                     if is_write_target(n) {
                         access.writes = true;
                     } else {
@@ -339,6 +378,81 @@ fn analyse_function(
         if access.writes {
             push_edge(chunk, result, &from_id, "writes", &to_id, scope.clone());
         }
+        if access.uses_table {
+            push_edge(chunk, result, &from_id, "uses_table", &to_id, scope.clone());
+        }
+    }
+    for v in literal_tables {
+        let name = format!("DAT_{v:08x}");
+        let to_id = entity_id(&chunk.corpus_id, &name);
+        push_entity(chunk, result, &to_id, &name, "variable", None, 0.5);
+        push_edge(chunk, result, &from_id, "uses_table", &to_id, scope.clone());
+    }
+}
+
+/// Table-use heuristic for a named identifier: operand of unary `&`, base of a
+/// subscript (directly or via `(&X)[i]`), or a `PTR_`-prefixed name.
+fn is_table_use(ident: Node<'_>, name: &str) -> bool {
+    if name.len() >= 4 && name[..4].eq_ignore_ascii_case("PTR_") {
+        return true;
+    }
+    let Some(parent) = ident.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        "pointer_expression" => parent.child(0).is_some_and(|op| op.kind() == "&"),
+        "subscript_expression" => parent
+            .child_by_field_name("argument")
+            .is_some_and(|a| a.id() == ident.id()),
+        _ => false,
+    }
+}
+
+/// Heuristic: a literal is a table address when it is the operand of a pointer
+/// cast, `(T *)0x18000`, or an operand of `+` inside a parenthesised expression
+/// that is itself the operand of a pointer cast, `(T *)(e + 0x18000)`.
+fn is_pointer_literal(lit: Node<'_>, source: &[u8]) -> bool {
+    let Some(parent) = lit.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        "cast_expression" => is_pointer_cast(parent, source) && !in_comparison(parent),
+        "binary_expression" => {
+            let is_plus = parent
+                .child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "+");
+            let paren = parent
+                .parent()
+                .filter(|p| p.kind() == "parenthesized_expression");
+            is_plus
+                && paren
+                    .and_then(|p| p.parent())
+                    .is_some_and(|c| c.kind() == "cast_expression" && is_pointer_cast(c, source))
+        }
+        _ => false,
+    }
+}
+
+/// Bounds checks like `(T *)0xff3fff < p` compare addresses; they are not uses.
+fn in_comparison(node: Node<'_>) -> bool {
+    node.parent().is_some_and(|p| {
+        p.kind() == "binary_expression"
+            && p.child_by_field_name("operator")
+                .is_some_and(|o| matches!(o.kind(), "<" | ">" | "<=" | ">=" | "==" | "!="))
+    })
+}
+
+fn is_pointer_cast(cast: Node<'_>, source: &[u8]) -> bool {
+    cast.child_by_field_name("type")
+        .is_some_and(|t| text_of(t, source).contains('*'))
+}
+
+fn parse_int_literal(text: &str) -> Option<u64> {
+    let t = text.trim_end_matches(['u', 'U', 'l', 'L']);
+    if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        u64::from_str_radix(h, 16).ok()
+    } else {
+        t.parse().ok()
     }
 }
 
@@ -452,6 +566,11 @@ fn push_entity(
     entity.last_location = Some(chunk.location.clone());
     entity.appearance_count = 1;
     entity.confidence = confidence;
+    if matches!(kind, "function" | "variable")
+        && let Some(addr) = address_of_name(name)
+    {
+        entity.aliases.push(canonical_address(addr));
+    }
     if let Some(n) = node {
         entity.start_line = Some(n.start_position().row as u32);
         entity.end_line = Some(n.end_position().row as u32);
