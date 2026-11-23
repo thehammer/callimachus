@@ -19,8 +19,8 @@ use callimachus_adapter_contract::{
 };
 use callimachus_llm::LlmProvider;
 
+use bundle::parse_address;
 pub use bundle::{Bundle, merge_platform_config};
-use bundle::{lists_address, parse_address};
 
 /// Confidence for entities that come straight from the bundle.
 const BUNDLE_CONFIDENCE: f32 = 0.9;
@@ -31,6 +31,8 @@ pub struct BinExportAdapter {
     by_path: Mutex<HashMap<PathBuf, Arc<Bundle>>>,
     /// corpus id → bundle path, recorded when chunking.
     by_corpus: Mutex<HashMap<String, PathBuf>>,
+    /// Per-function problems `chunk` tolerated, drained by the chunk pass.
+    warnings: Mutex<Vec<(String, String)>>,
     code: CodeAdapter,
 }
 
@@ -39,6 +41,7 @@ impl BinExportAdapter {
         Self {
             by_path: Mutex::default(),
             by_corpus: Mutex::default(),
+            warnings: Mutex::default(),
             code: CodeAdapter::with_prompt_options(PromptOptions {
                 // `trim_for_prompt` applies the real budget (C 4,000 + asm 3,000).
                 code_cap: Some(content::C_BUDGET + content::ASM_BUDGET + 200),
@@ -66,8 +69,7 @@ impl BinExportAdapter {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "binary-export bundle for corpus {corpus_id:?} is not loaded; \
-                     run the chunk pass in the same invocation"
+                    "binary-export bundle for corpus {corpus_id:?} is not known to this adapter"
                 )
             })?;
         self.load(&path, false)
@@ -88,6 +90,17 @@ impl SourceAdapter for BinExportAdapter {
 
     fn version(&self) -> &str {
         env!("CARGO_PKG_VERSION")
+    }
+
+    fn attach_corpus(&self, corpus_id: &str, source: &str) {
+        self.by_corpus
+            .lock()
+            .unwrap()
+            .insert(corpus_id.to_string(), PathBuf::from(source));
+    }
+
+    fn take_chunk_warnings(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut *self.warnings.lock().unwrap())
     }
 
     fn summary_levels(&self) -> Vec<&'static str> {
@@ -125,12 +138,23 @@ impl SourceAdapter for BinExportAdapter {
         let mut chunks = Vec::with_capacity(bundle.functions.len());
         for f in &bundle.functions {
             let address = parse_address(&f.address)?;
+            let mut missing: Vec<String> = Vec::new();
+            let mut read = |rel: &str| -> Result<Option<String>> {
+                let text = bundle.read_text(rel)?;
+                if text.is_none() {
+                    missing.push(format!(
+                        "{} (0x{address:x}): file {rel} is missing from the bundle",
+                        f.name
+                    ));
+                }
+                Ok(text)
+            };
             let c_text = match (&f.c, f.decompile_ok) {
-                (Some(rel), true) => Some(bundle.read_text(rel)?),
+                (Some(rel), true) => read(rel)?,
                 _ => None,
             };
             let asm_text = match &f.asm {
-                Some(rel) => Some(bundle.read_text(rel)?),
+                Some(rel) => read(rel)?,
                 None => None,
             };
             let text = content::build_content(f, address, c_text.as_deref(), asm_text.as_deref());
@@ -145,6 +169,10 @@ impl SourceAdapter for BinExportAdapter {
                 text,
             );
             chunk.language = Some("c".to_string());
+            if !missing.is_empty() {
+                let mut w = self.warnings.lock().unwrap();
+                w.extend(missing.into_iter().map(|m| (chunk.id.clone(), m)));
+            }
             chunks.push(chunk);
         }
         Ok(chunks)
@@ -192,11 +220,7 @@ impl SourceAdapter for BinExportAdapter {
             e
         };
 
-        for t in bundle
-            .tables
-            .iter()
-            .filter(|t| lists_address(&t.readers, address))
-        {
+        for t in bundle.tables_read_by(address) {
             let mut aliases = vec![canonical_of(&t.address)?];
             if let Some(entry) = &t.entry {
                 aliases.push(format!("entry:{entry}"));
@@ -209,34 +233,26 @@ impl SourceAdapter for BinExportAdapter {
             edges.push(bundle_edge("uses_table", &e.id));
             entities.push(e);
         }
-        for p in &bundle.ports {
-            let reads = lists_address(&p.readers, address);
-            let writes = lists_address(&p.writers, address);
-            if !reads && !writes {
-                continue;
-            }
+        for a in bundle.ports_used_by(address) {
+            let p = a.record;
             let mut aliases = vec![canonical_of(&p.address)?];
             aliases.extend(p.port.clone());
             let e = bundle_entity(&p.name, "port", aliases, None);
-            if reads {
+            if a.reads {
                 edges.push(bundle_edge("reads", &e.id));
             }
-            if writes {
+            if a.writes {
                 edges.push(bundle_edge("writes", &e.id));
             }
             entities.push(e);
         }
-        for r in &bundle.ram {
-            let reads = lists_address(&r.readers, address);
-            let writes = lists_address(&r.writers, address);
-            if !reads && !writes {
-                continue;
-            }
+        for a in bundle.ram_used_by(address) {
+            let r = a.record;
             let e = bundle_entity(&r.name, "variable", vec![canonical_of(&r.address)?], None);
-            if reads {
+            if a.reads {
                 edges.push(bundle_edge("reads", &e.id));
             }
-            if writes {
+            if a.writes {
                 edges.push(bundle_edge("writes", &e.id));
             }
             entities.push(e);

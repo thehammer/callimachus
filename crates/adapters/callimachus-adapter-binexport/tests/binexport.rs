@@ -36,7 +36,7 @@ fn write_bundle_with_format(root: &Path, format: u64) {
             "cartridge": {"sha256": "def456"},
             "tools": {"decompiler": "d", "exporter": "e"}, "rounds": 1,
             "future_key": {"ignored": true},
-            "counts": {"functions": 3, "decompile_failed": 1, "tables": 1, "ports": 1, "ram": 1}
+            "counts": {"functions": 3, "decompile_failed": 1, "tables": 2, "ports": 1, "ram": 1}
         })
         .to_string(),
     );
@@ -62,7 +62,7 @@ fn write_bundle_with_format(root: &Path, format: u64) {
     write(
         root,
         "c/00002000.c",
-        "// FUN_00002000 decompiled\nint FUN_00002000(int i)\n{\n  return PTR_DAT_00012000[i];\n}\n",
+        "// FUN_00002000 decompiled\nint FUN_00002000(int i)\n{\n  return PTR_DAT_00012000[i] + PTR_LAB_00014000[i];\n}\n",
     );
     write(
         root,
@@ -78,7 +78,14 @@ fn write_bundle_with_format(root: &Path, format: u64) {
     write(
         root,
         "tables.jsonl",
-        &json!({"address":"0x012000","name":"PTR_DAT_00012000","kind":"code-pointers","entry":"u32","count":4,"readers":["0x002000"],"source":"dispatch"}).to_string(),
+        &[
+            json!({"address":"0x012000","name":"PTR_DAT_00012000","kind":"code-pointers","entry":"u32","count":4,"readers":["0x002000"],"source":"dispatch"}),
+            json!({"address":"0x014000","name":"PTR_LAB_00014000","kind":"code-pointers","entry":"u32","count":2,"readers":["0x002000"],"source":"dispatch"}),
+        ]
+        .iter()
+        .map(|t| t.to_string())
+        .collect::<Vec<_>>()
+        .join("\n"),
     );
     write(
         root,
@@ -93,11 +100,28 @@ fn write_bundle_with_format(root: &Path, format: u64) {
     );
 }
 
+fn set_counts(root: &Path, counts: serde_json::Value) {
+    let p = root.join("manifest.json");
+    let mut m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    m["counts"] = counts;
+    std::fs::write(p, m.to_string()).unwrap();
+}
+
 fn write_bundle(root: &Path) {
     write_bundle_with_format(root, 1);
 }
 
 async fn index(bundle: &Path, db: Arc<SqliteBackend>, adapter: Arc<BinExportAdapter>) {
+    index_passes(bundle, db, adapter, vec![Pass::Chunk, Pass::Structure]).await;
+}
+
+async fn index_passes(
+    bundle: &Path,
+    db: Arc<SqliteBackend>,
+    adapter: Arc<BinExportAdapter>,
+    passes: Vec<Pass>,
+) {
     let corpus = Corpus::new(
         CORP.into(),
         "Toy".into(),
@@ -117,7 +141,7 @@ async fn index(bundle: &Path, db: Arc<SqliteBackend>, adapter: Arc<BinExportAdap
         .run(
             &corpus,
             IndexOptions {
-                passes: vec![Pass::Chunk, Pass::Structure],
+                passes,
                 ..IndexOptions::default()
             },
         )
@@ -191,6 +215,20 @@ async fn tables_ports_and_ram_become_typed_entities() {
         "uses_table",
         "fun_00002000",
         "ptr_dat_00012000"
+    ));
+
+    let l = entity(&db, "ptr_lab_00014000");
+    assert_eq!(l.kind, "table");
+    assert!(
+        l.aliases.contains(&"0x14000".to_string()),
+        "{:?}",
+        l.aliases
+    );
+    assert!(has_edge(
+        &db,
+        "uses_table",
+        "fun_00002000",
+        "ptr_lab_00014000"
     ));
 
     let p = entity(&db, "io_c00004");
@@ -459,6 +497,7 @@ async fn summary_prompt_carries_hint_and_trimmed_content() {
 async fn bundle_paths_cannot_escape_the_bundle() {
     let d = tempfile::tempdir().unwrap();
     write_bundle(d.path());
+    set_counts(d.path(), json!({"functions": 1}));
     write(
         d.path(),
         "functions.jsonl",
@@ -473,4 +512,203 @@ async fn bundle_paths_cannot_escape_the_bundle() {
     src.meta = json!({"corpus_id": CORP});
     let err = a.chunk(&src).await.unwrap_err().to_string();
     assert!(err.contains("escapes the bundle root"), "{err}");
+}
+
+// ── Malformed bundles ────────────────────────────────────────────────────────
+
+async fn discover_err(root: &Path) -> String {
+    BinExportAdapter::new()
+        .discover(root.to_str().unwrap())
+        .await
+        .unwrap_err()
+        .to_string()
+}
+
+#[tokio::test]
+async fn manifest_only_bundle_is_an_error_naming_functions_jsonl() {
+    let d = tempfile::tempdir().unwrap();
+    write_bundle(d.path());
+    std::fs::remove_file(d.path().join("functions.jsonl")).unwrap();
+    let err = discover_err(d.path()).await;
+    assert!(err.contains("functions.jsonl"), "{err}");
+}
+
+#[tokio::test]
+async fn optional_file_missing_is_ok_only_when_count_is_zero_or_absent() {
+    let d = tempfile::tempdir().unwrap();
+    write_bundle(d.path());
+    std::fs::remove_file(d.path().join("ports.jsonl")).unwrap();
+    let err = discover_err(d.path()).await;
+    assert!(err.contains("ports.jsonl") && err.contains('1'), "{err}");
+
+    set_counts(
+        d.path(),
+        json!({"functions": 3, "ports": 0, "tables": 2, "ram": 1}),
+    );
+    BinExportAdapter::new()
+        .discover(d.path().to_str().unwrap())
+        .await
+        .unwrap();
+    set_counts(d.path(), json!({"functions": 3, "tables": 2, "ram": 1}));
+    BinExportAdapter::new()
+        .discover(d.path().to_str().unwrap())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn truncated_functions_file_reports_both_counts() {
+    let d = tempfile::tempdir().unwrap();
+    write_bundle(d.path());
+    let p = d.path().join("functions.jsonl");
+    let text = std::fs::read_to_string(&p).unwrap();
+    let kept: Vec<&str> = text.lines().take(2).collect();
+    std::fs::write(&p, kept.join("\n")).unwrap();
+    let err = discover_err(d.path()).await;
+    assert!(err.contains("functions.jsonl"), "{err}");
+    assert!(err.contains("counts 3") && err.contains("2 rows"), "{err}");
+}
+
+#[tokio::test]
+async fn bad_json_line_names_file_and_line() {
+    let d = tempfile::tempdir().unwrap();
+    write_bundle(d.path());
+    let p = d.path().join("functions.jsonl");
+    let text = std::fs::read_to_string(&p).unwrap();
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    lines[1] = "{not json".into();
+    std::fs::write(&p, lines.join("\n")).unwrap();
+    let err = format!(
+        "{:#}",
+        BinExportAdapter::new()
+            .discover(d.path().to_str().unwrap())
+            .await
+            .unwrap_err()
+    );
+    assert!(err.contains("functions.jsonl:2"), "{err}");
+}
+
+#[tokio::test]
+async fn duplicate_function_address_is_an_error() {
+    let d = tempfile::tempdir().unwrap();
+    write_bundle(d.path());
+    let p = d.path().join("functions.jsonl");
+    let text = std::fs::read_to_string(&p).unwrap();
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    lines[2] = lines[0].replace("FUN_00001000", "FUN_dup");
+    std::fs::write(&p, lines.join("\n")).unwrap();
+    let err = discover_err(d.path()).await;
+    assert!(err.contains("duplicate function address 0x1000"), "{err}");
+}
+
+// ── Structure index ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn structure_extraction_over_a_large_bundle_uses_the_reader_index() {
+    use callimachus_adapter_binexport::Bundle;
+    let d = tempfile::tempdir().unwrap();
+    let (nf, nr) = (2000usize, 5000usize);
+    let funcs: Vec<String> = (0..nf)
+        .map(|i| {
+            json!({"address": format!("0x{:06x}", 0x1000 + i * 4), "name": format!("FUN_{:08x}", 0x1000 + i * 4), "c": null, "asm": null, "decompile_ok": false}).to_string()
+        })
+        .collect();
+    write(d.path(), "functions.jsonl", &funcs.join("\n"));
+    // Record i is written by function i % nf.
+    let ram: Vec<String> = (0..nr)
+        .map(|i| {
+            json!({"address": format!("0x{:06x}", 0xff0000 + i), "name": format!("RAM_{:06x}", 0xff0000 + i),
+                   "readers": [], "writers": [format!("0x{:06x}", 0x1000 + (i % nf) * 4)]}).to_string()
+        })
+        .collect();
+    write(d.path(), "ram.jsonl", &ram.join("\n"));
+    write(
+        d.path(),
+        "manifest.json",
+        &json!({"format":1,"kind":"binary-export","counts":{"functions":nf,"ram":nr}}).to_string(),
+    );
+
+    let bundle = Bundle::load(d.path()).unwrap();
+    let mut total = 0;
+    for i in 0..nf {
+        let n = bundle.ram_used_by((0x1000 + i * 4) as u64).count();
+        assert_eq!(n, nr / nf + usize::from(i < nr % nf), "function {i}");
+        total += n;
+    }
+    assert_eq!(
+        total, nr,
+        "every record is attributed to exactly one function"
+    );
+
+    let chunks = chunks_of(d.path()).await;
+    assert_eq!(chunks.len(), nf);
+    let a = BinExportAdapter::new();
+    a.attach_corpus(CORP, d.path().to_str().unwrap());
+    let s = a.extract_structure(&chunks[7]).await.unwrap();
+    assert_eq!(
+        s.structural_edges
+            .iter()
+            .filter(|e| e.kind == "writes")
+            .count(),
+        nr / nf + usize::from(7 < nr % nf)
+    );
+}
+
+// ── Pass behaviour ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn structure_pass_alone_works_after_a_separate_chunk_run() {
+    let dir = tempfile::tempdir().unwrap();
+    write_bundle(dir.path());
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index_passes(
+        dir.path(),
+        db.clone(),
+        Arc::new(BinExportAdapter::new()),
+        vec![Pass::Chunk],
+    )
+    .await;
+    assert!(
+        db.entity_get_by_id(&format!("{CORP}:fun_00001000"))
+            .unwrap()
+            .is_none()
+    );
+    // A fresh adapter, as in a new process.
+    index_passes(
+        dir.path(),
+        db.clone(),
+        Arc::new(BinExportAdapter::new()),
+        vec![Pass::Structure],
+    )
+    .await;
+    assert_eq!(entity(&db, "fun_00001000").kind, "function");
+    assert!(has_edge(&db, "calls", "fun_00001000", "fun_00002000"));
+    assert!(has_edge(&db, "writes", "fun_00001000", "ram_ff0010"));
+}
+
+#[tokio::test]
+async fn missing_per_function_file_is_a_warning_not_a_failed_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    write_bundle(dir.path());
+    std::fs::remove_file(dir.path().join("asm/00002000.s")).unwrap();
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index(dir.path(), db.clone(), Arc::new(BinExportAdapter::new())).await;
+
+    // Everything that exists is indexed.
+    for n in ["fun_00001000", "fun_00002000", "fun_00003000"] {
+        assert_eq!(entity(&db, n).kind, "function", "{n}");
+    }
+    assert!(has_edge(&db, "calls", "fun_00001000", "fun_00002000"));
+
+    let runs = db.run_latest(CORP, 20).unwrap();
+    let chunk_run = runs.iter().find(|r| r.pass == "chunk").expect("chunk run");
+    assert_eq!(chunk_run.status, "completed");
+    assert_eq!(
+        chunk_run.stats.errors.len(),
+        1,
+        "{:?}",
+        chunk_run.stats.errors
+    );
+    assert!(chunk_run.stats.errors[0].message.contains("asm/00002000.s"));
+    assert_eq!(chunk_run.stats.processed, 3);
 }

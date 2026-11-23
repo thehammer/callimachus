@@ -35,6 +35,10 @@ pub struct Manifest {
     pub platform: Option<Platform>,
     #[serde(default)]
     cartridge: Option<Cartridge>,
+    /// Row counts the exporter claims per jsonl file (`functions`, `tables`,
+    /// `ports`, `ram`). Absent keys are not cross-checked.
+    #[serde(default)]
+    pub counts: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +107,20 @@ pub struct Bundle {
     pub ports: Vec<PortRecord>,
     pub ram: Vec<RamRecord>,
     by_address: HashMap<u64, usize>,
+    /// Reader address → indexes into `tables`, ascending.
+    tables_by_reader: HashMap<u64, Vec<usize>>,
+    /// Function address → `(index into ports, reads, writes)`, ascending.
+    ports_by_user: HashMap<u64, Vec<(usize, bool, bool)>>,
+    /// Function address → `(index into ram, reads, writes)`, ascending.
+    ram_by_user: HashMap<u64, Vec<(usize, bool, bool)>>,
+}
+
+/// How one function touches a port or RAM record.
+#[derive(Debug, Clone, Copy)]
+pub struct Access<'a, T> {
+    pub record: &'a T,
+    pub reads: bool,
+    pub writes: bool,
 }
 
 /// Parse `0x0071d0` (or bare hex) into a number.
@@ -143,38 +161,111 @@ pub fn read_manifest(root: &Path) -> Result<Manifest> {
     Ok(manifest)
 }
 
-fn read_jsonl<T: for<'de> Deserialize<'de>>(root: &Path, file: &str) -> Result<Vec<T>> {
+/// Read one jsonl file. `functions.jsonl` is `required`; the others may be
+/// absent only when the manifest's count for them is 0 or missing. A present
+/// file must match the manifest count when one is given.
+fn read_jsonl<T: for<'de> Deserialize<'de>>(
+    root: &Path,
+    file: &str,
+    manifest: &Manifest,
+    count_key: &str,
+    required: bool,
+) -> Result<Vec<T>> {
     let path = root.join(file);
+    let expected = manifest.counts.get(count_key).copied();
     if !path.exists() {
-        return Ok(vec![]);
+        if required {
+            bail!(
+                "{} is missing (required by the bundle format)",
+                path.display()
+            );
+        }
+        return match expected {
+            None | Some(0) => Ok(vec![]),
+            Some(n) => bail!(
+                "{} is missing but the manifest counts {n} {count_key}",
+                path.display()
+            ),
+        };
     }
     let raw =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    raw.lines()
-        .enumerate()
-        .filter(|(_, l)| !l.trim().is_empty())
-        .map(|(i, l)| {
-            serde_json::from_str(l).with_context(|| format!("{}:{}", path.display(), i + 1))
-        })
+    let mut rows = Vec::new();
+    for (i, line) in raw.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row = serde_json::from_str(line)
+            .with_context(|| format!("{}:{}: invalid record", path.display(), i + 1))?;
+        rows.push(row);
+    }
+    if let Some(n) = expected
+        && n != rows.len() as u64
+    {
+        bail!(
+            "{}: manifest counts {n} {count_key} but {} rows were read",
+            path.display(),
+            rows.len()
+        );
+    }
+    Ok(rows)
+}
+
+fn parse_addresses(list: &[String], file: &str) -> Result<Vec<u64>> {
+    list.iter()
+        .map(|a| parse_address(a).with_context(|| format!("in a reader/writer list of {file}")))
         .collect()
 }
 
 impl Bundle {
     pub fn load(root: &Path) -> Result<Self> {
         let manifest = read_manifest(root)?;
-        let functions: Vec<FunctionRecord> = read_jsonl(root, "functions.jsonl")?;
+        let functions: Vec<FunctionRecord> =
+            read_jsonl(root, "functions.jsonl", &manifest, "functions", true)?;
+        let tables: Vec<TableRecord> =
+            read_jsonl(root, "tables.jsonl", &manifest, "tables", false)?;
+        let ports: Vec<PortRecord> = read_jsonl(root, "ports.jsonl", &manifest, "ports", false)?;
+        let ram: Vec<RamRecord> = read_jsonl(root, "ram.jsonl", &manifest, "ram", false)?;
+
         let mut by_address = HashMap::new();
         for (i, f) in functions.iter().enumerate() {
-            by_address.insert(parse_address(&f.address)?, i);
+            let a = parse_address(&f.address)?;
+            if let Some(prev) = by_address.insert(a, i) {
+                bail!(
+                    "duplicate function address 0x{a:x} in functions.jsonl ({} and {})",
+                    functions[prev].name,
+                    f.name
+                );
+            }
         }
+
+        let mut tables_by_reader: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (i, t) in tables.iter().enumerate() {
+            let mut readers = parse_addresses(&t.readers, "tables.jsonl")?;
+            readers.sort_unstable();
+            readers.dedup();
+            for a in readers {
+                tables_by_reader.entry(a).or_default().push(i);
+            }
+        }
+        let ports_by_user = index_accesses(
+            ports.iter().map(|p| (&p.readers, &p.writers)),
+            "ports.jsonl",
+        )?;
+        let ram_by_user =
+            index_accesses(ram.iter().map(|r| (&r.readers, &r.writers)), "ram.jsonl")?;
+
         Ok(Self {
             root: root.to_path_buf(),
             manifest,
             functions,
-            tables: read_jsonl(root, "tables.jsonl")?,
-            ports: read_jsonl(root, "ports.jsonl")?,
-            ram: read_jsonl(root, "ram.jsonl")?,
+            tables,
+            ports,
+            ram,
             by_address,
+            tables_by_reader,
+            ports_by_user,
+            ram_by_user,
         })
     }
 
@@ -182,10 +273,29 @@ impl Bundle {
         self.by_address.get(&address).map(|&i| &self.functions[i])
     }
 
+    /// Tables whose `readers` list the function at `address`.
+    pub fn tables_read_by(&self, address: u64) -> impl Iterator<Item = &TableRecord> {
+        self.tables_by_reader
+            .get(&address)
+            .into_iter()
+            .flatten()
+            .map(|&i| &self.tables[i])
+    }
+
+    /// Ports the function at `address` reads or writes.
+    pub fn ports_used_by(&self, address: u64) -> impl Iterator<Item = Access<'_, PortRecord>> {
+        accesses(&self.ports_by_user, &self.ports, address)
+    }
+
+    /// RAM records the function at `address` reads or writes.
+    pub fn ram_used_by(&self, address: u64) -> impl Iterator<Item = Access<'_, RamRecord>> {
+        accesses(&self.ram_by_user, &self.ram, address)
+    }
+
     /// Read a bundle-relative text file named by a functions.jsonl record.
     /// The path must stay inside the bundle: absolute paths, `..` and symlinks
-    /// that leave the root are refused.
-    pub fn read_text(&self, rel: &str) -> Result<String> {
+    /// that leave the root are refused. `Ok(None)` when the file does not exist.
+    pub fn read_text(&self, rel: &str) -> Result<Option<String>> {
         let rel_path = Path::new(rel);
         if rel_path.is_absolute()
             || rel_path
@@ -195,20 +305,59 @@ impl Bundle {
             bail!("bundle path escapes the bundle root: {rel}");
         }
         let root = self.root.canonicalize()?;
-        let path = root
-            .join(rel_path)
-            .canonicalize()
-            .with_context(|| format!("resolving {rel} in {}", self.root.display()))?;
+        let path = match root.join(rel_path).canonicalize() {
+            Ok(p) => p,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("resolving {rel} in {}", self.root.display()));
+            }
+        };
         if !path.starts_with(&root) {
             bail!("bundle path escapes the bundle root: {rel}");
         }
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        Ok(Some(text))
     }
 }
 
-/// True when `list` (hex address strings) contains `address`.
-pub fn lists_address(list: &[String], address: u64) -> bool {
-    list.iter().any(|a| parse_address(a).ok() == Some(address))
+type AccessIndex = HashMap<u64, Vec<(usize, bool, bool)>>;
+
+fn index_accesses<'a>(
+    rows: impl Iterator<Item = (&'a Vec<String>, &'a Vec<String>)>,
+    file: &str,
+) -> Result<AccessIndex> {
+    let mut out: AccessIndex = HashMap::new();
+    for (i, (readers, writers)) in rows.enumerate() {
+        let mut flags: HashMap<u64, (bool, bool)> = HashMap::new();
+        for a in parse_addresses(readers, file)? {
+            flags.entry(a).or_default().0 = true;
+        }
+        for a in parse_addresses(writers, file)? {
+            flags.entry(a).or_default().1 = true;
+        }
+        for (a, (r, w)) in flags {
+            out.entry(a).or_default().push((i, r, w));
+        }
+    }
+    Ok(out)
+}
+
+fn accesses<'a, T>(
+    index: &'a AccessIndex,
+    records: &'a [T],
+    address: u64,
+) -> impl Iterator<Item = Access<'a, T>> {
+    index
+        .get(&address)
+        .into_iter()
+        .flatten()
+        .map(|&(i, reads, writes)| Access {
+            record: &records[i],
+            reads,
+            writes,
+        })
 }
 
 /// Merge the bundle's platform record into a corpus config object.
