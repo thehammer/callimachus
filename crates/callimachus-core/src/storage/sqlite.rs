@@ -357,6 +357,14 @@ impl StorageBackend for SqliteBackend {
         edge_store::list(&db!(self), corpus_id)
     }
 
+    fn edge_delete_by_scope(&self, corpus_id: &str, kind: &str, scope: &str) -> Result<u64> {
+        edge_store::delete_by_scope(&db!(self), corpus_id, kind, scope)
+    }
+
+    fn corpus_set_config(&self, id: &str, config: &serde_json::Value) -> Result<()> {
+        corpus_store::set_config(&db!(self), id, config)
+    }
+
     fn edge_count(&self, corpus_id: &str) -> Result<u64> {
         edge_store::count(&db!(self), corpus_id)
     }

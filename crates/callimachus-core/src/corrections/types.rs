@@ -1,3 +1,4 @@
+use crate::corrections::facts::FactRecord;
 use serde::{Deserialize, Serialize};
 
 /// A persisted correction record: an immutable, append-only log entry.
@@ -54,6 +55,13 @@ pub enum CorrectionKind {
         /// Free-text human note (optional).
         note: Option<String>,
     },
+    /// An imported fact record. Corpus-scoped. `anchors` are the entity ids the
+    /// fact was anchored to at import time; `retracted` marks a withdrawn fact.
+    Fact {
+        fact: FactRecord,
+        retracted: bool,
+        anchors: Vec<String>,
+    },
 }
 
 impl CorrectionKind {
@@ -65,6 +73,7 @@ impl CorrectionKind {
             CorrectionKind::Alias { .. } => "alias",
             CorrectionKind::EditSummary { .. } => "edit_summary",
             CorrectionKind::EntityLink { .. } => "entity_link",
+            CorrectionKind::Fact { .. } => "fact",
         }
     }
 }

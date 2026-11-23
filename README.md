@@ -199,7 +199,7 @@ For your own project, after indexing, add an `.mcp.json`:
 
 ### Available MCP tools
 
-Once connected, Claude has access to 27 tools. Key tools:
+Once connected, Claude has access to 28 tools. Key tools:
 
 | Tool | Description |
 |---|---|
@@ -213,6 +213,7 @@ Once connected, Claude has access to 27 tools. Key tools:
 | `search` | Full-text search across all chunks |
 | `corpus_list`, `corpus_overview`, `corpus_themes` | Corpus metadata and architectural themes |
 | `list_scholia`, `apply_scholion` | List and apply non-destructive index corrections |
+| `list_facts` | Confirmed facts imported into a corpus, with their anchors |
 | `find_unreachable`, `entities_without_tests`, `find_inconsistencies` | Code health queries |
 | Collection tools (`collection_list`, `collection_search`, `collection_entity_resolve`, …) | Cross-corpus entity queries |
 
@@ -226,6 +227,7 @@ calli corpus add <kind> <name> <source> [--id <id>]
 calli corpus list
 calli corpus show <id>
 calli corpus remove <id>
+calli corpus set <id> <key> <json>  Merge one key into the corpus config (role, address_mask, cpu_spaces)
 
 # Indexing
 calli index <id>                    Run all default passes
@@ -251,8 +253,15 @@ calli scholion apply <id> merge <a> <b>     Merge two entities
 calli scholion apply <id> rename <id> <n>   Rename an entity
 calli correct …                     (deprecated alias for calli scholion apply)
 
+# Facts (see docs/facts.md)
+calli facts import <id> <path>... [--prune]   Import confirmed facts as scholia
+calli facts list <id> [--kind k] [--topic t] [--json]
+calli facts show <id> <fact-id>
+#   confidence: confirmed=1.0, inferred=0.6, unknown=0.3 (see docs/facts.md)
+
 # Cross-corpus
 calli link candidates <a> <b>       Suggest entity links between two corpora
+calli link addresses <collection>   Link game entities to reference-corpus entities by address
 calli collection add <name>
 calli collection add-member <coll> <corpus>
 

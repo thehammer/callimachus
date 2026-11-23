@@ -44,6 +44,10 @@ enum Command {
     #[command(subcommand)]
     Corpus(CorpusCommand),
 
+    /// Import and inspect confirmed facts (see docs/facts.md).
+    #[command(subcommand)]
+    Facts(commands::facts::FactsCommand),
+
     /// Manage collections (add, list, status, add-member, remove-member, remove).
     Collection {
         #[command(subcommand)]
@@ -393,6 +397,11 @@ enum CollectionCommand {
 enum LinkSubcommand {
     /// Find candidate entity links between two corpora.
     Candidates { corpus_a: String, corpus_b: String },
+    /// Link entities to reference-corpus entities at the same address.
+    Addresses {
+        /// Collection holding the game and reference corpora.
+        collection: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -443,6 +452,11 @@ async fn main() -> Result<()> {
         Command::Corpus(sub) => {
             let db = open_db(&db_path)?;
             commands::corpus::run(sub, db.as_ref(), &global_config)
+        }
+
+        Command::Facts(sub) => {
+            let db = open_db(&db_path)?;
+            commands::facts::run(sub, db)
         }
 
         Command::Collection { sub } => {
@@ -641,6 +655,9 @@ async fn main() -> Result<()> {
             let link_sub = match sub {
                 LinkSubcommand::Candidates { corpus_a, corpus_b } => {
                     commands::link::LinkSubcommand::Candidates { corpus_a, corpus_b }
+                }
+                LinkSubcommand::Addresses { collection } => {
+                    commands::link::LinkSubcommand::Addresses { collection }
                 }
             };
             commands::link::run(link_sub, db.as_ref())
@@ -847,6 +864,16 @@ fn describe_correction(c: &callimachus_core::corrections::types::Correction) -> 
                 entity_a_id,
                 corpus_b_id,
                 entity_b_id
+            )
+        }
+        CorrectionKind::Fact {
+            fact, retracted, ..
+        } => {
+            format!(
+                "Fact {:?} ({}){}",
+                fact.id,
+                fact.kind,
+                if *retracted { " retracted" } else { "" }
             )
         }
     }

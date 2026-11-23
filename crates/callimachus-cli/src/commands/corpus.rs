@@ -35,6 +35,16 @@ pub enum CorpusCommand {
         corpus_id: String,
     },
 
+    /// Set one key in a corpus's config (e.g. role, address_mask, cpu_spaces).
+    Set {
+        /// Corpus ID.
+        corpus_id: String,
+        /// Config key.
+        key: String,
+        /// JSON value (e.g. '"reference"', '"0xffffff"', '["rom","wram"]').
+        value: String,
+    },
+
     /// Remove a corpus and all its indexed data.
     Remove {
         /// Corpus ID.
@@ -59,6 +69,11 @@ pub fn run(cmd: CorpusCommand, db: &dyn StorageBackend, _config: &GlobalConfig) 
         } => add(db, &registry, kind, name, source, config, id),
         CorpusCommand::List => list(db, &registry),
         CorpusCommand::Status { corpus_id } => status(db, &registry, &corpus_id),
+        CorpusCommand::Set {
+            corpus_id,
+            key,
+            value,
+        } => set(db, &corpus_id, &key, &value),
         CorpusCommand::Remove {
             corpus_id,
             keep_source,
@@ -291,6 +306,21 @@ fn remove(db: &dyn StorageBackend, corpus_id: &str, keep_source: bool) -> Result
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn set(db: &dyn StorageBackend, corpus_id: &str, key: &str, value: &str) -> Result<()> {
+    let parsed: serde_json::Value = serde_json::from_str(value)
+        .with_context(|| format!("value must be JSON (quote strings): {value}"))?;
+    let mut corpus = db.corpus_require(corpus_id)?;
+    if !corpus.config.is_object() {
+        corpus.config = serde_json::Value::Object(Default::default());
+    }
+    if let Some(obj) = corpus.config.as_object_mut() {
+        obj.insert(key.to_string(), parsed);
+    }
+    db.corpus_set_config(corpus_id, &corpus.config)?;
+    println!("{corpus_id}: {key} = {value}");
+    Ok(())
+}
 
 fn slugify(name: &str) -> String {
     let slug: String = name

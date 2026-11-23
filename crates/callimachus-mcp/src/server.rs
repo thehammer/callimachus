@@ -333,7 +333,8 @@ mod tests {
         let resp = server.handle("tools/list", Value::Null, json!(1)).await;
         let tools = resp["result"]["tools"].as_array().unwrap();
         // 23 original + 2 taxonomy tools + 2 scholia tools (list_scholia, apply_scholion)
-        assert_eq!(tools.len(), 27);
+        // + list_facts
+        assert_eq!(tools.len(), 28);
     }
 
     #[tokio::test]

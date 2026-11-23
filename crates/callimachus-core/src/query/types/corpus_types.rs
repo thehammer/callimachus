@@ -34,9 +34,33 @@ pub struct CorpusOverviewOutput {
     pub last_indexed: Option<String>,
     pub top_entities: Vec<crate::types::Entity>,
     pub summary: Option<String>,
-    /// Platform record from the corpus config (binary-export corpora).
+    /// The `platform` fact's data, when the corpus has one; otherwise the platform
+    /// record from the corpus config (binary-export corpora).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<serde_json::Value>,
+}
+
+// ── list_facts ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListFactsInput {
+    pub corpus_id: String,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub topic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListFactsOutput {
+    pub facts: Vec<ListedFact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListedFact {
+    #[serde(flatten)]
+    pub fact: crate::corrections::FactRecord,
+    pub anchors: Vec<String>,
 }
 
 // ── corpus_themes ─────────────────────────────────────────────────────────────

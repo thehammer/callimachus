@@ -375,6 +375,19 @@ pub static TOOL_LIST: Lazy<Vec<ToolDesc>> = Lazy::new(|| {
             }),
         },
         ToolDesc {
+            name: "list_facts",
+            description: "List the confirmed facts imported into a corpus (see docs/facts.md), with the entities each is anchored to. Optionally filter by kind or topic.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "corpus_id": { "type": "string", "description": "The corpus identifier." },
+                    "kind": { "type": "string", "description": "Only facts of this kind (variable, table, routine, region, constant, variant, platform, ...)." },
+                    "topic": { "type": "string", "description": "Only facts of this topic." }
+                },
+                "required": ["corpus_id"]
+            }),
+        },
+        ToolDesc {
             name: "apply_scholion",
             description: "Apply a scholion (correction) to the index. Supports merge, unmerge, rename, alias, edit_summary, and entity_link operations.",
             input_schema: json!({

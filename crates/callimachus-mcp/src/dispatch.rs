@@ -6,7 +6,7 @@ use callimachus_core::query::{
     CorpusThemesInput, EntitiesWithoutTestsInput, EntityContractsInput, EntityEdgesInput,
     EntityInput, EntityMeetInput, EntitySearchByAbstractKindInput, ExplainComponentInput,
     FindInconsistenciesInput, FindSceneInput, FindUnreachableInput, ListAbstractKindsInput,
-    QueryService, ReadInput, RelatedInput, SearchInput, SummarizeInput,
+    ListFactsInput, QueryService, ReadInput, RelatedInput, SearchInput, SummarizeInput,
 };
 use callimachus_core::storage::StorageBackend;
 use serde_json::Value;
@@ -189,6 +189,10 @@ pub async fn dispatch(
             serde_json::to_value(qs.list_abstract_kinds(input)).unwrap_or_else(err_json)
         }
         // ── Scholia tools ───────────────────────────────────────────────────
+        "list_facts" => match serde_json::from_value::<ListFactsInput>(args) {
+            Ok(input) => serde_json::to_value(qs.list_facts(input)).unwrap_or_else(err_json),
+            Err(e) => invalid_input(e),
+        },
         "list_scholia" => {
             let corpus_id = match args.get("corpus_id").and_then(|v| v.as_str()) {
                 Some(id) => id.to_string(),

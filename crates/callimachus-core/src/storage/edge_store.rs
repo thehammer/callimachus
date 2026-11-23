@@ -101,6 +101,14 @@ pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Edge>> {
         .map_err(CalError::from)
 }
 
+pub fn delete_by_scope(db: &Database, corpus_id: &str, kind: &str, scope: &str) -> Result<u64> {
+    let n = db.conn().execute(
+        "DELETE FROM edges WHERE corpus_id = ?1 AND kind = ?2 AND origin_scope = ?3",
+        params![corpus_id, kind, scope],
+    )?;
+    Ok(n as u64)
+}
+
 pub fn count(db: &Database, corpus_id: &str) -> Result<u64> {
     let n: i64 = db.conn().query_row(
         "SELECT COUNT(*) FROM edges WHERE corpus_id = ?1",

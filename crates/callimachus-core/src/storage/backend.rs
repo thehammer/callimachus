@@ -80,6 +80,8 @@ pub trait StorageBackend: Send + Sync {
     /// Read the per-corpus backward-backfill cursor (`None` when no backfill is
     /// in progress).
     fn corpus_get_backfill_cursor(&self, id: &str) -> Result<Option<String>>;
+    /// Replace the corpus `config` JSON.
+    fn corpus_set_config(&self, id: &str, config: &serde_json::Value) -> Result<()>;
     fn corpus_delete(&self, id: &str) -> Result<bool>;
     fn corpus_exists(&self, id: &str) -> Result<bool>;
 
@@ -168,6 +170,9 @@ pub trait StorageBackend: Send + Sync {
         limit: usize,
     ) -> Result<Vec<Edge>>;
     fn edge_list(&self, corpus_id: &str) -> Result<Vec<Edge>>;
+    /// Delete every edge of `kind` in `corpus_id` whose `origin_scope` equals
+    /// `scope`. Returns the number of rows removed.
+    fn edge_delete_by_scope(&self, corpus_id: &str, kind: &str, scope: &str) -> Result<u64>;
     fn edge_count(&self, corpus_id: &str) -> Result<u64>;
     /// Returns distinct location URIs for all edges involving `entity_id`.
     fn edge_location_uris_for_entity(&self, entity_id: &str) -> Result<Vec<String>>;

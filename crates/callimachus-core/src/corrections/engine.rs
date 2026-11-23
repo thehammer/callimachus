@@ -1,7 +1,15 @@
+use crate::corrections::facts::FactRecord;
 use crate::corrections::types::{Correction, CorrectionKind};
 use crate::error::Result;
 use crate::storage::StorageBackend;
 use crate::types::entity::Entity;
+
+struct FactEntry<'a> {
+    corpus_id: Option<&'a str>,
+    fact: &'a FactRecord,
+    retracted: bool,
+    anchors: &'a [String],
+}
 
 /// Overlay engine that applies a sorted-by-`applied_at` list of corrections
 /// to a snapshot of entities and summaries. Does not mutate the database.
@@ -178,6 +186,88 @@ impl CorrectionsEngine {
                 }
             }
         }
+
+        // --- Pass 5: anchored facts add their id as a virtual alias ---
+        for entry in self.latest_facts() {
+            if entry.retracted {
+                continue;
+            }
+            for anchor in entry.anchors {
+                let target = find(&parent, anchor);
+                for e in entities.iter_mut() {
+                    if e.id == target && !e.aliases.contains(&entry.fact.id) {
+                        e.aliases.push(entry.fact.id.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Latest non-retracted fact record per `(corpus, fact id)`.
+    pub fn facts(&self) -> Vec<&FactRecord> {
+        self.latest_facts()
+            .into_iter()
+            .filter(|e| !e.retracted)
+            .map(|e| e.fact)
+            .collect()
+    }
+
+    /// Latest non-retracted facts of one corpus, with their anchor entity ids.
+    pub fn facts_in_corpus(&self, corpus_id: &str) -> Vec<(&FactRecord, &[String])> {
+        self.latest_facts()
+            .into_iter()
+            .filter(|e| !e.retracted && e.corpus_id == Some(corpus_id))
+            .map(|e| (e.fact, e.anchors))
+            .collect()
+    }
+
+    /// Latest non-retracted facts anchored to `entity_id`, with all their anchors.
+    pub fn facts_for_entity(&self, entity_id: &str) -> Vec<(&FactRecord, Vec<String>)> {
+        self.latest_facts()
+            .into_iter()
+            .filter(|e| !e.retracted && e.anchors.iter().any(|a| a == entity_id))
+            .map(|e| (e.fact, e.anchors.to_vec()))
+            .collect()
+    }
+
+    /// Anchor entity ids of a non-retracted fact in a corpus, by fact id.
+    pub fn anchors_for_fact(&self, corpus_id: &str, fact_id: &str) -> Vec<String> {
+        self.latest_facts()
+            .into_iter()
+            .find(|e| !e.retracted && e.corpus_id == Some(corpus_id) && e.fact.id == fact_id)
+            .map(|e| e.anchors.to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Latest record (retracted or not) per `(corpus, fact id)`, by `applied_at`.
+    fn latest_facts(&self) -> Vec<FactEntry<'_>> {
+        use std::collections::HashMap;
+        let mut idx: HashMap<(Option<&str>, &str), usize> = HashMap::new();
+        let mut out: Vec<FactEntry<'_>> = Vec::new();
+        // Corrections are sorted applied_at ASC: later entries replace earlier.
+        for corr in &self.corrections {
+            if let CorrectionKind::Fact {
+                fact,
+                retracted,
+                anchors,
+            } = &corr.kind
+            {
+                let entry = FactEntry {
+                    corpus_id: corr.corpus_id.as_deref(),
+                    fact,
+                    retracted: *retracted,
+                    anchors,
+                };
+                match idx.get(&(corr.corpus_id.as_deref(), fact.id.as_str())) {
+                    Some(&i) => out[i] = entry,
+                    None => {
+                        idx.insert((corr.corpus_id.as_deref(), fact.id.as_str()), out.len());
+                        out.push(entry);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Return the most-recently-applied `EditSummary` text for the given

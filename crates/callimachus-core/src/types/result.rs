@@ -121,6 +121,21 @@ impl<T> ToolResult<T> {
         }
     }
 
+    /// Transform the data of a successful result; errors pass through.
+    pub fn map_data<U>(self, f: impl FnOnce(T) -> U) -> ToolResult<U> {
+        match self {
+            ToolResult::Ok(s) => ToolResult::Ok(ToolSuccess {
+                ok: s.ok,
+                data: f(s.data),
+                scope_applied: s.scope_applied,
+                indexed_at: s.indexed_at,
+                cost_metadata: s.cost_metadata,
+                corpus_freshness: s.corpus_freshness,
+            }),
+            ToolResult::Err(e) => ToolResult::Err(e),
+        }
+    }
+
     pub fn not_found(suggestions: Option<Vec<String>>) -> Self {
         ToolResult::Err(ToolResultError {
             ok: false,
