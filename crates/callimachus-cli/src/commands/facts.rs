@@ -176,7 +176,7 @@ fn show(db: Arc<dyn StorageBackend>, corpus_id: &str, fact_id: &str) -> Result<(
 }
 
 /// ` (inferred)` for any non-confirmed confidence label, else empty.
-fn confidence_tag(confidence: &str) -> String {
+pub(crate) fn confidence_tag(confidence: &str) -> String {
     if confidence == "confirmed" {
         String::new()
     } else {
@@ -185,7 +185,7 @@ fn confidence_tag(confidence: &str) -> String {
 }
 
 /// One line for a fact anchored on an entity.
-fn fact_line(f: &callimachus_core::query::types::EntityFact) -> String {
+pub(crate) fn fact_line(f: &callimachus_core::query::types::EntityFact) -> String {
     format!(
         "fact: {} [{}]{}  {}",
         f.id,

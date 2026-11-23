@@ -311,6 +311,11 @@ enum InspectCommand {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// Show one entity with the facts anchored on it ("(inferred)" when unconfirmed).
+    Entity {
+        corpus_id: String,
+        name_or_id: String,
+    },
     /// Dump the LLM artifacts (summary, purpose, contract) per entity, for evaluation.
     Artifacts {
         corpus_id: String,
@@ -870,6 +875,13 @@ fn run_inspect(sub: InspectCommand, db: Arc<dyn StorageBackend>) -> Result<()> {
             kind,
         } => {
             commands::inspect::run_collection_links(&collection_id, kind.as_deref(), db.as_ref())?;
+        }
+
+        InspectCommand::Entity {
+            corpus_id,
+            name_or_id,
+        } => {
+            commands::inspect::run_entity(&corpus_id, &name_or_id, db)?;
         }
 
         InspectCommand::Diegesis {
