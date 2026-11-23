@@ -225,7 +225,8 @@ Once connected, Claude has access to 28 tools. Key tools:
 # Corpus management
 calli corpus add <kind> <name> <source> [--id <id>]
 #   kinds: book, capture, code, wiki,
-#          binary-export (decompiler export bundle: per-function C + disassembly)
+#          binary-export (decompiler export bundle: per-function C + disassembly;
+#          function ids are address-based, e.g. `rom:0x71d0`, not name-based)
 calli corpus list
 calli corpus show <id>
 calli corpus remove <id>
@@ -305,7 +306,7 @@ callimachus/
                                 extensionless scripts via shebang
       callimachus-adapter-wiki/ Markdown wikis
       callimachus-adapter-binexport/ Binary-export bundles: decompiled C + disassembly per function
-                                (see docs/binary-export.md)
+                                (see docs/binary-export.md; function ids are address-based)
   data/
     callimachus.pinakes          Pre-built index of this codebase
   docs/

@@ -150,6 +150,7 @@ pub async fn read(
         corpus_id: Some(id),
         location,
         depth,
+        annotate: false,
     });
     tool_result_to_response(result)
 }

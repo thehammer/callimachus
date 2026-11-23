@@ -6,6 +6,7 @@ use crate::corrections::address::{
 };
 use crate::corrections::engine::CorrectionsEngine;
 use crate::corrections::facts::{FactRecord, confidence_score};
+use crate::corrections::layouts::Layout;
 use crate::corrections::types::CorrectionKind;
 use crate::error::{CalError, Result};
 use crate::storage::StorageBackend;
@@ -94,8 +95,17 @@ pub fn import(
         }
     }
 
+    let entity_ids: HashSet<&str> = entities.iter().map(|e| e.id.as_str()).collect();
+
     for rec in &records {
-        let anchors = anchors_for(rec, &by_addr, mask, cpu_spaces.as_deref());
+        let anchors = anchors_for(
+            rec,
+            corpus_id,
+            &by_addr,
+            &entity_ids,
+            mask,
+            cpu_spaces.as_deref(),
+        );
         if !anchors.is_empty() {
             report.anchored += 1;
         }
@@ -242,10 +252,21 @@ fn space_anchors(rec: &FactRecord, cpu_spaces: Option<&[String]>) -> bool {
 
 fn anchors_for(
     rec: &FactRecord,
+    corpus_id: &str,
     by_addr: &HashMap<u64, Vec<&Entity>>,
+    entity_ids: &HashSet<&str>,
     mask: Option<u64>,
     cpu_spaces: Option<&[String]>,
 ) -> Vec<String> {
+    // A layout anchors to the field entities `{base}+0x{off}` that exist.
+    if let Some(layout) = Layout::of_fact(rec) {
+        let ids: BTreeSet<String> = layout
+            .anchor_ids(corpus_id)
+            .into_iter()
+            .filter(|id| entity_ids.contains(id.as_str()))
+            .collect();
+        return ids.into_iter().collect();
+    }
     if !matches!(rec.kind.as_str(), "variable" | "table" | "routine")
         || !space_anchors(rec, cpu_spaces)
     {

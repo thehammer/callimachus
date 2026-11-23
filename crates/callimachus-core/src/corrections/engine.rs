@@ -1,4 +1,5 @@
 use crate::corrections::facts::FactRecord;
+use crate::corrections::layouts::{LAYOUT_KIND, Layout};
 use crate::corrections::types::{Correction, CorrectionKind};
 use crate::error::Result;
 use crate::storage::StorageBackend;
@@ -188,15 +189,24 @@ impl CorrectionsEngine {
         }
 
         // --- Pass 5: anchored facts add their id as a virtual alias ---
+        // A layout names one field per anchor (`obj.x`) instead of its own id.
         for entry in self.latest_facts() {
             if entry.retracted {
                 continue;
             }
+            let layout = Layout::of_fact(entry.fact);
             for anchor in entry.anchors {
+                let alias = match (&layout, entry.corpus_id) {
+                    (Some(l), Some(corpus)) => match l.field_for_anchor(corpus, anchor) {
+                        Some(f) => l.qualified(f),
+                        None => continue,
+                    },
+                    _ => entry.fact.id.clone(),
+                };
                 let target = find(&parent, anchor);
                 for e in entities.iter_mut() {
-                    if e.id == target && !e.aliases.contains(&entry.fact.id) {
-                        e.aliases.push(entry.fact.id.clone());
+                    if e.id == target && !e.aliases.contains(&alias) {
+                        e.aliases.push(alias.clone());
                     }
                 }
             }
@@ -222,11 +232,52 @@ impl CorrectionsEngine {
     }
 
     /// Latest non-retracted facts anchored to `entity_id`, with all their anchors.
-    pub fn facts_for_entity(&self, entity_id: &str) -> Vec<(&FactRecord, Vec<String>)> {
+    ///
+    /// A `layout` fact is returned as a synthetic `field` fact for the one field
+    /// the entity stands for (`layout.obj.x`).
+    pub fn facts_for_entity(&self, entity_id: &str) -> Vec<(FactRecord, Vec<String>)> {
         self.latest_facts()
             .into_iter()
             .filter(|e| !e.retracted && e.anchors.iter().any(|a| a == entity_id))
-            .map(|e| (e.fact, e.anchors.to_vec()))
+            .filter_map(|e| {
+                let anchors = e.anchors.to_vec();
+                let Some(layout) = Layout::of_fact(e.fact) else {
+                    return Some((e.fact.clone(), anchors));
+                };
+                let field = layout.field_for_anchor(e.corpus_id?, entity_id)?;
+                let qualified = layout.qualified(field);
+                let synthetic = FactRecord {
+                    id: format!("{}.{}", e.fact.id, field.name),
+                    kind: "field".to_string(),
+                    topic: e.fact.topic.clone(),
+                    summary: field.summary.clone().unwrap_or(qualified),
+                    data: serde_json::json!({
+                        "layout": layout.name,
+                        "offset": field.offset,
+                        "type": field.ty,
+                    }),
+                    confidence: field
+                        .confidence
+                        .clone()
+                        .unwrap_or_else(|| e.fact.confidence.clone()),
+                    evidence: e.fact.evidence.clone(),
+                    notes: e.fact.notes.clone(),
+                };
+                Some((synthetic, anchors))
+            })
+            .collect()
+    }
+
+    /// Latest non-retracted `layout` facts, optionally of one corpus.
+    pub(crate) fn layout_facts(&self, corpus_id: Option<&str>) -> Vec<(&FactRecord, &[String])> {
+        self.latest_facts()
+            .into_iter()
+            .filter(|e| {
+                !e.retracted
+                    && e.fact.kind == LAYOUT_KIND
+                    && corpus_id.is_none_or(|c| e.corpus_id == Some(c))
+            })
+            .map(|e| (e.fact, e.anchors))
             .collect()
     }
 
@@ -237,6 +288,28 @@ impl CorrectionsEngine {
             .find(|e| !e.retracted && e.corpus_id == Some(corpus_id) && e.fact.id == fact_id)
             .map(|e| e.anchors.to_vec())
             .unwrap_or_default()
+    }
+
+    /// Anchor entity ids named by a layout alias such as `obj.x`, one per base
+    /// that has an entity.
+    pub fn anchors_for_layout_field(&self, corpus_id: &str, qualified: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for (fact, anchors) in self.layout_facts(Some(corpus_id)) {
+            let Some(layout) = Layout::of_fact(fact) else {
+                continue;
+            };
+            out.extend(
+                anchors
+                    .iter()
+                    .filter(|a| {
+                        layout
+                            .field_for_anchor(corpus_id, a)
+                            .is_some_and(|f| layout.qualified(f) == qualified)
+                    })
+                    .cloned(),
+            );
+        }
+        out
     }
 
     /// Latest record (retracted or not) per `(corpus, fact id)`, by `applied_at`.

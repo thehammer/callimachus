@@ -1,6 +1,6 @@
 use crate::change::{ChangeKind, ChangedSource};
 use crate::routing::RoutingInputs;
-use crate::types::{Chunk, Corpus, Edge, Entity};
+use crate::types::{Chunk, Corpus, Edge, Entity, FieldName};
 use callimachus_llm::LlmProvider;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -141,6 +141,11 @@ pub trait SourceAdapter: Send + Sync {
     /// (e.g. `--pass structure` alone). Default: no-op.
     fn attach_corpus(&self, _corpus_id: &str, _source: &str) {}
 
+    /// Handed the corpus's stored config before `chunk` and `structure` run, so
+    /// options such as `decompiler_names` survive a run that skips `chunk`.
+    /// Default: no-op.
+    fn configure_corpus(&self, _corpus_id: &str, _config: &serde_json::Value) {}
+
     /// Per-entity problems `chunk` tolerated (chunk id, message). Drained by the
     /// chunk pass into the run's error list. Default: none.
     fn take_chunk_warnings(&self) -> Vec<(String, String)> {
@@ -227,6 +232,14 @@ pub trait SourceAdapter: Send + Sync {
         _entity_name: &str,
     ) -> RoutingInputs {
         RoutingInputs::default()
+    }
+
+    /// Rewrite `content` so that struct-field accesses named by `fields` read as
+    /// `base->field /* layout+0xOFF ty */`. Everything else stays byte-identical.
+    ///
+    /// Default: returns `content` unchanged (languages without field access).
+    fn annotate_source(&self, content: &str, _language: &str, _fields: &[FieldName]) -> String {
+        content.to_string()
     }
 
     /// Extract corpus-level architectural themes.

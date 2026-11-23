@@ -59,7 +59,7 @@ inside an instruction is written `*\/`.
 
 | Source | Entity | Notes |
 |---|---|---|
-| function | `function`, id `{corpus}:{lowercased name}` | aliases include the canonical address (`0x71d0`); created even when `decompile_ok` is false |
+| function | `function`, id `{corpus}:{canonical address}` (e.g. `rom:0x71d0`) | display name is the bundle name; aliases are the canonical address and the name; created even when `decompile_ok` is false |
 | `tables.jsonl` | `table` | same id as the C variable of that name; aliases: address, `entry:<u16\|u32>`, `count:<n>`; description `"<kind> table"` |
 | `ports.jsonl` | `port` | same id as the C variable; aliases: address, port id |
 | `ram.jsonl` | `variable` | aliases: address |
@@ -68,6 +68,13 @@ Only tables, ports and RAM whose `readers`/`writers` list the function are attac
 chunk. Edges: `uses_table` (tables), `reads`/`writes` (ports, RAM), plus everything the C
 analysis finds (`calls`, indirect calls, reads/writes, address aliases, `uses_table`). Edge ids
 are deterministic, so an edge found by both the bundle and the C analysis is stored once.
+
+**Function identity.** Function ids are address-based because names repeat (promoted switch
+cases are all called `caseD_1`, `caseD_3`, ...). A shared name stays an alias of every function
+carrying it, so a lookup by name returns all of them. A `calls` target `FUN_<hex>` resolves by
+address. A target known only by a shared name gets one `calls` edge to each candidate function
+at confidence 0.5; a name unique in the bundle resolves normally; names the bundle does not know
+are left as written.
 
 **Kind precedence.** A free identifier in C becomes a low-confidence `variable` stub. The entity
 upsert lets a higher-confidence non-`variable` kind replace such a stub, so `table` and `port`

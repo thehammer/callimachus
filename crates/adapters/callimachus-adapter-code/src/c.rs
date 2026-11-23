@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use callimachus_adapter_contract::{Chunk, Edge, Entity};
+use callimachus_adapter_contract::{Chunk, Edge, Entity, FieldName};
 use tree_sitter::Node;
 
 use crate::extractor::{ExtractedCodeStructure, edge_id, entity_id, scope_for_pos};
@@ -37,14 +37,29 @@ pub const ADDRESS_PREFIXES: &[&str] = &[
 /// The value is returned as written; no masking or width normalisation.
 pub fn address_of_name(name: &str) -> Option<u64> {
     let lower = name.to_ascii_lowercase();
-    ADDRESS_PREFIXES.iter().find_map(|p| {
+    let plain = ADDRESS_PREFIXES.iter().find_map(|p| {
         let digits = lower.strip_prefix(&p.to_ascii_lowercase())?;
         if (4..=16).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_hexdigit()) {
             u64::from_str_radix(digits, 16).ok()
         } else {
             None
         }
-    })
+    });
+    plain.or_else(|| address_from_last_segment(&lower))
+}
+
+/// Ghidra stub names that carry extra `<n>_` segments before the address
+/// (`PTR_caseD_21_00010080`, `PTR_LAB_000043c6_2_00060878`): the address is the
+/// last `_`-separated segment when it is 6-8 hex digits.
+fn address_from_last_segment(lower: &str) -> Option<u64> {
+    const FAMILIES: &[&str] = &["ptr_lab_", "ptr_fun_", "ptr_cased_", "ptr_dat_", "dat_"];
+    let rest = FAMILIES.iter().find_map(|p| lower.strip_prefix(p))?;
+    let (_, last) = rest.rsplit_once('_')?;
+    if (6..=8).contains(&last.len()) && last.bytes().all(|b| b.is_ascii_hexdigit()) {
+        u64::from_str_radix(last, 16).ok()
+    } else {
+        None
+    }
 }
 
 /// Canonical alias form of an address: lowercase hex, no leading zeros.
@@ -195,6 +210,56 @@ pub fn extract(
     result.entities.retain(|e| seen.insert(e.id.clone()));
 }
 
+/// Rewrite field accesses named by `fields` as
+/// `base->field /* layout+0xOFF ty */`; all other bytes are left as they were.
+pub fn annotate(content: &str, fields: &[FieldName]) -> String {
+    if fields.is_empty() {
+        return content.to_string();
+    }
+    let mut parser = tree_sitter::Parser::new();
+    if parser
+        .set_language(&tree_sitter_c::LANGUAGE.into())
+        .is_err()
+    {
+        return content.to_string();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return content.to_string();
+    };
+    let source = content.as_bytes();
+    let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(n) = stack.pop() {
+        if let Some(d) = match_field_deref(n, source)
+            && let Some(f) = fields
+                .iter()
+                .find(|f| f.base == d.base && f.offset == d.offset)
+        {
+            let ty = f.ty.as_deref().map(|t| format!(" {t}")).unwrap_or_default();
+            let sign = if f.offset < 0 { '-' } else { '+' };
+            edits.push((
+                n.byte_range(),
+                format!(
+                    "{}->{} /* {}{sign}0x{:x}{ty} */",
+                    f.base,
+                    f.field,
+                    f.layout,
+                    f.offset.unsigned_abs()
+                ),
+            ));
+            continue;
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut out = content.to_string();
+    for (range, text) in edits {
+        out.replace_range(range, &text);
+    }
+    out
+}
+
 // ── Declarations ─────────────────────────────────────────────────────────────
 
 /// Top-level items, looking through preprocessor conditionals and `extern "C"`.
@@ -339,6 +404,14 @@ struct Access {
     uses_table: bool,
 }
 
+#[derive(Default)]
+struct FieldAccess {
+    reads: bool,
+    writes: bool,
+    /// `(byte position, width)` of the earliest access with a known width.
+    width: Option<(usize, u32)>,
+}
+
 fn analyse_function(
     chunk: &Chunk,
     func: Node<'_>,
@@ -361,13 +434,15 @@ fn analyse_function(
 
     // Names that shadow globals: parameters plus every local declared anywhere
     // in the body (function-wide, not block-scoped — see docs).
-    let mut bound: HashSet<String> = HashSet::new();
+    let mut params: HashSet<String> = HashSet::new();
     if let Some(decl) = func.child_by_field_name("declarator") {
-        collect_parameters(decl, source, &mut bound);
+        collect_parameters(decl, source, &mut params);
     }
+    let mut bound = params.clone();
     collect_locals(body, source, &mut bound);
 
     let mut accesses: BTreeMap<String, Access> = BTreeMap::new();
+    let mut fields: BTreeMap<String, FieldAccess> = BTreeMap::new();
     let mut direct_calls: Vec<(String, usize)> = Vec::new();
     let mut indirect_calls: Vec<usize> = Vec::new();
     // Address -> table stub target for pointer literals.
@@ -412,6 +487,27 @@ fn analyse_function(
                     && !bound.contains(&text_of(id, source))
                 {
                     continue;
+                }
+            }
+            // `*(T *)(B + K)`: a field access. The children are still visited,
+            // so the base identifier is handled exactly as before.
+            "pointer_expression" => {
+                if let Some(d) = match_field_deref(n, source)
+                    && is_field_base(&d.base, &params)
+                {
+                    let access = fields
+                        .entry(field_entity_name(&d.base, d.offset))
+                        .or_default();
+                    if let Some(w) = field_width(&d.ty)
+                        && access.width.is_none_or(|(pos, _)| n.start_byte() < pos)
+                    {
+                        access.width = Some((n.start_byte(), w));
+                    }
+                    if is_write_target(n) {
+                        access.writes = true;
+                    } else {
+                        access.reads = true;
+                    }
                 }
             }
             "number_literal" => {
@@ -472,11 +568,117 @@ fn analyse_function(
             push_edge(chunk, result, &from_id, "uses_table", &to_id, scope.clone());
         }
     }
+    for (name, access) in fields {
+        let to_id = field_entity_id(&chunk.corpus_id, &name);
+        push_entity(chunk, result, &to_id, &name, "field", None, 0.5);
+        if let (Some((_, width)), Some(entity)) = (access.width, result.entities.last_mut()) {
+            entity.aliases.push(format!("width:{width}"));
+        }
+        if access.reads {
+            push_edge(chunk, result, &from_id, "reads", &to_id, scope.clone());
+        }
+        if access.writes {
+            push_edge(chunk, result, &from_id, "writes", &to_id, scope.clone());
+        }
+    }
     for v in literal_tables {
         let name = format!("DAT_{v:08x}");
         let to_id = entity_id(&chunk.corpus_id, &name);
         push_entity(chunk, result, &to_id, &name, "variable", None, 0.5);
         push_edge(chunk, result, &from_id, "uses_table", &to_id, scope.clone());
+    }
+}
+
+// ── Field accesses ───────────────────────────────────────────────────────────
+
+/// Names eligible as the base of a field access, besides the function's own
+/// parameters: decompiler register pseudo-variables (`unaff_A2`, `in_D0`,
+/// `extraout_A1`), which decompilers declare as locals.
+pub const FIELD_BASE_PATTERN: &str = r"^(in|unaff|extraout)_\w+$";
+
+/// True when `name` may be the base of a field access in a function whose
+/// parameters are `params`.
+pub fn is_field_base(name: &str, params: &HashSet<String>) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    params.contains(name)
+        || RE
+            .get_or_init(|| regex::Regex::new(FIELD_BASE_PATTERN).expect("valid pattern"))
+            .is_match(name)
+}
+
+/// A dereference `*(T *)(B + K)`, `*(T *)(B - K)` or `*(T *)B`.
+pub struct FieldDeref<'t> {
+    /// The `pointer_expression` node (the byte range to replace when annotating).
+    pub node: Node<'t>,
+    pub base: String,
+    /// Signed byte offset; `0` for `*(T *)B`.
+    pub offset: i64,
+    /// The pointee type as written, e.g. `short`.
+    pub ty: String,
+}
+
+/// Match the field-access shape on a `pointer_expression` node. Does not check
+/// that the base is eligible; see [`is_field_base`].
+pub fn match_field_deref<'t>(node: Node<'t>, source: &[u8]) -> Option<FieldDeref<'t>> {
+    if node.kind() != "pointer_expression" || node.child(0)?.kind() != "*" {
+        return None;
+    }
+    let cast = node.child_by_field_name("argument")?;
+    if cast.kind() != "cast_expression" {
+        return None;
+    }
+    let ty = text_of(cast.child_by_field_name("type")?, source);
+    if !ty.contains('*') {
+        return None;
+    }
+    let mut value = cast.child_by_field_name("value")?;
+    while value.kind() == "parenthesized_expression" {
+        value = value.named_child(0)?;
+    }
+    let (base, offset) = match value.kind() {
+        "identifier" => (value, 0),
+        "binary_expression" => {
+            let left = value.child_by_field_name("left")?;
+            let right = value.child_by_field_name("right")?;
+            if left.kind() != "identifier" || right.kind() != "number_literal" {
+                return None;
+            }
+            let magnitude = i64::try_from(parse_int_literal(&text_of(right, source))?).ok()?;
+            match value.child_by_field_name("operator")?.kind() {
+                "+" => (left, magnitude),
+                "-" => (left, -magnitude),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    Some(FieldDeref {
+        node,
+        base: text_of(base, source),
+        offset,
+        ty: ty.replace('*', "").trim().to_string(),
+    })
+}
+
+/// Entity name for a field: `unaff_A2+0x10`, `param_1-0x4`.
+pub fn field_entity_name(base: &str, offset: i64) -> String {
+    let sign = if offset < 0 { '-' } else { '+' };
+    format!("{base}{sign}0x{:x}", offset.unsigned_abs())
+}
+
+/// Entity id for a field entity: `{corpus}:{lowercased name}`. Unlike
+/// [`entity_id`] this keeps `+`/`-`, so `+0x4` and `-0x4` stay distinct.
+pub fn field_entity_id(corpus_id: &str, name: &str) -> String {
+    format!("{corpus_id}:{}", name.to_lowercase())
+}
+
+/// Access width in bytes from the cast type, when it is a known type name.
+fn field_width(ty: &str) -> Option<u32> {
+    match ty {
+        "char" | "uchar" | "byte" | "undefined1" | "undefined" => Some(1),
+        "short" | "ushort" | "undefined2" => Some(2),
+        "int" | "uint" | "long" | "ulong" | "undefined4" | "pointer" => Some(4),
+        _ => None,
     }
 }
 

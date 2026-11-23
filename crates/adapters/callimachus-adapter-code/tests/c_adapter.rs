@@ -32,6 +32,12 @@ fn extract(src: &str) -> ExtractedCodeStructure {
 
 /// Entity id convention: `{corpus}:{lowercased name, non-alnum/_ -> _}`.
 fn id(name: &str) -> String {
+    // Field entities (`unaff_A2+0x10`, `p-0x4`) keep their sign in the id.
+    if let Some(pos) = name.rfind(['+', '-'])
+        && name[pos + 1..].starts_with("0x")
+    {
+        return format!("{CORP}:{}", name.to_lowercase());
+    }
     let n: String = name
         .to_lowercase()
         .chars()
@@ -696,4 +702,226 @@ fn ghidra_stub_prefixes_carry_addresses() {
     assert_eq!(address_of_name("PTR_LAB_00001234"), Some(0x1234));
     assert_eq!(address_of_name("PTR_FUN_00001234"), Some(0x1234));
     assert_eq!(address_of_name("PTR_caseD_00001234"), Some(0x1234));
+}
+
+#[test]
+fn address_of_name_handles_multi_segment_ghidra_stubs() {
+    assert_eq!(address_of_name("PTR_caseD_21_00010080"), Some(0x10080));
+    assert_eq!(address_of_name("PTR_caseD_43_00010110"), Some(0x10110));
+    assert_eq!(
+        address_of_name("PTR_LAB_000043c6_2_00060878"),
+        Some(0x60878)
+    );
+    assert_eq!(address_of_name("PTR_caseD_21_zz"), None);
+    assert_eq!(address_of_name("PTR_caseD_21_"), None);
+    assert_eq!(address_of_name("PTR_caseD_21_00010080x"), None);
+    assert_eq!(address_of_name("DAT_00012340x"), None);
+}
+
+#[test]
+fn multi_segment_ghidra_stubs_carry_address_aliases() {
+    let r = extract(
+        "void f(void) {\n\
+         g(PTR_caseD_21_00010080);\n\
+         g(PTR_caseD_43_00010110);\n\
+         g(PTR_LAB_000043c6_2_00060878);\n\
+         }",
+    );
+    assert_eq!(aliases_of(&r, "PTR_caseD_21_00010080"), ["0x10080"]);
+    assert_eq!(aliases_of(&r, "PTR_caseD_43_00010110"), ["0x10110"]);
+    assert_eq!(aliases_of(&r, "PTR_LAB_000043c6_2_00060878"), ["0x60878"]);
+}
+
+// ── Struct-field access entities ─────────────────────────────────────────────
+
+fn field_entity<'a>(
+    r: &'a ExtractedCodeStructure,
+    name: &str,
+) -> Option<&'a callimachus_core::types::Entity> {
+    r.entities
+        .iter()
+        .find(|e| e.kind == "field" && e.canonical_name == name)
+}
+
+fn field_names(r: &ExtractedCodeStructure) -> Vec<&str> {
+    entities_of_kind(r, "field")
+}
+
+#[test]
+fn write_through_cast_deref_of_free_register_base_is_a_field_write() {
+    let r = extract("void FUN_a(void)\n{\n  *(short *)(unaff_A2 + 0x10) = 1;\n}\n");
+    let f = field_entity(&r, "unaff_A2+0x10")
+        .unwrap_or_else(|| panic!("no field entity: {:?}", field_names(&r)));
+    assert_eq!(f.id, id("unaff_A2+0x10"));
+    assert_eq!(f.id, format!("{CORP}:unaff_a2+0x10"));
+    assert!((f.confidence - 0.5).abs() < 1e-6, "{}", f.confidence);
+    assert!(writes(&r, "FUN_a", "unaff_A2+0x10"));
+    assert!(!reads(&r, "FUN_a", "unaff_A2+0x10"));
+}
+
+#[test]
+fn read_through_cast_deref_is_a_field_read_with_width_alias() {
+    let r = extract("void FUN_a(void)\n{\n  short x;\n  x = *(short *)(unaff_A2 + 0x12);\n}\n");
+    let f = field_entity(&r, "unaff_A2+0x12").expect("field entity");
+    assert!(
+        f.aliases.contains(&"width:2".to_string()),
+        "{:?}",
+        f.aliases
+    );
+    assert!(reads(&r, "FUN_a", "unaff_A2+0x12"));
+    assert!(!writes(&r, "FUN_a", "unaff_A2+0x12"));
+}
+
+#[test]
+fn field_width_aliases_follow_the_pointee_type() {
+    let r = extract(
+        "void FUN_a(void)\n{\n  int a;\n  a = *(char *)(unaff_A2 + 0x1);\n  a = *(byte *)(unaff_A2 + 0x2);\n  a = *(undefined1 *)(unaff_A2 + 0x3);\n  a = *(ushort *)(unaff_A2 + 0x4);\n  a = *(undefined2 *)(unaff_A2 + 0x6);\n  a = *(int *)(unaff_A2 + 0x8);\n  a = *(uint *)(unaff_A2 + 0xc);\n  a = *(undefined4 *)(unaff_A2 + 0x10);\n}\n",
+    );
+    for (name, width) in [
+        ("unaff_A2+0x1", 1),
+        ("unaff_A2+0x2", 1),
+        ("unaff_A2+0x3", 1),
+        ("unaff_A2+0x4", 2),
+        ("unaff_A2+0x6", 2),
+        ("unaff_A2+0x8", 4),
+        ("unaff_A2+0xc", 4),
+        ("unaff_A2+0x10", 4),
+    ] {
+        let f = field_entity(&r, name).unwrap_or_else(|| panic!("missing {name}"));
+        assert!(
+            f.aliases.contains(&format!("width:{width}")),
+            "{name}: {:?}",
+            f.aliases
+        );
+    }
+}
+
+#[test]
+fn first_seen_width_wins_when_a_field_is_accessed_at_two_widths() {
+    let r = extract(
+        "void FUN_a(void)\n{\n  int a;\n  a = *(short *)(unaff_A2 + 0x10);\n  a = *(int *)(unaff_A2 + 0x10);\n}\n",
+    );
+    let f = field_entity(&r, "unaff_A2+0x10").expect("field");
+    assert!(
+        f.aliases.contains(&"width:2".to_string()),
+        "{:?}",
+        f.aliases
+    );
+    assert!(
+        !f.aliases.contains(&"width:4".to_string()),
+        "{:?}",
+        f.aliases
+    );
+}
+
+#[test]
+fn bare_deref_of_a_parameter_is_field_at_offset_zero() {
+    let r = extract("int FUN_a(int *param_1)\n{\n  return *(int *)param_1;\n}\n");
+    assert!(
+        field_entity(&r, "param_1+0x0").is_some(),
+        "{:?}",
+        field_names(&r)
+    );
+    assert!(reads(&r, "FUN_a", "param_1+0x0"));
+}
+
+#[test]
+fn deref_with_parameter_base_and_offset_is_a_field() {
+    let r = extract("int FUN_a(char *param_1)\n{\n  return *(int *)(param_1 + 8);\n}\n");
+    assert!(
+        field_entity(&r, "param_1+0x8").is_some(),
+        "{:?}",
+        field_names(&r)
+    );
+}
+
+#[test]
+fn deref_of_an_ordinary_local_is_not_a_field() {
+    let r = extract(
+        "void FUN_a(void)\n{\n  short *puVar2;\n  puVar2 = (short *)&DAT_00ff0000;\n  *(short *)(puVar2 + 0x10) = 1;\n  *(short *)puVar2 = 2;\n}\n",
+    );
+    assert!(
+        field_names(&r).is_empty(),
+        "locals are not field bases: {:?}",
+        field_names(&r)
+    );
+}
+
+#[test]
+fn compound_assignment_through_a_field_is_a_write() {
+    let r = extract("void FUN_a(void)\n{\n  *(short *)(unaff_A2 + 0x14) += 1;\n}\n");
+    assert!(writes(&r, "FUN_a", "unaff_A2+0x14"));
+}
+
+#[test]
+fn increment_through_a_field_is_a_write() {
+    let r = extract("void FUN_a(void)\n{\n  (*(char *)(unaff_A2 + 0x15))++;\n}\n");
+    assert!(writes(&r, "FUN_a", "unaff_A2+0x15"));
+}
+
+#[test]
+fn negative_offsets_are_named_with_a_minus_sign() {
+    let r = extract("int FUN_a(void)\n{\n  return *(int *)(unaff_A2 - 0x4);\n}\n");
+    assert!(
+        field_entity(&r, "unaff_A2-0x4").is_some(),
+        "{:?}",
+        field_names(&r)
+    );
+    assert!(reads(&r, "FUN_a", "unaff_A2-0x4"));
+}
+
+#[test]
+fn in_and_extraout_prefixed_names_are_field_bases() {
+    let r = extract(
+        "int FUN_a(void)\n{\n  int a;\n  a = *(int *)(in_A3 + 0x2);\n  a = *(int *)(extraout_A4 + 0x2);\n  return a;\n}\n",
+    );
+    assert!(
+        field_entity(&r, "in_A3+0x2").is_some(),
+        "{:?}",
+        field_names(&r)
+    );
+    assert!(
+        field_entity(&r, "extraout_A4+0x2").is_some(),
+        "{:?}",
+        field_names(&r)
+    );
+}
+
+#[test]
+fn base_declared_as_a_local_is_still_a_field_base_when_it_matches_the_pattern() {
+    let r =
+        extract("void FUN_a(void)\n{\n  byte *unaff_A2;\n  *(short *)(unaff_A2 + 0x10) = 1;\n}\n");
+    assert!(
+        field_entity(&r, "unaff_A2+0x10").is_some(),
+        "{:?}",
+        field_names(&r)
+    );
+}
+
+#[test]
+fn repeated_accesses_in_one_function_yield_one_edge_per_kind() {
+    let r = extract(
+        "void FUN_a(void)\n{\n  short x;\n  x = *(short *)(unaff_A2 + 0x10);\n  x = *(short *)(unaff_A2 + 0x10);\n  *(short *)(unaff_A2 + 0x10) = 1;\n  *(short *)(unaff_A2 + 0x10) = 2;\n}\n",
+    );
+    let f = id("unaff_A2+0x10");
+    assert_eq!(count_edges(&r, "reads", "FUN_a", &f), 1);
+    assert_eq!(count_edges(&r, "writes", "FUN_a", &f), 1);
+    assert_eq!(
+        field_names(&r)
+            .iter()
+            .filter(|n| **n == "unaff_A2+0x10")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn two_functions_using_the_same_field_share_one_entity_id() {
+    let r = extract(
+        "void FUN_a(void)\n{\n  *(short *)(unaff_A2 + 0x10) = 1;\n}\nint FUN_b(void)\n{\n  return *(short *)(unaff_A2 + 0x10);\n}\n",
+    );
+    let f = id("unaff_A2+0x10");
+    assert!(r.entities.iter().any(|e| e.id == f && e.kind == "field"));
+    assert_eq!(count_edges(&r, "writes", "FUN_a", &f), 1);
+    assert_eq!(count_edges(&r, "reads", "FUN_b", &f), 1);
 }

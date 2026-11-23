@@ -15,7 +15,8 @@ pub async fn run(db_path: &Path) -> Result<()> {
     // merge/rename/alias overlays transparently to MCP tool results.
     let corrections = CorrectionsEngine::load_all(db.as_ref())?;
 
-    let qs = QueryService::with_corrections(db, corrections);
+    let qs = QueryService::with_corrections(db, corrections)
+        .with_adapters(Arc::new(crate::commands::index::default_registry()));
     let server = McpServer::new(qs);
     server.run().await
 }

@@ -168,6 +168,7 @@ impl FactRecord {
                     Some(_) => Err("`data.affects` must be a list of strings".into()),
                 }
             }
+            "layout" => crate::corrections::layouts::Layout::parse(&self.data).map(|_| ()),
             "platform" => {
                 if self.data.is_object() {
                     Ok(())

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
+use callimachus_adapter_code::c::address_of_name;
 use callimachus_adapter_code::{
     CodeAdapter, ExtractedCodeStructure, analyse_c, edge_id, entity_id, summarizer::PromptOptions,
 };
@@ -191,7 +192,9 @@ impl SourceAdapter for BinExportAdapter {
             .ok_or_else(|| anyhow!("no function at 0x{address:x} in bundle"))?;
         let corpus = chunk.corpus_id.as_str();
         let canonical = format!("0x{address:x}");
-        let from_id = entity_id(corpus, &func.name);
+        // Function ids are address-based: names repeat (`caseD_1` per switch).
+        let from_id = entity_id(corpus, &canonical);
+        let c_from_id = entity_id(corpus, &func.name);
 
         let mut entities: Vec<Entity> = Vec::new();
         let mut edges: Vec<Edge> = Vec::new();
@@ -340,10 +343,14 @@ impl SourceAdapter for BinExportAdapter {
             .into_iter()
             .filter(|e| e.kind != "file" && !remap.contains_key(&e.id))
         {
-            if e.id == from_id {
+            if e.id == c_from_id && e.kind == "function" {
                 function_seen = true;
-                if !e.aliases.contains(&canonical) {
-                    e.aliases.push(canonical.clone());
+                e.id = from_id.clone();
+                e.canonical_name = func.name.clone();
+                for alias in [canonical.clone(), func.name.clone()] {
+                    if !e.aliases.contains(&alias) {
+                        e.aliases.push(alias);
+                    }
                 }
             }
             if seen_entities.insert(e.id.clone()) {
@@ -351,23 +358,73 @@ impl SourceAdapter for BinExportAdapter {
             }
         }
         if !function_seen {
-            let mut e = bundle_entity(&func.name, "function", vec![canonical.clone()], None);
+            let mut e = bundle_entity(
+                &canonical,
+                "function",
+                vec![canonical.clone(), func.name.clone()],
+                None,
+            );
+            e.canonical_name = func.name.clone();
             e.confidence = 1.0;
             if seen_entities.insert(e.id.clone()) {
                 entities.push(e);
             }
         }
+        let by_name = functions_by_name(corpus, &bundle);
         for mut e in analysed
             .edges
             .into_iter()
             .filter(|e| !(e.kind == "defines" && file_ids.contains(&e.from_entity_id)))
         {
+            if e.from_entity_id == c_from_id {
+                e.from_entity_id = from_id.clone();
+            }
             if let Some(to) = remap.get(&e.to_entity_id) {
                 e.to_entity_id = to.clone();
-                e.id = edge_id(corpus, &e.from_entity_id, &e.kind, to, &e.origin_scope);
             }
-            if seen_edges.insert(e.id.clone()) {
-                edges.push(e);
+            let targets = if e.kind == "calls" {
+                resolve_callee(corpus, &bundle, &by_name, &e.to_entity_id)
+            } else {
+                None
+            };
+            match targets {
+                // Bundle-known callee: one edge per candidate; a name shared
+                // by several functions is ambiguous, so each candidate gets
+                // the edge at confidence 0.5 (a unique match gets bundle confidence).
+                Some(ids) => {
+                    let confidence = if ids.len() > 1 {
+                        0.5
+                    } else {
+                        BUNDLE_CONFIDENCE
+                    };
+                    for to in ids {
+                        let mut ce = e.clone();
+                        ce.to_entity_id = to;
+                        ce.confidence = confidence;
+                        ce.id = edge_id(
+                            corpus,
+                            &ce.from_entity_id,
+                            &ce.kind,
+                            &ce.to_entity_id,
+                            &ce.origin_scope,
+                        );
+                        if seen_edges.insert(ce.id.clone()) {
+                            edges.push(ce);
+                        }
+                    }
+                }
+                None => {
+                    e.id = edge_id(
+                        corpus,
+                        &e.from_entity_id,
+                        &e.kind,
+                        &e.to_entity_id,
+                        &e.origin_scope,
+                    );
+                    if seen_edges.insert(e.id.clone()) {
+                        edges.push(e);
+                    }
+                }
             }
         }
 
@@ -427,6 +484,25 @@ impl SourceAdapter for BinExportAdapter {
         Ok(LocationRef { corpus_id, path })
     }
 
+    fn annotate_source(
+        &self,
+        content: &str,
+        language: &str,
+        fields: &[callimachus_adapter_contract::FieldName],
+    ) -> String {
+        let split = content
+            .find(content::DISASSEMBLY_MARKER)
+            .unwrap_or(content.len());
+        let (c_part, asm_part) = content.split_at(split);
+        let marker_end = asm_part.find('\n').map_or(asm_part.len(), |i| i + 1);
+        let (marker, asm) = asm_part.split_at(marker_end);
+        format!(
+            "{}{marker}{}",
+            self.code.annotate_source(c_part, language, fields),
+            content::annotate_disassembly(asm, fields)
+        )
+    }
+
     async fn extract_purpose(
         &self,
         entity: &Entity,
@@ -454,6 +530,39 @@ impl SourceAdapter for BinExportAdapter {
             .extract_contract(entity, &trimmed, summary, purpose, signals, llm)
             .await
     }
+}
+
+/// Name-keyed C entity id (`corpus:caseD_1` slug) → ids of every bundle
+/// function carrying that name.
+fn functions_by_name(corpus: &str, bundle: &Bundle) -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for f in &bundle.functions {
+        if let Ok(addr) = parse_address(&f.address) {
+            map.entry(entity_id(corpus, &f.name))
+                .or_default()
+                .push(entity_id(corpus, &format!("0x{addr:x}")));
+        }
+    }
+    map
+}
+
+/// Resolve a C call target (a name-keyed entity id) to address-keyed function
+/// ids: by the address in a `FUN_<hex>` name first, else by name. `None` when
+/// the bundle does not know the callee.
+fn resolve_callee(
+    corpus: &str,
+    bundle: &Bundle,
+    by_name: &HashMap<String, Vec<String>>,
+    to_id: &str,
+) -> Option<Vec<String>> {
+    let slug = to_id.strip_prefix(corpus)?.strip_prefix(':')?;
+    if slug.starts_with("fun_")
+        && let Some(addr) = address_of_name(slug)
+        && bundle.function_at(addr).is_some()
+    {
+        return Some(vec![entity_id(corpus, &format!("0x{addr:x}"))]);
+    }
+    by_name.get(to_id).cloned()
 }
 
 fn addr_is(text: &str, addr: u64) -> bool {

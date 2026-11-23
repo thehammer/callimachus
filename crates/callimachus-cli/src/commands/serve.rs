@@ -43,7 +43,10 @@ pub async fn run(
 
     let corrections =
         CorrectionsEngine::load_all(db.as_ref()).unwrap_or_else(|_| CorrectionsEngine::new(vec![]));
-    let qs = Arc::new(QueryService::with_corrections(db, corrections));
+    let qs = Arc::new(
+        QueryService::with_corrections(db, corrections)
+            .with_adapters(Arc::new(crate::commands::index::default_registry())),
+    );
 
     let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)

@@ -117,6 +117,19 @@ impl SourceAdapter for CodeAdapter {
         chunk_directory(path, &corpus_id, &opts).await
     }
 
+    fn configure_corpus(&self, corpus_id: &str, config: &serde_json::Value) {
+        let mut set = self.decompiler_corpora.lock().unwrap();
+        if config
+            .get("decompiler_names")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            set.insert(corpus_id.to_string());
+        } else {
+            set.remove(corpus_id);
+        }
+    }
+
     /// Structural extraction — parse the chunk with tree-sitter.
     async fn extract_structure(&self, chunk: &Chunk) -> Result<ExtractedStructure> {
         // Language comes from the persisted `chunk.language`, falling back to
@@ -636,6 +649,19 @@ Return JSON:
                 Ok(Some(ExtractedThemes { themes }))
             }
             Err(_) => Ok(None),
+        }
+    }
+
+    fn annotate_source(
+        &self,
+        content: &str,
+        language: &str,
+        fields: &[callimachus_adapter_contract::FieldName],
+    ) -> String {
+        if language == "c" {
+            crate::c::annotate(content, fields)
+        } else {
+            content.to_string()
         }
     }
 
