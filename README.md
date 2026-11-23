@@ -224,6 +224,8 @@ Once connected, Claude has access to 28 tools. Key tools:
 ```
 # Corpus management
 calli corpus add <kind> <name> <source> [--id <id>]
+#   kinds: book, capture, code, wiki,
+#          binary-export (decompiler export bundle: per-function C + disassembly)
 calli corpus list
 calli corpus show <id>
 calli corpus remove <id>
