@@ -131,6 +131,14 @@ pub fn run_candidates(corpus_a: &str, corpus_b: &str, db: &dyn StorageBackend) -
     Ok(())
 }
 
+/// Run `calli link addresses <collection>`.
+pub fn run_addresses(collection: &str, db: &dyn StorageBackend) -> Result<()> {
+    let added = callimachus_core::corrections::link_addresses::link_addresses(db, collection)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("Added {added} address link(s) in collection {collection}.");
+    Ok(())
+}
+
 // ── Normalization ─────────────────────────────────────────────────────────────
 
 /// Lowercase, trim, collapse whitespace, strip ASCII punctuation.
@@ -187,6 +195,7 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
 
 pub enum LinkSubcommand {
     Candidates { corpus_a: String, corpus_b: String },
+    Addresses { collection: String },
 }
 
 pub fn run(sub: LinkSubcommand, db: &dyn StorageBackend) -> Result<()> {
@@ -194,6 +203,7 @@ pub fn run(sub: LinkSubcommand, db: &dyn StorageBackend) -> Result<()> {
         LinkSubcommand::Candidates { corpus_a, corpus_b } => {
             run_candidates(&corpus_a, &corpus_b, db)
         }
+        LinkSubcommand::Addresses { collection } => run_addresses(&collection, db),
     }
 }
 
