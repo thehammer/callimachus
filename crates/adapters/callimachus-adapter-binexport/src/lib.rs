@@ -301,6 +301,18 @@ impl SourceAdapter for BinExportAdapter {
                 Some(port_entity(p)?)
             } else if let Some(r) = bundle.ram.iter().find(|r| addr_is(&r.address, addr)) {
                 Some(ram_entity(r)?)
+            } else if let Some(f) = bundle.function_at(addr) {
+                // A function address taken as a value (`p = FUN_xxxx;`).
+                let canonical = format!("0x{addr:x}");
+                let mut fe = bundle_entity(
+                    &canonical,
+                    "function",
+                    vec![canonical.clone(), f.name.clone()],
+                    None,
+                );
+                fe.canonical_name = f.name.clone();
+                fe.confidence = 1.0;
+                Some(fe)
             } else {
                 None
             };

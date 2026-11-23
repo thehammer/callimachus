@@ -1109,3 +1109,54 @@ async fn call_to_a_unique_name_resolves_to_its_address_at_normal_confidence() {
     assert_eq!(edge_confidence(&db, "calls", "0x1000", "0x5000"), 0.9);
     assert!(!has_edge(&db, "calls", "0x3000", "caseD_2"));
 }
+
+#[tokio::test]
+async fn function_used_as_value_reconciles_with_function_entity() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "manifest.json",
+        &json!({"format":1,"kind":"binary-export","counts":{"functions":2}}).to_string(),
+    );
+    write(
+        root,
+        "functions.jsonl",
+        &[
+            json!({"address":"0x001000","name":"FUN_00001000","size":8,"c":"c/00001000.c","asm":null,"decompile_ok":true,"discovered_by":["analysis"]}),
+            json!({"address":"0x001234","name":"FUN_00001234","size":8,"c":"c/00001234.c","asm":null,"decompile_ok":true,"discovered_by":["analysis"]}),
+        ]
+        .iter()
+        .map(|t| t.to_string())
+        .collect::<Vec<_>>()
+        .join("\n"),
+    );
+    write(
+        root,
+        "c/00001000.c",
+        "void FUN_00001000(void)\n{\n  void *p;\n  p = FUN_00001234;\n  g(FUN_00001234);\n}\n",
+    );
+    write(root, "c/00001234.c", "void FUN_00001234(void)\n{\n}\n");
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index(root, db.clone(), Arc::new(BinExportAdapter::new())).await;
+    let ents = db.entity_list(CORP).unwrap();
+    assert!(
+        ents.iter()
+            .all(|e| !(e.kind == "variable" && e.canonical_name == "FUN_00001234")),
+        "{ents:?}"
+    );
+    let with_addr: Vec<_> = ents
+        .iter()
+        .filter(|e| e.aliases.contains(&"0x1234".to_string()))
+        .collect();
+    assert_eq!(with_addr.len(), 1, "{with_addr:?}");
+    assert_eq!(with_addr[0].kind, "function");
+    let mut seen = std::collections::HashMap::new();
+    for e in &ents {
+        for a in &e.aliases {
+            if let Some(prev) = seen.insert(a.clone(), e.id.clone()) {
+                assert_eq!(prev, e.id, "alias {a} held by two entities");
+            }
+        }
+    }
+}
