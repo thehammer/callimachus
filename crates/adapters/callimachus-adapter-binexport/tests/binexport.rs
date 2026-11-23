@@ -185,9 +185,9 @@ async fn chunks_of(root: &Path) -> Vec<callimachus_core::types::Chunk> {
 async fn ingest_creates_function_entities_with_address_aliases() {
     let (_d, db) = indexed().await;
     for (name, alias) in [
-        ("fun_00001000", "0x1000"),
-        ("fun_00002000", "0x2000"),
-        ("fun_00003000", "0x3000"),
+        ("0x1000", "0x1000"),
+        ("0x2000", "0x2000"),
+        ("0x3000", "0x3000"),
     ] {
         let e = entity(&db, name);
         assert_eq!(e.kind, "function", "{name}");
@@ -197,7 +197,7 @@ async fn ingest_creates_function_entities_with_address_aliases() {
             e.aliases
         );
     }
-    assert!(has_edge(&db, "calls", "fun_00001000", "fun_00002000"));
+    assert!(has_edge(&db, "calls", "0x1000", "0x2000"));
 }
 
 #[tokio::test]
@@ -210,12 +210,7 @@ async fn tables_ports_and_ram_become_typed_entities() {
     for a in ["0x12000", "entry:u32", "count:4"] {
         assert!(t.aliases.contains(&a.to_string()), "{:?}", t.aliases);
     }
-    assert!(has_edge(
-        &db,
-        "uses_table",
-        "fun_00002000",
-        "ptr_dat_00012000"
-    ));
+    assert!(has_edge(&db, "uses_table", "0x2000", "ptr_dat_00012000"));
 
     let l = entity(&db, "ptr_lab_00014000");
     assert_eq!(l.kind, "table");
@@ -224,23 +219,18 @@ async fn tables_ports_and_ram_become_typed_entities() {
         "{:?}",
         l.aliases
     );
-    assert!(has_edge(
-        &db,
-        "uses_table",
-        "fun_00002000",
-        "ptr_lab_00014000"
-    ));
+    assert!(has_edge(&db, "uses_table", "0x2000", "ptr_lab_00014000"));
 
     let p = entity(&db, "io_c00004");
     assert_eq!(p.kind, "port");
     assert!(p.aliases.contains(&"0xc00004".to_string()));
     assert!(p.aliases.contains(&"toy.status".to_string()));
-    assert!(has_edge(&db, "reads", "fun_00001000", "io_c00004"));
+    assert!(has_edge(&db, "reads", "0x1000", "io_c00004"));
 
     let r = entity(&db, "ram_ff0010");
     assert_eq!(r.kind, "variable");
     assert!(r.aliases.contains(&"0xff0010".to_string()));
-    assert!(has_edge(&db, "writes", "fun_00001000", "ram_ff0010"));
+    assert!(has_edge(&db, "writes", "0x1000", "ram_ff0010"));
 }
 
 #[tokio::test]
@@ -275,7 +265,7 @@ async fn table_and_port_kinds_beat_a_variable_stub_indexed_first() {
 #[tokio::test]
 async fn function_without_c_still_exists_with_asm_only_chunk() {
     let (d, db) = indexed().await;
-    assert_eq!(entity(&db, "fun_00003000").kind, "function");
+    assert_eq!(entity(&db, "0x3000").kind, "function");
 
     let chunks = chunks_of(d.path()).await;
     let c = chunks
@@ -669,7 +659,7 @@ async fn structure_pass_alone_works_after_a_separate_chunk_run() {
     )
     .await;
     assert!(
-        db.entity_get_by_id(&format!("{CORP}:fun_00001000"))
+        db.entity_get_by_id(&format!("{CORP}:0x1000"))
             .unwrap()
             .is_none()
     );
@@ -681,9 +671,9 @@ async fn structure_pass_alone_works_after_a_separate_chunk_run() {
         vec![Pass::Structure],
     )
     .await;
-    assert_eq!(entity(&db, "fun_00001000").kind, "function");
-    assert!(has_edge(&db, "calls", "fun_00001000", "fun_00002000"));
-    assert!(has_edge(&db, "writes", "fun_00001000", "ram_ff0010"));
+    assert_eq!(entity(&db, "0x1000").kind, "function");
+    assert!(has_edge(&db, "calls", "0x1000", "0x2000"));
+    assert!(has_edge(&db, "writes", "0x1000", "ram_ff0010"));
 }
 
 #[tokio::test]
@@ -695,10 +685,10 @@ async fn missing_per_function_file_is_a_warning_not_a_failed_pass() {
     index(dir.path(), db.clone(), Arc::new(BinExportAdapter::new())).await;
 
     // Everything that exists is indexed.
-    for n in ["fun_00001000", "fun_00002000", "fun_00003000"] {
+    for n in ["0x1000", "0x2000", "0x3000"] {
         assert_eq!(entity(&db, n).kind, "function", "{n}");
     }
-    assert!(has_edge(&db, "calls", "fun_00001000", "fun_00002000"));
+    assert!(has_edge(&db, "calls", "0x1000", "0x2000"));
 
     let runs = db.run_latest(CORP, 20).unwrap();
     let chunk_run = runs.iter().find(|r| r.pass == "chunk").expect("chunk run");
@@ -732,7 +722,7 @@ async fn field_access_in_decompiled_c_becomes_a_field_entity() {
     assert!(has_edge(
         &db,
         "writes",
-        "fun_00002000",
+        "0x2000",
         "unaff_a2+0x10@fun_00002000"
     ));
 }
@@ -839,7 +829,7 @@ async fn c_spelling_of_a_table_address_reconciles_with_the_bundle_entity() {
         "{:?}",
         t.aliases
     );
-    assert!(has_edge(&db, "uses_table", "fun_00001000", "dat_00012340"));
+    assert!(has_edge(&db, "uses_table", "0x1000", "dat_00012340"));
     assert!(
         db.edge_list(CORP)
             .unwrap()
@@ -867,5 +857,311 @@ async fn type_names_and_ghidra_pseudo_names_are_not_variables() {
         "register0x0000003c",
     ] {
         assert!(!names.iter().any(|n| n == bad), "{bad} in {names:?}");
+    }
+}
+
+#[tokio::test]
+async fn ptr_lab_stub_reconciles_with_table_at_its_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "manifest.json",
+        &json!({"format":1,"kind":"binary-export","counts":{"functions":1,"tables":1}}).to_string(),
+    );
+    write(
+        root,
+        "functions.jsonl",
+        &json!({"address":"0x001000","name":"FUN_00001000","size":8,"c":"c/00001000.c","asm":null,"decompile_ok":true,"discovered_by":["analysis"]}).to_string(),
+    );
+    write(
+        root,
+        "c/00001000.c",
+        "void FUN_00001000(void)\n{\n  g(PTR_LAB_00001234[1]);\n}\n",
+    );
+    write(
+        root,
+        "tables.jsonl",
+        &json!({"address":"0x001234","name":"DAT_00001234","kind":"code-pointers","entry":"u32","count":2,"readers":["0x001000"]}).to_string(),
+    );
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index(root, db.clone(), Arc::new(BinExportAdapter::new())).await;
+    let with_addr: Vec<_> = db
+        .entity_list(CORP)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.aliases.contains(&"0x1234".to_string()))
+        .collect();
+    assert_eq!(with_addr.len(), 1, "{with_addr:?}");
+    assert_eq!(with_addr[0].kind, "table");
+    assert!(
+        with_addr[0]
+            .aliases
+            .contains(&"PTR_LAB_00001234".to_string()),
+        "{:?}",
+        with_addr[0].aliases
+    );
+}
+
+#[tokio::test]
+async fn multi_segment_ghidra_stubs_reconcile_with_bundle_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "manifest.json",
+        &json!({"format":1,"kind":"binary-export","counts":{"functions":1,"tables":2}}).to_string(),
+    );
+    write(
+        root,
+        "functions.jsonl",
+        &json!({"address":"0x001000","name":"FUN_00001000","size":8,"c":"c/00001000.c","asm":null,"decompile_ok":true,"discovered_by":["analysis"]}).to_string(),
+    );
+    write(
+        root,
+        "c/00001000.c",
+        "void FUN_00001000(void)\n{\n  g(PTR_caseD_21_00010080[1]);\n  g(PTR_LAB_000043c6_2_00060878[1]);\n}\n",
+    );
+    write(
+        root,
+        "tables.jsonl",
+        &[
+            json!({"address":"0x010080","name":"PTR_DAT_00010080","kind":"code-pointers","entry":"u32","count":2,"readers":["0x001000"]}),
+            json!({"address":"0x060878","name":"DAT_00060878","kind":"code-pointers","entry":"u32","count":2,"readers":["0x001000"]}),
+        ]
+        .iter()
+        .map(|t| t.to_string())
+        .collect::<Vec<_>>()
+        .join("\n"),
+    );
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index(root, db.clone(), Arc::new(BinExportAdapter::new())).await;
+
+    for (alias, bundle_id, c_name) in [
+        ("0x10080", "ptr_dat_00010080", "PTR_caseD_21_00010080"),
+        ("0x60878", "dat_00060878", "PTR_LAB_000043c6_2_00060878"),
+    ] {
+        let with_addr: Vec<_> = db
+            .entity_list(CORP)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.aliases.contains(&alias.to_string()))
+            .collect();
+        assert_eq!(with_addr.len(), 1, "{alias}: {with_addr:?}");
+        let t = &with_addr[0];
+        assert_eq!(t.id, format!("{CORP}:{bundle_id}"));
+        assert_eq!(t.kind, "table");
+        assert!(t.aliases.contains(&c_name.to_string()), "{:?}", t.aliases);
+        assert!(has_edge(&db, "uses_table", "0x1000", bundle_id), "{alias}");
+    }
+    // No stray C-spelled stub entity survives.
+    assert!(
+        db.entity_list(CORP)
+            .unwrap()
+            .iter()
+            .all(|e| !e.id.contains("cased_21") && !e.id.contains("ptr_lab_000043c6")),
+    );
+}
+
+// ── Shared function names ────────────────────────────────────────────────────
+
+/// Three functions all named `caseD_1`, one `caseD_2`, one `FUN_00005000`.
+fn write_shared_name_bundle(root: &Path) {
+    write(
+        root,
+        "manifest.json",
+        &json!({"format":1,"kind":"binary-export","counts":{"functions":5}}).to_string(),
+    );
+    let funcs = [
+        (
+            "0x001000",
+            "caseD_1",
+            "void caseD_1(void)\n{\n  FUN_00005000();\n}\n",
+        ),
+        (
+            "0x002000",
+            "caseD_1",
+            "void caseD_1(void)\n{\n  FUN_00005000();\n}\n",
+        ),
+        (
+            "0x003000",
+            "caseD_1",
+            "void caseD_1(void)\n{\n  caseD_2();\n}\n",
+        ),
+        (
+            "0x004000",
+            "caseD_2",
+            "void caseD_2(void)\n{\n  caseD_1();\n}\n",
+        ),
+        (
+            "0x005000",
+            "FUN_00005000",
+            "void FUN_00005000(void)\n{\n  return;\n}\n",
+        ),
+    ];
+    let mut rows = Vec::new();
+    for (addr, name, c) in funcs {
+        let hex = &addr[2..];
+        let rel = format!("c/{hex}.c");
+        write(root, &rel, c);
+        rows.push(
+            json!({"address":addr,"name":name,"size":8,"c":rel,"asm":null,"decompile_ok":true,"discovered_by":["analysis"]})
+                .to_string(),
+        );
+    }
+    write(root, "functions.jsonl", &rows.join("\n"));
+}
+
+async fn indexed_shared_names() -> (tempfile::TempDir, Arc<SqliteBackend>) {
+    let dir = tempfile::tempdir().unwrap();
+    write_shared_name_bundle(dir.path());
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index(dir.path(), db.clone(), Arc::new(BinExportAdapter::new())).await;
+    (dir, db)
+}
+
+fn edge_confidence(db: &SqliteBackend, kind: &str, from: &str, to: &str) -> f32 {
+    db.edge_list(CORP)
+        .unwrap()
+        .iter()
+        .find(|e| {
+            e.kind == kind
+                && e.from_entity_id == format!("{CORP}:{from}")
+                && e.to_entity_id == format!("{CORP}:{to}")
+        })
+        .unwrap_or_else(|| panic!("missing {kind} edge {from} -> {to}"))
+        .confidence
+}
+
+#[tokio::test]
+async fn functions_sharing_a_name_stay_distinct_address_keyed_entities() {
+    let (dir, db) = indexed_shared_names().await;
+    let functions: Vec<_> = db
+        .entity_list(CORP)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "function")
+        .collect();
+    let rows = std::fs::read_to_string(dir.path().join("functions.jsonl"))
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    assert_eq!(functions.len(), rows, "{functions:?}");
+
+    for addr in ["0x1000", "0x2000", "0x3000"] {
+        let e = entity(&db, addr);
+        assert_eq!(e.kind, "function");
+        assert_eq!(e.canonical_name, "caseD_1");
+        assert!(e.aliases.contains(&addr.to_string()), "{:?}", e.aliases);
+    }
+    assert_eq!(entity(&db, "0x4000").canonical_name, "caseD_2");
+    assert_eq!(entity(&db, "0x5000").canonical_name, "FUN_00005000");
+}
+
+#[tokio::test]
+async fn each_same_named_function_keeps_its_own_edges() {
+    let (_d, db) = indexed_shared_names().await;
+    assert!(has_edge(&db, "calls", "0x1000", "0x5000"));
+    assert!(has_edge(&db, "calls", "0x2000", "0x5000"));
+    assert!(has_edge(&db, "calls", "0x3000", "0x4000"));
+}
+
+#[tokio::test]
+async fn looking_up_a_shared_name_returns_every_function_with_it() {
+    let (_d, db) = indexed_shared_names().await;
+    let mut ids: Vec<String> = db
+        .entity_find_by_name(CORP, "caseD_1")
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "function")
+        .map(|e| e.id)
+        .collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        ["0x1000", "0x2000", "0x3000"].map(|a| format!("{CORP}:{a}"))
+    );
+}
+
+#[tokio::test]
+async fn fun_hex_call_target_resolves_to_that_functions_address_id() {
+    let (_d, db) = indexed_shared_names().await;
+    assert!(has_edge(&db, "calls", "0x1000", "0x5000"));
+    assert!(
+        db.edge_list(CORP)
+            .unwrap()
+            .iter()
+            .all(|e| !e.to_entity_id.ends_with(":fun_00005000")),
+        "name-keyed FUN_ target leaked"
+    );
+}
+
+#[tokio::test]
+async fn call_to_a_shared_name_reaches_every_candidate_at_half_confidence() {
+    let (_d, db) = indexed_shared_names().await;
+    for to in ["0x1000", "0x2000", "0x3000"] {
+        assert!(has_edge(&db, "calls", "0x4000", to), "missing edge to {to}");
+        assert_eq!(edge_confidence(&db, "calls", "0x4000", to), 0.5, "{to}");
+    }
+}
+
+#[tokio::test]
+async fn call_to_a_unique_name_resolves_to_its_address_at_normal_confidence() {
+    let (_d, db) = indexed_shared_names().await;
+    assert!(has_edge(&db, "calls", "0x3000", "0x4000"));
+    assert_eq!(edge_confidence(&db, "calls", "0x3000", "0x4000"), 0.9);
+    assert_eq!(edge_confidence(&db, "calls", "0x1000", "0x5000"), 0.9);
+    assert!(!has_edge(&db, "calls", "0x3000", "caseD_2"));
+}
+
+#[tokio::test]
+async fn function_used_as_value_reconciles_with_function_entity() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "manifest.json",
+        &json!({"format":1,"kind":"binary-export","counts":{"functions":2}}).to_string(),
+    );
+    write(
+        root,
+        "functions.jsonl",
+        &[
+            json!({"address":"0x001000","name":"FUN_00001000","size":8,"c":"c/00001000.c","asm":null,"decompile_ok":true,"discovered_by":["analysis"]}),
+            json!({"address":"0x001234","name":"FUN_00001234","size":8,"c":"c/00001234.c","asm":null,"decompile_ok":true,"discovered_by":["analysis"]}),
+        ]
+        .iter()
+        .map(|t| t.to_string())
+        .collect::<Vec<_>>()
+        .join("\n"),
+    );
+    write(
+        root,
+        "c/00001000.c",
+        "void FUN_00001000(void)\n{\n  void *p;\n  p = FUN_00001234;\n  g(FUN_00001234);\n}\n",
+    );
+    write(root, "c/00001234.c", "void FUN_00001234(void)\n{\n}\n");
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index(root, db.clone(), Arc::new(BinExportAdapter::new())).await;
+    let ents = db.entity_list(CORP).unwrap();
+    assert!(
+        ents.iter()
+            .all(|e| !(e.kind == "variable" && e.canonical_name == "FUN_00001234")),
+        "{ents:?}"
+    );
+    let with_addr: Vec<_> = ents
+        .iter()
+        .filter(|e| e.aliases.contains(&"0x1234".to_string()))
+        .collect();
+    assert_eq!(with_addr.len(), 1, "{with_addr:?}");
+    assert_eq!(with_addr[0].kind, "function");
+    let mut seen = std::collections::HashMap::new();
+    for e in &ents {
+        for a in &e.aliases {
+            if let Some(prev) = seen.insert(a.clone(), e.id.clone()) {
+                assert_eq!(prev, e.id, "alias {a} held by two entities");
+            }
+        }
     }
 }
