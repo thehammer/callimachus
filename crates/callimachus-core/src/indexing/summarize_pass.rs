@@ -30,7 +30,15 @@ pub async fn run(
 
     // Skip chunks whose source file is unchanged according to the manifest.
     if let Some(m) = opts.change_manifest.as_ref() {
-        all_chunks.retain(|c| m.is_dirty_for_chunk(c));
+        // Also keep chunks with no summary yet (left over from a stopped run).
+        all_chunks.retain(|c| {
+            m.is_dirty_for_chunk(c)
+                || db
+                    .summary_get(&corpus.id, &SummaryTargetKind::Chunk, &c.id)
+                    .ok()
+                    .flatten()
+                    .is_none()
+        });
     }
 
     let levels = adapter.summary_levels();

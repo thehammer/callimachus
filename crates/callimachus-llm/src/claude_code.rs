@@ -212,11 +212,14 @@ fn classify_failure(status_ok: bool, stdout: &str, stderr: &str) -> Option<LlmEr
     let lower = combined.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
 
+    // Only specific usage-limit phrases count as quota exhaustion. A bare
+    // "limit reached" or "resets" can come from unrelated errors (context
+    // limits, echoed text) and transient rate limits keep the backoff path.
     if has(&[
         "usage limit",
-        "limit reached",
+        "5-hour limit",
+        "weekly limit",
         "out of extra usage",
-        "resets",
     ]) {
         let resets_at = lower.find("resets").and_then(|i| {
             let rest = combined[i + "resets".len()..].lines().next()?;
@@ -568,6 +571,44 @@ echo '{"is_error":true,"result":"5-hour limit reached ∙ resets 3pm (America/Ch
             }
             other => panic!("got {other:?}"),
         }
+    }
+
+    #[test]
+    fn classify_transient_rate_limit_with_resets_is_not_quota() {
+        assert!(matches!(
+            classify_failure(false, "rate limit exceeded, resets in 30s", ""),
+            Some(LlmError::RateLimited { .. })
+        ));
+    }
+
+    #[test]
+    fn classify_context_limit_is_not_quota() {
+        let err = classify_failure(false, "context limit reached", "").unwrap();
+        assert!(matches!(err, LlmError::Subprocess(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn json_error_echoing_resets_is_not_quota() {
+        let (_dir, bin) = write_mock_claude(
+            "#!/bin/sh\necho '{\"is_error\":true,\"result\":\"bad input: the word resets appears\"}'\n",
+        );
+        let p = ClaudeCodeProvider::new(bin, None, None, None);
+        let err = p.complete(req("hi")).await.unwrap_err();
+        assert!(matches!(err, LlmError::Subprocess(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn classify_resets_cut_at_first_newline() {
+        let err = classify_failure(
+            false,
+            "weekly limit reached, resets Mon 9am (UTC)\nsecond line",
+            "",
+        )
+        .unwrap();
+        let LlmError::QuotaExhausted { resets_at, .. } = err else {
+            panic!("expected quota")
+        };
+        assert_eq!(resets_at.as_deref(), Some("Mon 9am (UTC)"));
     }
 
     #[test]

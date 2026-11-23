@@ -456,6 +456,17 @@ impl IndexPipeline {
         // Track the final manifest version so we can write it back after success.
         let mut history_version: Option<String> = None;
 
+        // Resuming a run that stopped early (e.g. quota exhaustion): the version
+        // anchor was deliberately not advanced, so History reports the same
+        // dirty set. Cascade invalidation must not run again or it would wipe
+        // the artifacts the stopped run already produced.
+        let resuming = !opts_local.full
+            && self
+                .db
+                .run_latest(&corpus.id, 1)?
+                .first()
+                .is_some_and(|r| r.status == "stopped");
+
         for pass in &opts_local.passes.clone() {
             let run_id = self
                 .db
@@ -472,16 +483,17 @@ impl IndexPipeline {
                         &opts_local,
                     )
                     .await?;
-                    // Persist the version anchor as soon as history succeeds.
-                    self.db
-                        .corpus_set_last_indexed_version(&corpus.id, &manifest.current_version)?;
+                    // The version anchor is written only after every pass
+                    // completes (see the end of this function).
                     history_version = Some(manifest.current_version.clone());
                     opts_local.change_manifest = Some(manifest);
 
                     // Cascade-invalidate stale artifacts for dirty source files.
                     // This must run before chunk/structure/semantic passes so they
                     // start with a blank slate for the changed files.
-                    if let Some(m) = opts_local.change_manifest.as_ref() {
+                    if let Some(m) = opts_local.change_manifest.as_ref()
+                        && !resuming
+                    {
                         cascade::run(Arc::clone(&self.db), corpus, m).await?;
                     }
 
@@ -613,9 +625,12 @@ impl IndexPipeline {
             self.db.corpus_set_last_indexed(&corpus.id, &now)?;
 
             // Write back the version anchor only after all passes succeed and
-            // only when Pass::History was actually run.  Partial failures
-            // must not advance the anchor so the next run replays correctly.
-            if let Some(version) = history_version {
+            // only when Pass::History was actually run.  Partial failures and
+            // early stops (quota) must not advance the anchor so the next run
+            // resumes the unfinished work.
+            if let Some(version) = history_version
+                && result.stopped_reason.is_none()
+            {
                 self.db
                     .corpus_set_last_indexed_version(&corpus.id, &version)?;
             }

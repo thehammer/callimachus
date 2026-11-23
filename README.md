@@ -146,7 +146,7 @@ timeout_secs = 120
 calls_per_minute = 10
 ```
 
-**Quota exhaustion stops the run.** When the subscription window is used up, the current pass stops pulling new entities, finishes or fails the ones in flight, and later LLM passes are not started. The run is recorded with status `stopped` and `calli index` prints `stopped: <reason> — re-run the same command to resume`. Finished work is kept, so re-running the same command after the window resets continues where it left off.
+**Quota exhaustion stops the run.** When the subscription window is used up, the current pass stops pulling new entities, finishes or fails the ones in flight, and later LLM passes are not started. The run is recorded with status `stopped` and `calli index` prints `stopped: <reason> — re-run the same command to resume`. Finished work is kept, and the stopped run does not advance the version anchor, so re-running the exact same command (no `--full`) after the window resets resumes: entities that have no output yet are picked up, and finished ones are not processed again. Only specific usage-limit messages ("usage limit", "5-hour limit", "weekly limit", "out of extra usage") count as quota; transient rate limits still back off and retry.
 
 ### Tiered model routing (optional)
 

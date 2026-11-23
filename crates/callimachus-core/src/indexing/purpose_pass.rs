@@ -80,6 +80,8 @@ pub async fn run(
         .into_iter()
         .filter(|e| PURPOSE_KINDS.contains(&e.kind.as_str()))
         .filter(|e| {
+            // Dirty files, plus any entity with no output yet (e.g. left over
+            // from a run that stopped on quota), regardless of dirty state.
             opts.change_manifest
                 .as_ref()
                 .map(|m| {
@@ -89,6 +91,7 @@ pub async fn run(
                         .unwrap_or(true)
                 })
                 .unwrap_or(true)
+                || db.purpose_get(&corpus.id, &e.id).ok().flatten().is_none()
         })
         .collect();
     let total = candidates.len() as u64;
