@@ -358,6 +358,25 @@ impl SourceAdapter for BinExportAdapter {
         Ok(LocationRef { corpus_id, path })
     }
 
+    fn annotate_source(
+        &self,
+        content: &str,
+        language: &str,
+        fields: &[callimachus_adapter_contract::FieldName],
+    ) -> String {
+        let split = content
+            .find(content::DISASSEMBLY_MARKER)
+            .unwrap_or(content.len());
+        let (c_part, asm_part) = content.split_at(split);
+        let marker_end = asm_part.find('\n').map_or(asm_part.len(), |i| i + 1);
+        let (marker, asm) = asm_part.split_at(marker_end);
+        format!(
+            "{}{marker}{}",
+            self.code.annotate_source(c_part, language, fields),
+            content::annotate_disassembly(asm, fields)
+        )
+    }
+
     async fn extract_purpose(
         &self,
         entity: &Entity,

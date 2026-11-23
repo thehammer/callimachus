@@ -42,4 +42,6 @@ pub use registry::AdapterRegistry;
 // `callimachus-core` dependency, so this keeps the contract closure thin.
 pub use callimachus_llm::{self, LlmProvider};
 pub use routing::RoutingInputs;
-pub use types::{Chunk, Corpus, CorpusStatus, Edge, Entity, Location, LocationUri, hash_content};
+pub use types::{
+    Chunk, Corpus, CorpusStatus, Edge, Entity, FieldName, Location, LocationUri, hash_content,
+};

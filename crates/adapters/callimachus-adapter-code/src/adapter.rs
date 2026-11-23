@@ -604,6 +604,19 @@ Return JSON:
         }
     }
 
+    fn annotate_source(
+        &self,
+        content: &str,
+        language: &str,
+        fields: &[callimachus_adapter_contract::FieldName],
+    ) -> String {
+        if language == "c" {
+            crate::c::annotate(content, fields)
+        } else {
+            content.to_string()
+        }
+    }
+
     /// Populate [`RoutingInputs`] from tree-sitter static analysis of the source.
     ///
     /// Uses the same `contracts::analyze` call as `extract_contract` so the

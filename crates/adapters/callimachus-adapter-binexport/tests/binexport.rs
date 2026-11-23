@@ -712,3 +712,76 @@ async fn missing_per_function_file_is_a_warning_not_a_failed_pass() {
     assert!(chunk_run.stats.errors[0].message.contains("asm/00002000.s"));
     assert_eq!(chunk_run.stats.processed, 3);
 }
+
+// ── Struct-field entities and annotation ─────────────────────────────────────
+
+#[tokio::test]
+async fn field_access_in_decompiled_c_becomes_a_field_entity() {
+    let dir = tempfile::tempdir().unwrap();
+    write_bundle(dir.path());
+    write(
+        dir.path(),
+        "c/00002000.c",
+        "// FUN_00002000 decompiled\nvoid FUN_00002000(void)\n{\n  *(short *)(unaff_A2 + 0x10) = 1;\n}\n",
+    );
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index(dir.path(), db.clone(), Arc::new(BinExportAdapter::new())).await;
+
+    let f = entity(&db, "unaff_a2+0x10");
+    assert_eq!(f.kind, "field");
+    assert!(has_edge(&db, "writes", "fun_00002000", "unaff_a2+0x10"));
+}
+
+fn obj_x(register: Option<&str>) -> callimachus_adapter_contract::FieldName {
+    callimachus_adapter_contract::FieldName {
+        base: "unaff_A2".into(),
+        register: register.map(String::from),
+        offset: 0x10,
+        layout: "obj".into(),
+        field: "x".into(),
+        ty: Some("s16".into()),
+    }
+}
+
+fn chunk_with_asm(asm_lines: &[&str]) -> String {
+    let mut s = String::from(
+        "// FUN_00002000 @ 0x002000  (size 8 bytes; discovered_by analysis)\nvoid FUN_00002000(void)\n{\n  *(short *)(unaff_A2 + 0x10) = 1;\n}\n",
+    );
+    s.push_str(content::DISASSEMBLY_MARKER);
+    s.push('\n');
+    for l in asm_lines {
+        s.push_str(l);
+        s.push('\n');
+    }
+    s
+}
+
+#[test]
+fn annotate_labels_matching_disassembly_operands_and_the_c_part() {
+    let a = BinExportAdapter::new();
+    let fields = [obj_x(Some("a2"))];
+    for operand in ["$10(a2)", "0x10(a2)", "($10,a2)"] {
+        let line = format!("/* 001004  move.w {operand},d0 */");
+        let out = a.annotate_source(&chunk_with_asm(&[&line]), "c", &fields);
+        let expected = format!("/* 001004  move.w {operand},d0 ; obj.x */");
+        assert!(out.contains(&expected), "{operand}: {out}");
+        assert!(
+            out.contains("unaff_A2->x /* obj+0x10 s16 */ = 1;"),
+            "C part annotated: {out}"
+        );
+    }
+}
+
+#[test]
+fn annotate_leaves_other_offsets_and_registers_alone() {
+    let a = BinExportAdapter::new();
+    let fields = [obj_x(Some("a2"))];
+    let input = chunk_with_asm(&[
+        "/* 001004  move.w $12(a2),d0 */",
+        "/* 001006  move.w $10(a3),d0 */",
+    ]);
+    let out = a.annotate_source(&input, "c", &fields);
+    assert!(out.contains("/* 001004  move.w $12(a2),d0 */\n"), "{out}");
+    assert!(out.contains("/* 001006  move.w $10(a3),d0 */\n"), "{out}");
+    assert!(!out.contains("; obj.x"), "{out}");
+}
