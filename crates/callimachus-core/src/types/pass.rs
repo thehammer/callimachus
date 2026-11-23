@@ -80,12 +80,19 @@ const DEFAULT_PASSES: &[Pass] = &[
     Pass::Theme,
 ];
 
+/// The `decompile` profile: decompiler output as C, one function per file.
+/// Structure is enough for entities and edges; the LLM passes are limited to
+/// summaries and purposes.
+pub const DECOMPILE_PASSES: &[Pass] =
+    &[Pass::Chunk, Pass::Structure, Pass::Summarize, Pass::Purpose];
+
 /// Parse a comma-separated `--passes` value into a deduplicated, ordered
 /// `Vec<Pass>`.
 ///
 /// The literal token `default` expands to the current default pass list:
 /// History, Chunk, Structure, Semantic, Aliases, Summarize, Purpose,
-/// Contract, Theme. (Embed is opt-in.)
+/// Contract, Theme. (Embed is opt-in.) The token `decompile` expands to
+/// [`DECOMPILE_PASSES`].
 ///
 /// Returns an `Err` for:
 /// * an empty input string (after trimming)
@@ -107,8 +114,13 @@ pub fn parse_passes_list(input: &str) -> Result<Vec<Pass>, String> {
         if token.is_empty() {
             continue;
         }
-        if token == "default" {
-            for p in DEFAULT_PASSES {
+        if token == "default" || token == "decompile" {
+            let profile = if token == "default" {
+                DEFAULT_PASSES
+            } else {
+                DECOMPILE_PASSES
+            };
+            for p in profile {
                 if !result.contains(p) {
                     result.push(p.clone());
                 }
@@ -117,7 +129,7 @@ pub fn parse_passes_list(input: &str) -> Result<Vec<Pass>, String> {
             let pass = token.parse::<Pass>().map_err(|_| {
                 format!(
                     "unknown pass: '{token}' (valid: history, chunk, structure, semantic, \
-                     aliases, summarize, purpose, contract, theme, embed, default)"
+                     aliases, summarize, purpose, contract, theme, embed, default, decompile)"
                 )
             })?;
             if !result.contains(&pass) {

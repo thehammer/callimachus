@@ -1,12 +1,15 @@
 use anyhow::Result;
 use callimachus_core::corrections::CorrectionsEngine;
 use callimachus_core::corrections::types::{Correction, CorrectionKind, EntityLinkKind};
+use callimachus_core::indexing::EntityFilter;
 use callimachus_core::query::service::QueryService;
 use callimachus_core::query::types::ExplainComponentInput;
 use callimachus_core::storage::StorageBackend;
 use callimachus_core::types::ToolResult;
 use callimachus_core::types::chunk::Chunk;
 use callimachus_core::types::entity::Entity;
+use callimachus_core::types::{EntityContract, SummaryTargetKind};
+use serde::Serialize;
 use std::sync::Arc;
 
 /// Return entities for `corpus_id`, optionally filtered by name substring and/or kind.
@@ -45,6 +48,124 @@ pub fn run_entities(
     entities.truncate(cap);
 
     Ok(entities)
+}
+
+/// One entity's LLM artifacts, as printed by `calli inspect artifacts`.
+#[derive(Debug, Serialize)]
+pub struct ArtifactRecord {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub location: Option<String>,
+    /// Best summary: the entity's own, else the chunk at its location.
+    pub summary: Option<String>,
+    pub summary_model: Option<String>,
+    pub purpose: Option<String>,
+    pub purpose_model: Option<String>,
+    pub contract: Option<EntityContract>,
+    /// Most recent `generated_at` among this entity's artifacts.
+    pub run_timestamp: Option<String>,
+}
+
+/// Collect the artifacts of every entity selected by `specs` (all if empty).
+pub fn run_artifacts(
+    corpus_id: &str,
+    specs: &[String],
+    db: &dyn StorageBackend,
+) -> Result<Vec<ArtifactRecord>> {
+    let filter = EntityFilter::build(specs, corpus_id, db)?;
+    let mut entities: Vec<Entity> = db
+        .entity_list(corpus_id)?
+        .into_iter()
+        .filter(|e| filter.matches(e, db))
+        .collect();
+    entities.sort_by(|a, b| a.canonical_name.cmp(&b.canonical_name));
+
+    let mut records = Vec::with_capacity(entities.len());
+    for e in entities {
+        let location = e.first_location.as_ref().map(|l| l.uri());
+        let summary = match db.summary_get(corpus_id, &SummaryTargetKind::Entity, &e.id)? {
+            Some(s) => Some(s),
+            None => match location.as_deref().map(|u| db.chunk_get_by_uri(u)) {
+                Some(Ok(Some(chunk))) => {
+                    db.summary_get(corpus_id, &SummaryTargetKind::Chunk, &chunk.id)?
+                }
+                _ => None,
+            },
+        };
+        let purpose = db.purpose_get(corpus_id, &e.id)?;
+        let contract = db.contract_get(corpus_id, &e.id)?;
+        let run_timestamp = [
+            summary.as_ref().map(|s| s.generated_at.clone()),
+            purpose.as_ref().map(|p| p.generated_at.clone()),
+            contract.as_ref().map(|c| c.generated_at.clone()),
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        records.push(ArtifactRecord {
+            id: e.id,
+            name: e.canonical_name,
+            kind: e.kind,
+            location,
+            summary_model: summary.as_ref().map(|s| s.model.clone()),
+            summary: summary.map(|s| s.text),
+            purpose_model: purpose.as_ref().map(|p| p.model.clone()),
+            purpose: purpose.map(|p| p.purpose),
+            contract,
+            run_timestamp,
+        });
+    }
+    Ok(records)
+}
+
+/// One text block per entity.
+pub fn format_artifacts(records: &[ArtifactRecord]) -> String {
+    let none = "(none)";
+    let mut out = String::new();
+    for r in records {
+        out.push_str(&format!("{} [{}]  {}\n", r.name, r.kind, r.id));
+        out.push_str(&format!(
+            "  location: {}\n",
+            r.location.as_deref().unwrap_or(none)
+        ));
+        out.push_str(&format!(
+            "  summary:  {}{}\n",
+            r.summary.as_deref().unwrap_or(none),
+            model_suffix(&r.summary_model)
+        ));
+        out.push_str(&format!(
+            "  purpose:  {}{}\n",
+            r.purpose.as_deref().unwrap_or(none),
+            model_suffix(&r.purpose_model)
+        ));
+        match &r.contract {
+            Some(c) => {
+                out.push_str(&format!("  contract: model={}\n", c.model));
+                for (label, items) in [("assumptions", &c.assumptions), ("risks", &c.risks)] {
+                    if !items.is_empty() {
+                        out.push_str(&format!("    {label}: {}\n", items.join("; ")));
+                    }
+                }
+                if let Some(n) = &c.caller_notes {
+                    out.push_str(&format!("    caller_notes: {n}\n"));
+                }
+            }
+            None => out.push_str(&format!("  contract: {none}\n")),
+        }
+        out.push_str(&format!(
+            "  run:      {}\n\n",
+            r.run_timestamp.as_deref().unwrap_or(none)
+        ));
+    }
+    out
+}
+
+fn model_suffix(model: &Option<String>) -> String {
+    model
+        .as_ref()
+        .map(|m| format!("  ({m})"))
+        .unwrap_or_default()
 }
 
 /// Return the chunk with `location_uri == location`, or `None` if not found.
