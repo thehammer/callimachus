@@ -80,3 +80,37 @@ calli index my-export --pass structure
 ```
 
 Omitting `--passes` runs the full pipeline, including the LLM passes.
+
+## Addresses
+
+Decompiler exports encode addresses in names. The adapter recognises these
+naming conventions (case-insensitive prefix, then 4-16 hex digits, then end of
+name): `_DAT_`, `DAT_`, `PTR_DAT_`, `PTR_`, `RAM_`, `FUN_`, `LAB_`, `SUB_`.
+
+Function entities and free-identifier `variable` entities whose name matches
+get an alias `0x{value:x}` (lowercase, no leading zeros): `_DAT_00c00004` has
+alias `0xc00004`, `FUN_000071d0` has `0x71d0`. The `entity` lookup ranks an
+exact case-insensitive name or alias match first and returns only those, so
+`0xc0000` never shadows `0xc00004`.
+
+There is no masking: the value is exactly what the name says. Masking for a bus
+width happens where facts anchor, not in the adapter, which knows nothing about
+memory maps or what a range means.
+
+## Table use
+
+A `uses_table` edge goes from the function to the data entity (in addition to
+the usual `reads`/`writes`) when:
+
+1. the identifier is the operand of unary `&` (`&DAT_x`);
+2. the identifier is the base of a subscript, directly or as `(&X)[i]`;
+3. the identifier name starts with `PTR_`;
+4. a number literal >= `0x100` is the operand of a pointer cast
+   (`(T *)0x18000`), or an operand of `+` in a parenthesised expression that is
+   the operand of a pointer cast (`(T *)(e + 0x18000)`). The target is the
+   `variable` stub `DAT_{value:08x}`, so it shares its id with a named `DAT_`
+   reference to the same address.
+
+Limitations: rule 4 is a heuristic. Literals in comparisons such as
+`(T *)0xff3fff < p` are ignored, as are plain integers and struct-field offsets
+like `*(short *)(p + 0x10)`. One edge is emitted per (function, target).
