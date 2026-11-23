@@ -1,0 +1,25 @@
+[package]
+name = "callimachus-adapter-binexport"
+description = "Callimachus adapter for binary-export bundles — decompiled C plus disassembly per function"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+callimachus-adapter-contract = { path = "../callimachus-adapter-contract" }
+callimachus-adapter-code = { path = "../callimachus-adapter-code" }
+callimachus-llm = { path = "../../callimachus-llm" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+callimachus-core = { path = "../../callimachus-core" }
+tokio = { workspace = true }
+tempfile = "3"
+tree-sitter = "0.23"
+tree-sitter-c = "0.23"

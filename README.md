@@ -299,11 +299,14 @@ callimachus/
       callimachus-adapter-code/ Rust, Python, JS/TS, Go, C, PHP, Dart, Bash, Make, Vue (tree-sitter);
                                 extensionless scripts via shebang
       callimachus-adapter-wiki/ Markdown wikis
+      callimachus-adapter-binexport/ Binary-export bundles: decompiled C + disassembly per function
+                                (see docs/binary-export.md)
   data/
     callimachus.pinakes          Pre-built index of this codebase
   docs/
     architecture.md             Full architecture notes
     mcp-tools.md                MCP tool reference
+    binary-export.md            Binary-export bundle format and adapter
     codebase-analysis.md        Self-analysis — Callimachus indexing itself
 ```
 

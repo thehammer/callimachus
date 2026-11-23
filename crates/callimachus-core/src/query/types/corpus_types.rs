@@ -34,7 +34,8 @@ pub struct CorpusOverviewOutput {
     pub last_indexed: Option<String>,
     pub top_entities: Vec<crate::types::Entity>,
     pub summary: Option<String>,
-    /// The `platform` fact's data, when the corpus has one.
+    /// The `platform` fact's data, when the corpus has one; otherwise the platform
+    /// record from the corpus config (binary-export corpora).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<serde_json::Value>,
 }

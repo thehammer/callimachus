@@ -5,6 +5,39 @@ use callimachus_llm::{CompletionRequest, LlmProvider};
 use crate::extractor::ExtractedCodeStructure;
 use crate::languages;
 
+/// Prompt knobs for adapters that wrap the code adapter's prompt builders.
+///
+/// The default is the plain code adapter: the built-in per-prompt character
+/// caps and no extra instruction, so existing prompts are byte-identical.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PromptOptions {
+    /// Replaces the built-in per-prompt code caps (3,000 / 4,000 chars). The
+    /// caller is expected to have trimmed the content to its own budget.
+    pub code_cap: Option<usize>,
+    /// When set and the content contains this marker, the prompt gains a line
+    /// telling the model that a disassembly of the same routine follows the C.
+    pub disassembly_marker: Option<&'static str>,
+}
+
+/// The extra prompt line added when disassembly is present.
+pub const DISASSEMBLY_HINT: &str = "The disassembly of the same routine follows the C; use it for register parameters, exact offsets and access widths.";
+
+impl PromptOptions {
+    /// Code excerpt for a prompt: at most the cap (or `default_cap`) chars.
+    pub fn excerpt<'a>(&self, content: &'a str, default_cap: usize) -> &'a str {
+        let cap = self.code_cap.unwrap_or(default_cap);
+        &content[..content.floor_char_boundary(cap.min(content.len()))]
+    }
+
+    /// `"<hint>\n"` when the content carries disassembly, otherwise empty.
+    pub fn hint_line(&self, content: &str) -> String {
+        match self.disassembly_marker {
+            Some(m) if content.contains(m) => format!("{DISASSEMBLY_HINT}\n"),
+            _ => String::new(),
+        }
+    }
+}
+
 /// Generate a 1-3 sentence summary for a code chunk using the LLM.
 ///
 /// Returns `None` for `kind == "file"` chunks (those are covered by their
@@ -13,6 +46,16 @@ pub async fn summarize_chunk(
     chunk: &Chunk,
     structure: &ExtractedCodeStructure,
     llm: &dyn LlmProvider,
+) -> Result<Option<String>> {
+    summarize_chunk_with(chunk, structure, llm, &PromptOptions::default()).await
+}
+
+/// [`summarize_chunk`] with explicit [`PromptOptions`].
+pub async fn summarize_chunk_with(
+    chunk: &Chunk,
+    structure: &ExtractedCodeStructure,
+    llm: &dyn LlmProvider,
+    opts: &PromptOptions,
 ) -> Result<Option<String>> {
     // Skip file-level chunks — they're summarized implicitly by their symbols.
     if chunk.kind == "file" {
@@ -28,11 +71,12 @@ pub async fn summarize_chunk(
     let language = detect_language_from_chunk(chunk);
     let symbol_name = extract_symbol_from_location(&chunk.location.path);
 
-    let doc_comment_section = structure
+    let mut doc_comment_section = structure
         .doc_comment
         .as_deref()
         .map(|d| format!("\nDoc comment:\n{d}\n"))
         .unwrap_or_default();
+    doc_comment_section.push_str(&opts.hint_line(&chunk.content));
 
     let prompt = format!(
         r#"You are summarizing a code chunk for a searchable index.
@@ -54,9 +98,7 @@ Return ONLY the summary text, no JSON, no preamble."#,
         language = language,
         symbol_name = symbol_name,
         kind = chunk.kind,
-        content = &chunk.content[..chunk
-            .content
-            .floor_char_boundary(3000.min(chunk.content.len()))],
+        content = opts.excerpt(&chunk.content, 3000),
     );
 
     let req = CompletionRequest {
