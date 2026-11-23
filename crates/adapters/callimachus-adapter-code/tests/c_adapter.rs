@@ -71,8 +71,30 @@ fn count_edges(r: &ExtractedCodeStructure, kind: &str, from: &str, to: &str) -> 
         .count()
 }
 
+/// Id of the field `name` as used by function `from`: register-style bases
+/// (`unaff_A2+0x10`) are function-qualified, others are global.
+fn field_id(from: &str, name: &str) -> String {
+    let base = name.split(['+', '-']).next().unwrap_or(name);
+    if ["in_", "unaff_", "extraout_"]
+        .iter()
+        .any(|p| base.starts_with(p))
+    {
+        format!("{}@{}", id(name), from.to_lowercase())
+    } else {
+        id(name)
+    }
+}
+
 fn has_edge(r: &ExtractedCodeStructure, kind: &str, from: &str, to_name: &str) -> bool {
-    count_edges(r, kind, from, &id(to_name)) > 0
+    let is_field = to_name
+        .rfind(['+', '-'])
+        .is_some_and(|p| to_name[p + 1..].starts_with("0x"));
+    let to = if is_field {
+        field_id(from, to_name)
+    } else {
+        id(to_name)
+    };
+    count_edges(r, kind, from, &to) > 0
 }
 
 fn writes(r: &ExtractedCodeStructure, from: &str, var: &str) -> bool {
@@ -694,8 +716,8 @@ fn write_through_cast_deref_of_free_register_base_is_a_field_write() {
     let r = extract("void FUN_a(void)\n{\n  *(short *)(unaff_A2 + 0x10) = 1;\n}\n");
     let f = field_entity(&r, "unaff_A2+0x10")
         .unwrap_or_else(|| panic!("no field entity: {:?}", field_names(&r)));
-    assert_eq!(f.id, id("unaff_A2+0x10"));
-    assert_eq!(f.id, format!("{CORP}:unaff_a2+0x10"));
+    assert_eq!(f.id, field_id("FUN_a", "unaff_A2+0x10"));
+    assert_eq!(f.id, format!("{CORP}:unaff_a2+0x10@fun_a"));
     assert!((f.confidence - 0.5).abs() < 1e-6, "{}", f.confidence);
     assert!(writes(&r, "FUN_a", "unaff_A2+0x10"));
     assert!(!reads(&r, "FUN_a", "unaff_A2+0x10"));
@@ -845,7 +867,7 @@ fn repeated_accesses_in_one_function_yield_one_edge_per_kind() {
     let r = extract(
         "void FUN_a(void)\n{\n  short x;\n  x = *(short *)(unaff_A2 + 0x10);\n  x = *(short *)(unaff_A2 + 0x10);\n  *(short *)(unaff_A2 + 0x10) = 1;\n  *(short *)(unaff_A2 + 0x10) = 2;\n}\n",
     );
-    let f = id("unaff_A2+0x10");
+    let f = field_id("FUN_a", "unaff_A2+0x10");
     assert_eq!(count_edges(&r, "reads", "FUN_a", &f), 1);
     assert_eq!(count_edges(&r, "writes", "FUN_a", &f), 1);
     assert_eq!(
@@ -858,12 +880,50 @@ fn repeated_accesses_in_one_function_yield_one_edge_per_kind() {
 }
 
 #[test]
-fn two_functions_using_the_same_field_share_one_entity_id() {
+fn register_base_fields_are_per_function_but_global_bases_are_shared() {
     let r = extract(
-        "void FUN_a(void)\n{\n  *(short *)(unaff_A2 + 0x10) = 1;\n}\nint FUN_b(void)\n{\n  return *(short *)(unaff_A2 + 0x10);\n}\n",
+        "void FUN_a(void)\n{\n  *(short *)(unaff_A2 + 0x10) = 1;\n  }\nint FUN_b(void)\n{\n  return *(short *)(unaff_A2 + 0x10);\n}\n",
     );
-    let f = id("unaff_A2+0x10");
-    assert!(r.entities.iter().any(|e| e.id == f && e.kind == "field"));
-    assert_eq!(count_edges(&r, "writes", "FUN_a", &f), 1);
-    assert_eq!(count_edges(&r, "reads", "FUN_b", &f), 1);
+    let (fa, fb) = (
+        field_id("FUN_a", "unaff_A2+0x10"),
+        field_id("FUN_b", "unaff_A2+0x10"),
+    );
+    assert_ne!(fa, fb);
+    for f in [&fa, &fb] {
+        assert!(r.entities.iter().any(|e| &e.id == f && e.kind == "field"));
+    }
+    assert_eq!(count_edges(&r, "writes", "FUN_a", &fa), 1);
+    assert_eq!(count_edges(&r, "reads", "FUN_b", &fb), 1);
+    // A non-register base (a parameter) is shared by every function.
+    let r = extract(
+        "void FUN_a(char *param_1)\n{\n  *(short *)(param_1 + 0x4) = 1;\n}\nint FUN_b(char *param_1)\n{\n  return *(short *)(param_1 + 0x4);\n}\n",
+    );
+    let g = id("param_1+0x4");
+    assert_eq!(count_edges(&r, "writes", "FUN_a", &g), 1);
+    assert_eq!(count_edges(&r, "reads", "FUN_b", &g), 1);
+}
+
+#[test]
+fn simple_local_alias_of_a_register_base_counts_as_the_base() {
+    let r = extract(
+        "int FUN_a(void)\n{\n  byte *p;\n  p = (byte *)unaff_A2;\n  return *(short *)(p + 0x1c);\n}\n",
+    );
+    assert!(reads(&r, "FUN_a", "unaff_A2+0x1c"), "{:?}", field_names(&r));
+    assert!(field_entity(&r, "p+0x1c").is_none());
+    let r =
+        extract("int FUN_a(void)\n{\n  byte *p = unaff_A2;\n  return *(short *)(p + 0x1c);\n}\n");
+    assert!(reads(&r, "FUN_a", "unaff_A2+0x1c"), "{:?}", field_names(&r));
+}
+
+#[test]
+fn reassigned_local_has_no_alias() {
+    for body in [
+        "byte *p;\n  p = unaff_A2;\n  p = p + 4;\n  return *(short *)(p + 0x1c);",
+        "byte *p;\n  p = unaff_A2;\n  p = other;\n  return *(short *)(p + 0x1c);",
+        "byte *p;\n  p = unaff_A2;\n  p++;\n  return *(short *)(p + 0x1c);",
+        "byte *p = unaff_A2;\n  p = other;\n  return *(short *)(p + 0x1c);",
+    ] {
+        let r = extract(&format!("int FUN_a(void)\n{{\n  {body}\n}}\n"));
+        assert!(field_names(&r).is_empty(), "{body}: {:?}", field_names(&r));
+    }
 }

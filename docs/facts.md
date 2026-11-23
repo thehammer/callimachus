@@ -119,7 +119,7 @@ offset (see "Field accesses" in `c-free-identifiers.md`):
 ```json
 {"id": "layout.obj", "kind": "layout", "topic": "other", "summary": "Active object record",
  "data": {"name": "obj", "bases": ["unaff_A2", "in_A2"],
-          "functions": {"include": [], "exclude": ["FUN_00001a58"]},
+          "functions": ["FUN_00001c04", "FUN_00001d20"],
           "fields": [{"offset": "0x10", "name": "x", "type": "s16", "summary": "x position, whole pixels", "confidence": "confirmed"},
                      {"offset": "0x12", "name": "y", "type": "s16"}]},
  "confidence": "inferred", "evidence": ["ev.dec-objects"]}
@@ -133,16 +133,34 @@ layout's. Optional `registers` maps a base to its CPU register
 (`{"unaff_A2": "a2"}`); otherwise a base ending `_<letter><digit>` gives the
 register (`unaff_A2` → `a2`).
 
-**Anchoring.** For each field and base, the entity `{corpus}:{base lowercased}+0x{off}`
-is an anchor (so import after indexing). Each anchor gets the virtual alias
-`{name}.{field}` (`obj.x`), so `entity obj.x` resolves, and `entity_edges` lists
-its readers and writers. The entity output shows a synthetic fact
-`layout.obj.x` of kind `field`: summary is the field's `summary` or `obj.x`,
-confidence the field's or the layout's. Anchoring is corpus-wide, so one field
-entity is shared by every function using that base.
+**Scoping.** Register-style bases (`in_*`, `unaff_*`, `extraout_*`, with or
+without a `_NN` suffix) are named after a register at a function's entry, so
+`in_A0` in one function is usually a different object from `in_A0` in another.
+`data.functions` lists the functions (ids, names or `0x` addresses) a layout is
+scoped to; it may also be `{"include": [..], "exclude": [..]}`.
 
-**Annotation.** `functions.include` / `exclude` (function names; empty include
-= all) restrict where the layout applies when annotating source. `read` with
+- With `functions`, anchors are only the field entities accessed in those
+  functions. A register-style base gives one function-qualified entity per
+  function; any other base gives its shared entity when one of the functions
+  accesses it.
+- Without `functions`, a register-style base does **not** anchor. Import warns
+  `layout <id>: base <b> is per-function; give data.functions` (counted in
+  `warnings`). Any other base (a real global, a named struct pointer, a
+  parameter) anchors globally.
+
+**Anchoring.** Field entities of register-style bases are function-qualified:
+id `{corpus}:{base lowercased}+0x{off}@{function lowercased}`, name
+`{base}+0x{off}`. Other bases keep `{corpus}:{base lowercased}+0x{off}`, shared
+by every function. Each anchor gets the virtual alias `{name}.{field}` (`obj.x`),
+so `entity obj.x` resolves (ambiguously when it spans several functions;
+`entity_edges` lists the readers and writers of each). The entity output shows a
+synthetic fact `layout.obj.x` of kind `field`: summary is the field's `summary`
+or `obj.x`, confidence the field's or the layout's. A field entity anchored by a
+layout takes `confidence_score` of that confidence instead of the adapter's 0.5.
+`calli facts show` prints the facts anchored on each entity, tagged `(inferred)`
+or `(unknown)` when not confirmed.
+
+**Annotation.** `functions` (names or ids; `exclude` removes some; empty = all) restricts where the layout applies when annotating source. `read` with
 `annotate: true` (MCP) and `calli inspect chunk <location> --annotate` rewrite
 C as `unaff_A2->x /* obj+0x10 s16 */`; in binary-export chunks, disassembly
 comments with an operand `$10(a2)`, `0x10(a2)` or `($10,a2)` on a field's

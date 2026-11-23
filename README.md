@@ -261,7 +261,8 @@ calli correct …                     (deprecated alias for calli scholion apply
 # Facts (see docs/facts.md)
 calli facts import <id> <path>... [--prune]   Import confirmed facts as scholia
 calli facts list <id> [--kind k] [--topic t] [--json]
-calli facts show <id> <fact-id>
+calli facts show <id> <fact-id>   Also prints facts anchored on each entity, tagged (inferred)/(unknown)
+#   layout facts: register-style bases (in_*, unaff_*, extraout_*) need data.functions
 #   confidence: confirmed=1.0, inferred=0.6, unknown=0.3 (see docs/facts.md)
 
 # Cross-corpus

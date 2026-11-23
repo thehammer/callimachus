@@ -727,9 +727,14 @@ async fn field_access_in_decompiled_c_becomes_a_field_entity() {
     let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
     index(dir.path(), db.clone(), Arc::new(BinExportAdapter::new())).await;
 
-    let f = entity(&db, "unaff_a2+0x10");
+    let f = entity(&db, "unaff_a2+0x10@fun_00002000");
     assert_eq!(f.kind, "field");
-    assert!(has_edge(&db, "writes", "fun_00002000", "unaff_a2+0x10"));
+    assert!(has_edge(
+        &db,
+        "writes",
+        "fun_00002000",
+        "unaff_a2+0x10@fun_00002000"
+    ));
 }
 
 fn obj_x(register: Option<&str>) -> callimachus_adapter_contract::FieldName {

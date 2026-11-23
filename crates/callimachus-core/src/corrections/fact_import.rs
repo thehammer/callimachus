@@ -6,7 +6,7 @@ use crate::corrections::address::{
 };
 use crate::corrections::engine::CorrectionsEngine;
 use crate::corrections::facts::{FactRecord, confidence_score};
-use crate::corrections::layouts::Layout;
+use crate::corrections::layouts::{Layout, is_register_base};
 use crate::corrections::types::CorrectionKind;
 use crate::error::{CalError, Result};
 use crate::storage::StorageBackend;
@@ -96,16 +96,22 @@ pub fn import(
     }
 
     let entity_ids: HashSet<&str> = entities.iter().map(|e| e.id.as_str()).collect();
+    let mut anchor_warnings: Vec<String> = Vec::new();
 
     for rec in &records {
         let anchors = anchors_for(
             rec,
             corpus_id,
-            &by_addr,
-            &entity_ids,
-            mask,
-            cpu_spaces.as_deref(),
-        );
+            &Anchoring {
+                db,
+                entities: &entities,
+                by_addr: &by_addr,
+                entity_ids: &entity_ids,
+                mask,
+                cpu_spaces: cpu_spaces.as_deref(),
+            },
+            &mut anchor_warnings,
+        )?;
         if !anchors.is_empty() {
             report.anchored += 1;
         }
@@ -155,7 +161,10 @@ pub fn import(
         }
     }
 
-    report.warnings = rebuild_variant_edges(db, corpus_id, mask)?;
+    report.warnings = anchor_warnings;
+    report
+        .warnings
+        .extend(rebuild_variant_edges(db, corpus_id, mask)?);
     Ok(report)
 }
 
@@ -250,30 +259,97 @@ fn space_anchors(rec: &FactRecord, cpu_spaces: Option<&[String]>) -> bool {
     }
 }
 
+/// What anchoring looks entities up in.
+struct Anchoring<'a> {
+    db: &'a dyn StorageBackend,
+    entities: &'a [Entity],
+    by_addr: &'a HashMap<u64, Vec<&'a Entity>>,
+    entity_ids: &'a HashSet<&'a str>,
+    mask: Option<u64>,
+    cpu_spaces: Option<&'a [String]>,
+}
+
+/// Function entities named by a layout's `data.functions` entries (id, name
+/// or address).
+fn scoped_functions<'a>(layout: &Layout, ctx: &Anchoring<'a>) -> Vec<&'a Entity> {
+    let mut out: Vec<&Entity> = Vec::new();
+    for entry in &layout.include {
+        let lower = entry.to_lowercase();
+        let by_address =
+            parse_address(entry).and_then(|a| ctx.by_addr.get(&apply_mask(a, ctx.mask)));
+        let hits = ctx.entities.iter().filter(|e| {
+            e.kind == "function"
+                && (e.id == lower
+                    || e.canonical_name.eq_ignore_ascii_case(entry)
+                    || e.aliases.iter().any(|a| a.eq_ignore_ascii_case(entry))
+                    || by_address.is_some_and(|v| v.iter().any(|x| x.id == e.id)))
+        });
+        for e in hits {
+            if !out.iter().any(|o| o.id == e.id) {
+                out.push(e);
+            }
+        }
+    }
+    out
+}
+
+/// Anchors of a layout: the field entities `{base}+0x{off}` that exist. A
+/// register-style base is per function, so it anchors only inside
+/// `data.functions` (and warns when that is absent); a scoped layout anchors
+/// only entities some in-scope function accesses.
+fn layout_anchors(
+    layout: &Layout,
+    fact_id: &str,
+    corpus_id: &str,
+    ctx: &Anchoring<'_>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<String>> {
+    let functions = scoped_functions(layout, ctx);
+    if !layout.is_scoped() {
+        for b in layout.register_bases() {
+            warnings.push(format!(
+                "layout {fact_id}: base {b} is per-function; give data.functions"
+            ));
+        }
+    }
+    let names: Vec<String> = functions.iter().map(|f| f.canonical_name.clone()).collect();
+    let mut ids: BTreeSet<String> = layout
+        .anchor_ids(corpus_id, &names)
+        .into_iter()
+        .filter(|id| ctx.entity_ids.contains(id.as_str()))
+        .collect();
+    if layout.is_scoped() && layout.bases.iter().any(|b| !is_register_base(b)) {
+        // Shared (non-register) entities: keep those an in-scope function touches.
+        let in_scope: HashSet<&str> = functions.iter().map(|f| f.id.as_str()).collect();
+        let touched: HashSet<String> = ctx
+            .db
+            .edge_list(corpus_id)?
+            .into_iter()
+            .filter(|e| in_scope.contains(e.from_entity_id.as_str()))
+            .map(|e| e.to_entity_id)
+            .collect();
+        ids.retain(|id| id.contains('@') || touched.contains(id));
+    }
+    Ok(ids.into_iter().collect())
+}
+
 fn anchors_for(
     rec: &FactRecord,
     corpus_id: &str,
-    by_addr: &HashMap<u64, Vec<&Entity>>,
-    entity_ids: &HashSet<&str>,
-    mask: Option<u64>,
-    cpu_spaces: Option<&[String]>,
-) -> Vec<String> {
-    // A layout anchors to the field entities `{base}+0x{off}` that exist.
+    ctx: &Anchoring<'_>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<String>> {
     if let Some(layout) = Layout::of_fact(rec) {
-        let ids: BTreeSet<String> = layout
-            .anchor_ids(corpus_id)
-            .into_iter()
-            .filter(|id| entity_ids.contains(id.as_str()))
-            .collect();
-        return ids.into_iter().collect();
+        return layout_anchors(&layout, &rec.id, corpus_id, ctx, warnings);
     }
+    let (by_addr, mask, cpu_spaces) = (ctx.by_addr, ctx.mask, ctx.cpu_spaces);
     if !matches!(rec.kind.as_str(), "variable" | "table" | "routine")
         || !space_anchors(rec, cpu_spaces)
     {
-        return vec![];
+        return Ok(vec![]);
     }
     let Some(addr) = rec.address().and_then(parse_address) else {
-        return vec![];
+        return Ok(vec![]);
     };
     let mut hits: Vec<&Entity> = by_addr
         .get(&apply_mask(addr, mask))
@@ -283,7 +359,7 @@ fn anchors_for(
         hits.retain(|e| e.kind == "function");
     }
     let ids: BTreeSet<String> = hits.iter().map(|e| e.id.clone()).collect();
-    ids.into_iter().collect()
+    Ok(ids.into_iter().collect())
 }
 
 fn materialise(

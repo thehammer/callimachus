@@ -1,4 +1,4 @@
-use crate::corrections::facts::FactRecord;
+use crate::corrections::facts::{FactRecord, confidence_score};
 use crate::corrections::layouts::{LAYOUT_KIND, Layout};
 use crate::corrections::types::{Correction, CorrectionKind};
 use crate::error::Result;
@@ -196,17 +196,28 @@ impl CorrectionsEngine {
             }
             let layout = Layout::of_fact(entry.fact);
             for anchor in entry.anchors {
-                let alias = match (&layout, entry.corpus_id) {
+                let (alias, confidence) = match (&layout, entry.corpus_id) {
                     (Some(l), Some(corpus)) => match l.field_for_anchor(corpus, anchor) {
-                        Some(f) => l.qualified(f),
+                        // A layout field's confidence, else the layout's.
+                        Some(f) => (
+                            l.qualified(f),
+                            Some(confidence_score(
+                                f.confidence.as_deref().unwrap_or(&entry.fact.confidence),
+                            )),
+                        ),
                         None => continue,
                     },
-                    _ => entry.fact.id.clone(),
+                    _ => (entry.fact.id.clone(), None),
                 };
                 let target = find(&parent, anchor);
                 for e in entities.iter_mut() {
-                    if e.id == target && !e.aliases.contains(&alias) {
-                        e.aliases.push(alias.clone());
+                    if e.id == target {
+                        if !e.aliases.contains(&alias) {
+                            e.aliases.push(alias.clone());
+                        }
+                        if let Some(c) = confidence {
+                            e.confidence = c;
+                        }
                     }
                 }
             }
