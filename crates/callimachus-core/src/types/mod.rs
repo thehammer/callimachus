@@ -22,7 +22,7 @@ pub use corpus::{Corpus, CorpusStatus};
 pub use edge::Edge;
 pub use entity::Entity;
 pub use location::Location;
-pub use pass::{Pass, RunStatus, parse_passes_list};
+pub use pass::{DECOMPILE_PASSES, Pass, RunStatus, parse_passes_list};
 pub use provenance::{
     ArchiveSet, ArchiveStats, CachedArtifact, Layer2CacheKey, Provenance, RefineOutcome, Tombstone,
 };

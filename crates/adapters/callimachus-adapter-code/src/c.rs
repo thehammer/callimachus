@@ -42,6 +42,66 @@ pub fn canonical_address(v: u64) -> String {
     format!("0x{v:x}")
 }
 
+/// Plain C / Ghidra type names that decompiled C uses as bare identifiers
+/// (casts, `sizeof`, undeclared typedefs). They are not globals.
+const NON_VARIABLE_TYPE_NAMES: &[&str] = &[
+    "uint",
+    "ushort",
+    "ulong",
+    "uchar",
+    "byte",
+    "word",
+    "dword",
+    "qword",
+    "bool",
+    "char",
+    "short",
+    "int",
+    "long",
+    "float",
+    "double",
+    "void",
+    "undefined",
+    "code",
+    "pointer",
+    "addr",
+];
+
+/// Decompiler pseudo-name prefixes followed by a suffix (hex digits, a number
+/// or a register name) that never denote a global: switch/case labels,
+/// register pseudo-variables, unresolved-register locals and `local_`/`param_`
+/// stack slots.
+const NON_VARIABLE_PREFIXES: &[&str] = &[
+    "switchD_",
+    "caseD_",
+    "register0x",
+    "in_",
+    "unaff_",
+    "extraout_",
+    "local_",
+    "param_",
+];
+
+/// True for identifiers that look like free variables to the extractor but are
+/// really C/Ghidra type names or decompiler pseudo-names. This is the single
+/// place that list lives; without it each of these became a `variable` entity
+/// with many incoming edges.
+fn is_non_variable_name(name: &str) -> bool {
+    if NON_VARIABLE_TYPE_NAMES.contains(&name) {
+        return true;
+    }
+    // `undefined1`, `undefined4`, ...
+    if let Some(n) = name.strip_prefix("undefined")
+        && !n.is_empty()
+        && n.bytes().all(|b| b.is_ascii_digit())
+    {
+        return true;
+    }
+    NON_VARIABLE_PREFIXES
+        .iter()
+        .any(|p| name.strip_prefix(p).is_some_and(|rest| !rest.is_empty()))
+}
+
 /// Tree-sitter query for top-level items; used by the chunker.
 pub const C_TOP_LEVEL_QUERY: &str = r#"
 (translation_unit
@@ -419,7 +479,10 @@ fn analyse_function(
             }
             "identifier" => {
                 let name = text_of(n, source);
-                if !bound.contains(&name) && !enum_constants.contains(&name) {
+                if !bound.contains(&name)
+                    && !enum_constants.contains(&name)
+                    && !is_non_variable_name(&name)
+                {
                     let table = is_table_use(n, &name);
                     let access = accesses.entry(name).or_default();
                     access.uses_table |= table;

@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use callimachus_llm::{LlmProvider, model_tier};
@@ -42,6 +43,16 @@ pub async fn run(
     }
 
     let levels = adapter.summary_levels();
+    let filter = opts
+        .entity_filter
+        .clone()
+        .resolved(&corpus.id, db.as_ref())?;
+    // Chunk ids chosen by the entity filter, accumulated level by level so a
+    // parent is selected when any of its children is.
+    let mut selected: HashSet<String> = HashSet::new();
+    // In an estimate run nothing is written, so summaries the run "produces"
+    // are kept here for the upper levels to read.
+    let mut estimated: HashMap<String, Summary> = HashMap::new();
 
     tracing::info!(
         "[summarize] {} levels declared by adapter: {:?}",
@@ -51,7 +62,24 @@ pub async fn run(
 
     // ── Level-by-level summaries ──────────────────────────────────────────────
     for (level_idx, &level_kind) in levels.iter().enumerate() {
-        let level_chunks: Vec<_> = all_chunks.iter().filter(|c| c.kind == level_kind).collect();
+        let level_chunks: Vec<_> = all_chunks
+            .iter()
+            .filter(|c| c.kind == level_kind)
+            .filter(|c| {
+                if filter.is_all() {
+                    return true;
+                }
+                let child_selected = level_idx > 0
+                    && all_chunks.iter().any(|ch| {
+                        ch.kind == levels[level_idx - 1]
+                            && ch.parent_path.as_deref() == Some(&c.location.path)
+                            && selected.contains(&ch.id)
+                    });
+                child_selected
+                    || filter.matches_location(&corpus.id, &c.location.uri(), db.as_ref())
+            })
+            .collect();
+        selected.extend(level_chunks.iter().map(|c| c.id.clone()));
         let level_total = level_chunks.len() as u64;
 
         tracing::info!("[summarize] level '{level_kind}': {level_total} chunks");
@@ -72,19 +100,50 @@ pub async fn run(
             // Count child summaries for tier routing.
             let (context_chunk, child_summary_count) = if level_idx > 0 {
                 let child_kind = levels[level_idx - 1];
-                let child_summaries: Vec<String> = all_chunks
+                let children: Vec<_> = all_chunks
                     .iter()
                     .filter(|c| {
                         c.kind == child_kind
                             && c.parent_path.as_deref() == Some(&chunk.location.path)
                     })
+                    .collect();
+                let child_summaries: Vec<Summary> = children
+                    .iter()
                     .filter_map(|child| {
-                        db.summary_get(&corpus.id, &SummaryTargetKind::Chunk, &child.id)
-                            .ok()
-                            .flatten()
-                            .map(|s| s.text)
+                        chunk_summary(db.as_ref(), &estimated, &corpus.id, &child.id)
                     })
                     .collect();
+
+                // A parent with a single summarized child would only restate it.
+                if let ([_], [only], true) = (
+                    children.as_slice(),
+                    child_summaries.as_slice(),
+                    adapter.reuse_single_child_summary(),
+                ) {
+                    let reused = Summary {
+                        id: Uuid::new_v4().to_string(),
+                        target_id: chunk.id.clone(),
+                        depth: level_kind.to_string(),
+                        generated_at: chrono::Utc::now().to_rfc3339(),
+                        provenance: opts
+                            .change_manifest
+                            .as_ref()
+                            .map(|m| Provenance::concrete(m.current_version.as_str())),
+                        ..only.clone()
+                    };
+                    tracing::info!(
+                        "[summarize] reused {child_kind} summary for {level_kind} {}",
+                        chunk.id
+                    );
+                    if opts.estimate {
+                        estimated.insert(chunk.id.clone(), reused);
+                    } else if !opts.dry_run {
+                        db.summary_upsert(&reused)?;
+                    }
+                    stats.processed += 1;
+                    log_progress(level_kind, i as u64 + 1, level_total);
+                    continue;
+                }
 
                 let count = child_summaries.len() as u32;
                 if child_summaries.is_empty() {
@@ -94,7 +153,7 @@ pub async fn run(
                     c.content = child_summaries
                         .iter()
                         .enumerate()
-                        .map(|(j, s)| format!("{} {}: {s}", child_kind, j + 1))
+                        .map(|(j, s)| format!("{} {}: {}", child_kind, j + 1, s.text))
                         .collect::<Vec<_>>()
                         .join("\n\n");
                     (c, count)
@@ -155,7 +214,9 @@ pub async fn run(
                 Ok(Some(hit)) => Ok(Some(hit)),
                 Ok(None) => match adapter.summarize(&context_chunk, llm, level_kind).await {
                     Ok(Some(text)) => {
-                        if let Err(e) = layer2_cache::cache_put(db.as_ref(), &cache_key, &text, sha)
+                        if !opts.estimate
+                            && let Err(e) =
+                                layer2_cache::cache_put(db.as_ref(), &cache_key, &text, sha)
                         {
                             tracing::warn!("summary cache_put failed for {}: {e}", chunk.id);
                         }
@@ -168,7 +229,7 @@ pub async fn run(
 
             match summarized {
                 Ok(Some(text)) => {
-                    if !opts.dry_run {
+                    if !opts.dry_run || opts.estimate {
                         let version = opts
                             .change_manifest
                             .as_ref()
@@ -181,7 +242,11 @@ pub async fn run(
                             &llm_arc,
                             version,
                         );
-                        db.summary_upsert(&summary)?;
+                        if opts.estimate {
+                            estimated.insert(chunk.id.clone(), summary);
+                        } else {
+                            db.summary_upsert(&summary)?;
+                        }
                     }
                     stats.processed += 1;
                 }
@@ -205,6 +270,10 @@ pub async fn run(
     }
 
     // ── Corpus-level summary ──────────────────────────────────────────────────
+    // A corpus summary describes everything, so it only runs unfiltered.
+    if !filter.is_all() {
+        return Ok(stats);
+    }
     if !opts.full
         && db
             .summary_get(&corpus.id, &SummaryTargetKind::Corpus, &corpus.id)?
@@ -219,12 +288,8 @@ pub async fn run(
         all_chunks
             .iter()
             .filter(|c| c.kind == top_kind)
-            .filter_map(|ch| {
-                db.summary_get(&corpus.id, &SummaryTargetKind::Chunk, &ch.id)
-                    .ok()
-                    .flatten()
-                    .map(|s| s.text)
-            })
+            .filter_map(|ch| chunk_summary(db.as_ref(), &estimated, &corpus.id, &ch.id))
+            .map(|s| s.text)
             .collect()
     } else {
         // No levels declared — build corpus chunk from all-chunk content.
@@ -308,8 +373,9 @@ pub async fn run(
         Ok(Some(hit)) => Ok(Some(hit)),
         Ok(None) => match adapter.summarize(&corpus_chunk, corpus_llm, "corpus").await {
             Ok(Some(text)) => {
-                if let Err(e) =
-                    layer2_cache::cache_put(db.as_ref(), &corpus_cache_key, &text, corpus_sha)
+                if !opts.estimate
+                    && let Err(e) =
+                        layer2_cache::cache_put(db.as_ref(), &corpus_cache_key, &text, corpus_sha)
                 {
                     tracing::warn!("corpus summary cache_put failed: {e}");
                 }
@@ -322,7 +388,7 @@ pub async fn run(
 
     match corpus_summarized {
         Ok(Some(text)) => {
-            if !opts.dry_run {
+            if !opts.dry_run && !opts.estimate {
                 let model = corpus_llm.name().to_string();
                 let tier = model_tier(&model).to_string();
                 let provenance = opts
@@ -359,6 +425,20 @@ pub async fn run(
     }
 
     Ok(stats)
+}
+
+/// The summary for a chunk: one produced earlier in an estimate run, else stored.
+fn chunk_summary(
+    db: &dyn StorageBackend,
+    estimated: &HashMap<String, Summary>,
+    corpus_id: &str,
+    chunk_id: &str,
+) -> Option<Summary> {
+    estimated.get(chunk_id).cloned().or_else(|| {
+        db.summary_get(corpus_id, &SummaryTargetKind::Chunk, chunk_id)
+            .ok()
+            .flatten()
+    })
 }
 
 fn log_progress(kind: &str, completed: u64, total: u64) {

@@ -31,6 +31,12 @@ pub async fn run(
         return Ok(stats);
     }
 
+    // Themes are corpus-wide: they cannot be restricted to an entity subset.
+    if !opts.entity_filter.is_all() {
+        tracing::info!("[theme] entity filter active — skipping corpus-level themes");
+        return Ok(stats);
+    }
+
     // Skip when the manifest says nothing changed — theme detection is
     // corpus-wide and there's nothing useful to do if no sources are dirty.
     if opts
@@ -95,7 +101,10 @@ pub async fn run(
                 .await
             {
                 Ok(Some(fresh)) => {
-                    if let Err(e) = layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, &sha) {
+                    if !opts.estimate
+                        && let Err(e) =
+                            layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, &sha)
+                    {
                         tracing::warn!("theme cache_put failed for corpus {}: {e}", corpus.id);
                     }
                     Ok(Some(fresh))
@@ -106,6 +115,9 @@ pub async fn run(
         };
 
     match derived {
+        Ok(Some(_)) if opts.estimate => {
+            stats.processed += 1;
+        }
         Ok(Some(extracted)) => {
             let now = chrono::Utc::now().to_rfc3339();
             let version = opts

@@ -107,6 +107,10 @@ impl SourceAdapter for BinExportAdapter {
         vec!["function"]
     }
 
+    fn reuse_single_child_summary(&self) -> bool {
+        true
+    }
+
     async fn discover(&self, source: &str) -> Result<Vec<DiscoveredSource>> {
         let root = Path::new(source);
         if !root.is_dir() {
@@ -220,7 +224,10 @@ impl SourceAdapter for BinExportAdapter {
             e
         };
 
-        for t in bundle.tables_read_by(address) {
+        let (c_part, _) = content::split_content(&chunk.content);
+        let analysed: ExtractedCodeStructure = analyse_c(chunk, c_part)?;
+
+        let table_entity = |t: &bundle::TableRecord| -> Result<Entity> {
             let mut aliases = vec![canonical_of(&t.address)?];
             if let Some(entry) = &t.entry {
                 aliases.push(format!("entry:{entry}"));
@@ -229,15 +236,29 @@ impl SourceAdapter for BinExportAdapter {
                 aliases.push(format!("count:{n}"));
             }
             let desc = t.kind.as_deref().map(|k| format!("{k} table"));
-            let e = bundle_entity(&t.name, "table", aliases, desc);
+            Ok(bundle_entity(&t.name, "table", aliases, desc))
+        };
+        let port_entity = |p: &bundle::PortRecord| -> Result<Entity> {
+            let mut aliases = vec![canonical_of(&p.address)?];
+            aliases.extend(p.port.clone());
+            Ok(bundle_entity(&p.name, "port", aliases, None))
+        };
+        let ram_entity = |r: &bundle::RamRecord| -> Result<Entity> {
+            Ok(bundle_entity(
+                &r.name,
+                "variable",
+                vec![canonical_of(&r.address)?],
+                None,
+            ))
+        };
+
+        for t in bundle.tables_read_by(address) {
+            let e = table_entity(t)?;
             edges.push(bundle_edge("uses_table", &e.id));
             entities.push(e);
         }
         for a in bundle.ports_used_by(address) {
-            let p = a.record;
-            let mut aliases = vec![canonical_of(&p.address)?];
-            aliases.extend(p.port.clone());
-            let e = bundle_entity(&p.name, "port", aliases, None);
+            let e = port_entity(a.record)?;
             if a.reads {
                 edges.push(bundle_edge("reads", &e.id));
             }
@@ -247,8 +268,7 @@ impl SourceAdapter for BinExportAdapter {
             entities.push(e);
         }
         for a in bundle.ram_used_by(address) {
-            let r = a.record;
-            let e = bundle_entity(&r.name, "variable", vec![canonical_of(&r.address)?], None);
+            let e = ram_entity(a.record)?;
             if a.reads {
                 edges.push(bundle_edge("reads", &e.id));
             }
@@ -258,10 +278,51 @@ impl SourceAdapter for BinExportAdapter {
             entities.push(e);
         }
 
+        // Reconcile C-side variable stubs with bundle entities by address: the
+        // C spells a table `PTR_DAT_xxxx` where the bundle says `DAT_xxxx`.
+        // They are one entity; the bundle's id and name win and the C spelling
+        // becomes an alias. `remap` re-points the C edges.
+        let mut remap: HashMap<String, String> = HashMap::new();
+        let mut c_spellings: Vec<(String, String)> = Vec::new(); // (bundle id, C name)
+        let mut extra_bundle: Vec<Entity> = Vec::new();
+        for e in analysed.entities.iter().filter(|e| e.kind == "variable") {
+            let Some(addr) = e.aliases.iter().find_map(|a| {
+                a.strip_prefix("0x")
+                    .and_then(|h| u64::from_str_radix(h, 16).ok())
+            }) else {
+                continue;
+            };
+            let found = if let Some(t) = bundle.tables.iter().find(|t| addr_is(&t.address, addr)) {
+                Some(table_entity(t)?)
+            } else if let Some(p) = bundle.ports.iter().find(|p| addr_is(&p.address, addr)) {
+                Some(port_entity(p)?)
+            } else if let Some(r) = bundle.ram.iter().find(|r| addr_is(&r.address, addr)) {
+                Some(ram_entity(r)?)
+            } else {
+                None
+            };
+            let Some(be) = found else { continue };
+            if be.id != e.id {
+                remap.insert(e.id.clone(), be.id.clone());
+                c_spellings.push((be.id.clone(), e.canonical_name.clone()));
+                extra_bundle.push(be);
+            }
+        }
+        for be in extra_bundle {
+            if !entities.iter().any(|e| e.id == be.id) {
+                entities.push(be);
+            }
+        }
+        for (id, spelling) in c_spellings {
+            if let Some(e) = entities.iter_mut().find(|e| e.id == id)
+                && !e.aliases.contains(&spelling)
+            {
+                e.aliases.push(spelling);
+            }
+        }
+
         // C analysis of the C part. The synthetic per-chunk `file` entity and
         // its `defines` edges carry no information here, so they are dropped.
-        let (c_part, _) = content::split_content(&chunk.content);
-        let analysed: ExtractedCodeStructure = analyse_c(chunk, c_part)?;
         let file_ids: Vec<String> = analysed
             .entities
             .iter()
@@ -274,7 +335,11 @@ impl SourceAdapter for BinExportAdapter {
             edges.iter().map(|e| e.id.clone()).collect();
 
         let mut function_seen = false;
-        for mut e in analysed.entities.into_iter().filter(|e| e.kind != "file") {
+        for mut e in analysed
+            .entities
+            .into_iter()
+            .filter(|e| e.kind != "file" && !remap.contains_key(&e.id))
+        {
             if e.id == from_id {
                 function_seen = true;
                 if !e.aliases.contains(&canonical) {
@@ -292,11 +357,15 @@ impl SourceAdapter for BinExportAdapter {
                 entities.push(e);
             }
         }
-        for e in analysed
+        for mut e in analysed
             .edges
             .into_iter()
             .filter(|e| !(e.kind == "defines" && file_ids.contains(&e.from_entity_id)))
         {
+            if let Some(to) = remap.get(&e.to_entity_id) {
+                e.to_entity_id = to.clone();
+                e.id = edge_id(corpus, &e.from_entity_id, &e.kind, to, &e.origin_scope);
+            }
             if seen_edges.insert(e.id.clone()) {
                 edges.push(e);
             }
@@ -404,6 +473,10 @@ impl SourceAdapter for BinExportAdapter {
             .extract_contract(entity, &trimmed, summary, purpose, signals, llm)
             .await
     }
+}
+
+fn addr_is(text: &str, addr: u64) -> bool {
+    parse_address(text).is_ok_and(|a| a == addr)
 }
 
 fn canonical_of(address: &str) -> Result<String> {

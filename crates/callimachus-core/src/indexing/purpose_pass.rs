@@ -72,6 +72,10 @@ pub async fn run(
     // Determine concurrency width.
     let concurrency = opts.concurrency.unwrap_or(64);
 
+    let filter = opts
+        .entity_filter
+        .clone()
+        .resolved(&corpus.id, db.as_ref())?;
     let all_entities = db.entity_list(&corpus.id)?;
     // Authoritative file-shape map for cache keys, computed from live entity
     // state (covers entities created by the semantic pass, not only structural).
@@ -79,6 +83,7 @@ pub async fn run(
     let candidates: Vec<Entity> = all_entities
         .into_iter()
         .filter(|e| PURPOSE_KINDS.contains(&e.kind.as_str()))
+        .filter(|e| filter.matches(e, db.as_ref()))
         .filter(|e| {
             // Dirty files, plus any entity with no output yet (e.g. left over
             // from a run that stopped on quota), regardless of dirty state.
@@ -115,6 +120,7 @@ pub async fn run(
         current_version,
         file_shapes,
         stable_sampling: opts.stable_sampling,
+        estimate: opts.estimate,
         quota: QuotaGate::default(),
     });
 
@@ -148,15 +154,17 @@ pub async fn run(
                 stats.failed += 1;
             }
             PurposeOutcome::Extracted(ext) => {
-                db.purpose_upsert(&ext.purpose)?;
-                for be in &ext.block_entities {
-                    db.entity_upsert(be)?;
-                }
-                for block in &ext.blocks {
-                    db.block_upsert(&block.entity_block)?;
-                }
-                for edge in &ext.edges {
-                    db.edge_upsert(edge)?;
+                if !opts.estimate {
+                    db.purpose_upsert(&ext.purpose)?;
+                    for be in &ext.block_entities {
+                        db.entity_upsert(be)?;
+                    }
+                    for block in &ext.blocks {
+                        db.block_upsert(&block.entity_block)?;
+                    }
+                    for edge in &ext.edges {
+                        db.edge_upsert(edge)?;
+                    }
                 }
                 tier_counts[ext.tier as usize] += 1;
                 stats.processed += 1;
@@ -208,6 +216,8 @@ struct PassContext {
     /// `file_location_uri -> file_shape_hash`, the Layer-2 cache key boundary.
     file_shapes: HashMap<String, String>,
     stable_sampling: bool,
+    /// Render prompts only: never write cache entries.
+    estimate: bool,
     quota: QuotaGate,
 }
 
@@ -324,7 +334,10 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
             {
                 Ok(Some(fresh)) => {
                     let sha = ctx.current_version.as_deref().unwrap_or("");
-                    if let Err(e) = layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, sha) {
+                    if !ctx.estimate
+                        && let Err(e) =
+                            layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, sha)
+                    {
                         tracing::warn!("purpose cache_put failed for {}: {e}", entity.id);
                     }
                     Ok(Some(fresh))

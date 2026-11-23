@@ -77,6 +77,24 @@ enum Command {
         /// derived seed) so identical inputs yield byte-identical output.
         #[arg(long)]
         stable_sampling: bool,
+        /// Restrict the LLM passes to a subset of entities (repeatable; clauses OR).
+        /// Clauses: name:<glob>, kind:<kind>, id:<id or name>, callers-of:<name>,
+        /// callees-of:<name>, touches:<name>, @<file> (one clause per line).
+        #[arg(long = "entities")]
+        entities: Vec<String>,
+        /// Stop the run after this many LLM calls (resume by re-running).
+        #[arg(long)]
+        max_calls: Option<u64>,
+        /// Stop the run after roughly this many input tokens.
+        #[arg(long)]
+        max_input_tokens: Option<u64>,
+        /// Stop the run after this long (e.g. 90m, 4h, 1h30m).
+        #[arg(long)]
+        stop_after: Option<String>,
+        /// Print the expected cost per LLM pass without calling the LLM or
+        /// writing artifacts.
+        #[arg(long)]
+        estimate: bool,
     },
 
     /// Incremental reindex since a commit or date.
@@ -181,7 +199,7 @@ enum Command {
     /// `calli index <id>`, but also supports forward history walking via
     /// `--with-history`.
     Ingest {
-        /// Adapter kind: book, code, wiki.
+        /// Adapter kind: book, capture, code, wiki, binary-export (decompiler export bundle: per-function C and disassembly).
         kind: String,
         /// Human-readable name for this corpus.
         name: String,
@@ -219,6 +237,24 @@ enum Command {
         /// Pin Layer-2 LLM calls to deterministic sampling.
         #[arg(long)]
         stable_sampling: bool,
+        /// Restrict the LLM passes to a subset of entities (repeatable; clauses OR).
+        /// Clauses: name:<glob>, kind:<kind>, id:<id or name>, callers-of:<name>,
+        /// callees-of:<name>, touches:<name>, @<file> (one clause per line).
+        #[arg(long = "entities")]
+        entities: Vec<String>,
+        /// Stop the run after this many LLM calls (resume by re-running).
+        #[arg(long)]
+        max_calls: Option<u64>,
+        /// Stop the run after roughly this many input tokens.
+        #[arg(long)]
+        max_input_tokens: Option<u64>,
+        /// Stop the run after this long (e.g. 90m, 4h, 1h30m).
+        #[arg(long)]
+        stop_after: Option<String>,
+        /// Print the expected cost per LLM pass without calling the LLM or
+        /// writing artifacts.
+        #[arg(long)]
+        estimate: bool,
     },
 
     /// Show pipeline version status for all corpora.
@@ -274,6 +310,16 @@ enum InspectCommand {
         min_confidence: Option<f32>,
         #[arg(long)]
         limit: Option<usize>,
+    },
+    /// Dump the LLM artifacts (summary, purpose, contract) per entity, for evaluation.
+    Artifacts {
+        corpus_id: String,
+        /// Entity subset (repeatable); same clauses as `calli index --entities`.
+        #[arg(long = "entities")]
+        entities: Vec<String>,
+        /// Emit a JSON array instead of text blocks.
+        #[arg(long)]
+        json: bool,
     },
     /// Show a specific chunk by location URI.
     Chunk {
@@ -478,6 +524,11 @@ async fn main() -> Result<()> {
             no_git_filter,
             concurrency,
             stable_sampling,
+            entities,
+            max_calls,
+            max_input_tokens,
+            stop_after,
+            estimate,
         } => {
             let db = open_db(&db_path)?;
             commands::index::run(
@@ -489,6 +540,13 @@ async fn main() -> Result<()> {
                 no_git_filter,
                 concurrency,
                 stable_sampling,
+                commands::run_control::RunControl {
+                    entities,
+                    max_calls,
+                    max_input_tokens,
+                    stop_after,
+                    estimate,
+                },
                 None,
                 db,
                 &global_config,
@@ -625,6 +683,11 @@ async fn main() -> Result<()> {
             dry_run,
             passes,
             stable_sampling,
+            entities,
+            max_calls,
+            max_input_tokens,
+            stop_after,
+            estimate,
         } => {
             let db = open_db(&db_path)?;
             commands::ingest::run(
@@ -638,6 +701,13 @@ async fn main() -> Result<()> {
                 concurrency,
                 passes,
                 stable_sampling,
+                commands::run_control::RunControl {
+                    entities,
+                    max_calls,
+                    max_input_tokens,
+                    stop_after,
+                    estimate,
+                },
                 provider,
                 db,
                 &global_config,
@@ -716,6 +786,19 @@ fn run_inspect(sub: InspectCommand, db: Arc<dyn StorageBackend>) -> Result<()> {
                 ]);
             }
             table.print();
+        }
+
+        InspectCommand::Artifacts {
+            corpus_id,
+            entities,
+            json,
+        } => {
+            let records = commands::inspect::run_artifacts(&corpus_id, &entities, db.as_ref())?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&records)?);
+            } else {
+                print!("{}", commands::inspect::format_artifacts(&records));
+            }
         }
 
         InspectCommand::Chunk { location, annotate } => {

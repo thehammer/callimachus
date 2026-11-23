@@ -11,6 +11,7 @@ pub mod link;
 pub mod mcp;
 pub mod pinakes;
 pub mod reindex;
+pub mod run_control;
 pub mod serve;
 pub mod status;
 pub mod upgrade;

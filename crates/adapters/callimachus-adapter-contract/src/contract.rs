@@ -129,6 +129,13 @@ pub trait SourceAdapter: Send + Sync {
         vec![]
     }
 
+    /// Whether a parent with exactly one summarized child may reuse the
+    /// child's summary instead of spending an LLM call. Default: false, so
+    /// roll-ups (chapters, sections) are always written afresh.
+    fn reuse_single_child_summary(&self) -> bool {
+        false
+    }
+
     /// Told which corpus (and source) a pass is about to run for, so an adapter
     /// that keeps per-corpus state can recover it in a run that skips `chunk`
     /// (e.g. `--pass structure` alone). Default: no-op.

@@ -6,12 +6,13 @@ use callimachus_core::{
     adapter::SourceAdapter,
     indexing::{IndexOptions, IndexPipeline},
     storage::StorageBackend,
-    types::{Corpus, Pass},
+    types::{Corpus, Pass, parse_passes_list},
 };
 use callimachus_llm::{
-    EmbeddingProviderConfig, ProviderConfig, build_embedding_provider, build_provider,
+    EmbeddingProviderConfig, LlmProvider, ProviderConfig, build_embedding_provider, build_provider,
 };
 
+use crate::commands::run_control::{EstimateProfile, RunControl, print_estimate};
 use crate::config::GlobalConfig;
 
 #[allow(clippy::too_many_arguments)]
@@ -24,6 +25,7 @@ pub async fn run(
     no_git_filter: bool,
     concurrency: Option<usize>,
     stable_sampling: bool,
+    control: RunControl,
     provider_override: Option<String>,
     db: Arc<dyn StorageBackend>,
     config: &GlobalConfig,
@@ -40,18 +42,23 @@ pub async fn run(
 
     // Build LLM provider.
     let provider_config = resolve_provider(provider_override, config)?;
+    let profile = EstimateProfile::for_provider(&provider_config, config, concurrency);
     let llm = build_provider(provider_config)
         .map_err(|e| anyhow::anyhow!("failed to build LLM provider: {e}"))?;
+    let mut llm: Arc<dyn LlmProvider> = Arc::new(llm);
+    if control.estimate {
+        llm = profile.provider(llm);
+    }
 
     // Resolve adapter via the registry (single selection path for all commands).
     let registry = default_registry();
     let adapter = resolve_adapter(&corpus, &registry)?;
 
     // Build index options.
-    let passes = resolve_passes(pass)?;
+    let passes = resolve_passes(pass.or_else(|| corpus_passes(&corpus)))?;
 
     // Fail-fast: if embed was requested, the embedding config must be usable.
-    let embed_requested = passes.contains(&Pass::Embed);
+    let embed_requested = passes.contains(&Pass::Embed) && !control.estimate;
     let embedder = if embed_requested {
         let embed_cfg = build_embedding_provider_config(config);
         match build_embedding_provider(embed_cfg) {
@@ -70,10 +77,10 @@ pub async fn run(
         None
     };
 
-    let opts = IndexOptions {
+    let mut opts = IndexOptions {
         passes,
         from_chunk,
-        dry_run,
+        dry_run: dry_run && !control.estimate,
         full,
         no_git_filter,
         concurrency,
@@ -82,19 +89,27 @@ pub async fn run(
         change_manifest: None,
         ..IndexOptions::default()
     };
+    control.apply(&mut opts)?;
 
     let dry_label = if dry_run { " [dry-run]" } else { "" };
     eprintln!("Indexing corpus '{}'{dry_label}…", corpus.id);
 
     // Run pipeline.
+    let report_db = Arc::clone(&db);
     let pipeline = IndexPipeline {
         db,
         adapter,
-        llm: Arc::new(llm),
+        llm,
         embedder,
     };
 
     let result = pipeline.run(&corpus, opts).await?;
+
+    if control.estimate {
+        let summaries_present = !report_db.summary_list(&corpus.id)?.is_empty();
+        print_estimate(&result, &profile, summaries_present);
+        return Ok(());
+    }
 
     // Print summary.
     println!("Done.");
@@ -285,44 +300,60 @@ pub fn resolve_provider(
     }
 }
 
-fn resolve_passes(pass: Option<String>) -> Result<Vec<Pass>> {
-    match pass.as_deref() {
-        None => Ok(vec![
-            Pass::History,
-            Pass::Chunk,
-            Pass::Structure,
-            Pass::Semantic,
-            Pass::Aliases,
-            Pass::Summarize,
-            Pass::Purpose,
-            Pass::Contract,
-            Pass::Theme,
-        ]),
-        Some("all") => Ok(vec![
-            Pass::History,
-            Pass::Chunk,
-            Pass::Structure,
-            Pass::Semantic,
-            Pass::Aliases,
-            Pass::Summarize,
-            Pass::Purpose,
-            Pass::Contract,
-            Pass::Theme,
-            Pass::Embed,
-        ]),
-        Some("history") => Ok(vec![Pass::History]),
-        Some("chunk") => Ok(vec![Pass::Chunk]),
-        Some("structure") => Ok(vec![Pass::Structure]),
-        Some("semantic") => Ok(vec![Pass::Semantic]),
-        Some("aliases") => Ok(vec![Pass::Aliases]),
-        Some("summarize") => Ok(vec![Pass::Summarize]),
-        Some("purpose") => Ok(vec![Pass::Purpose]),
-        Some("contract") => Ok(vec![Pass::Contract]),
-        Some("theme") => Ok(vec![Pass::Theme]),
-        Some("embed") => Ok(vec![Pass::Embed]),
-        Some(other) => bail!(
-            "unknown pass '{other}'; use: all, history, chunk, structure, semantic, aliases, summarize, purpose, contract, theme, embed"
-        ),
+/// Passes named by the corpus config key `"passes"` (a string or a list).
+fn corpus_passes(corpus: &Corpus) -> Option<String> {
+    match corpus.config.get("passes")? {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Array(items) => {
+            let names: Vec<&str> = items.iter().filter_map(|v| v.as_str()).collect();
+            (!names.is_empty()).then(|| names.join(","))
+        }
+        _ => None,
+    }
+}
+
+/// Resolve `--pass`: one name or profile (`all`, `decompile`, `default`), or a
+/// comma list of them. Passes run in pipeline order whatever order was given.
+pub(crate) fn resolve_passes(pass: Option<String>) -> Result<Vec<Pass>> {
+    let Some(spec) = pass else {
+        return resolve_passes(Some("default".to_string()));
+    };
+    let mut passes: Vec<Pass> = Vec::new();
+    for token in spec.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+        let expanded = if token == "all" {
+            let mut all = parse_passes_list("default").map_err(|e| anyhow::anyhow!(e))?;
+            all.push(Pass::Embed);
+            all
+        } else {
+            parse_passes_list(token).map_err(|e| {
+                anyhow::anyhow!("{e}; also accepted: all, decompile (profiles), comma lists")
+            })?
+        };
+        for p in expanded {
+            if !passes.contains(&p) {
+                passes.push(p);
+            }
+        }
+    }
+    if passes.is_empty() {
+        bail!("--pass requires at least one pass name");
+    }
+    passes.sort_by_key(pass_rank);
+    Ok(passes)
+}
+
+fn pass_rank(pass: &Pass) -> u8 {
+    match pass {
+        Pass::History => 0,
+        Pass::Chunk => 1,
+        Pass::Structure => 2,
+        Pass::Semantic => 3,
+        Pass::Aliases => 4,
+        Pass::Summarize => 5,
+        Pass::Purpose => 6,
+        Pass::Contract => 7,
+        Pass::Theme => 8,
+        Pass::Embed => 9,
     }
 }
 
@@ -333,6 +364,7 @@ mod tests {
     use callimachus_core::storage::{SqliteBackend, StorageBackend};
     use callimachus_core::types::Corpus;
 
+    use crate::commands::run_control::RunControl;
     use crate::config::GlobalConfig;
 
     async fn run_index(
@@ -349,6 +381,7 @@ mod tests {
             false,
             None,
             false, // stable_sampling
+            RunControl::default(),
             Some("dry-run".to_string()),
             db,
             &GlobalConfig::default(),
@@ -366,6 +399,7 @@ mod tests {
             false,
             None,
             false, // stable_sampling
+            RunControl::default(),
             Some("dry-run".to_string()),
             db,
             &GlobalConfig::default(),
@@ -435,6 +469,7 @@ mod tests {
             false,
             None,
             false, // stable_sampling
+            RunControl::default(),
             Some("dry-run".to_string()),
             Arc::clone(&db),
             &GlobalConfig::default(),
@@ -647,6 +682,7 @@ mod tests {
             false,
             None,
             false,
+            RunControl::default(),
             Some("dry-run".to_string()),
             db,
             &GlobalConfig::default(),
@@ -662,5 +698,167 @@ mod tests {
             msg.contains("embed") || msg.contains("embedding") || msg.contains("[embedding]"),
             "error should mention embed/embedding config: {msg}"
         );
+    }
+
+    // ── Run control on a tiny C corpus ──────────────────────────────────────
+
+    fn c_corpus() -> (tempfile::TempDir, Arc<dyn StorageBackend>) {
+        let dir = tempfile::tempdir().unwrap();
+        for (file, body) in [
+            ("fun_a.c", "void fun_a(void) {\n  fun_b();\n}\n"),
+            ("fun_b.c", "void fun_b(void) {\n  DAT_00001000 = 1;\n}\n"),
+            ("fun_c.c", "int fun_c(int x) {\n  return x + 1;\n}\n"),
+            ("fun_d.c", "void fun_d(void) {\n  fun_c(2);\n}\n"),
+        ] {
+            std::fs::write(dir.path().join(file), body).unwrap();
+        }
+        let db: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::open_in_memory().unwrap());
+        db.corpus_insert(&Corpus::new(
+            "c4".to_string(),
+            "C4".to_string(),
+            "code".to_string(),
+            dir.path().display().to_string(),
+        ))
+        .unwrap();
+        (dir, db)
+    }
+
+    async fn index_c(
+        db: &Arc<dyn StorageBackend>,
+        pass: &str,
+        control: RunControl,
+    ) -> anyhow::Result<()> {
+        super::run(
+            "c4",
+            Some(pass.to_string()),
+            None,
+            false,
+            false,
+            true, // no_git_filter
+            Some(4),
+            false,
+            control,
+            Some("dry-run".to_string()),
+            Arc::clone(db),
+            &GlobalConfig::default(),
+        )
+        .await
+    }
+
+    #[test]
+    fn decompile_profile_expands_to_four_passes() {
+        use callimachus_core::types::Pass::*;
+        assert_eq!(
+            super::resolve_passes(Some("decompile".into())).unwrap(),
+            vec![Chunk, Structure, Summarize, Purpose]
+        );
+    }
+
+    #[test]
+    fn comma_lists_and_profiles_resolve_in_pipeline_order() {
+        use callimachus_core::types::Pass::*;
+        assert_eq!(
+            super::resolve_passes(Some("purpose, chunk,summarize".into())).unwrap(),
+            vec![Chunk, Summarize, Purpose]
+        );
+        assert_eq!(
+            super::resolve_passes(Some("decompile,contract".into())).unwrap(),
+            vec![Chunk, Structure, Summarize, Purpose, Contract]
+        );
+        assert!(super::resolve_passes(Some("bogus".into())).is_err());
+        assert!(
+            super::resolve_passes(Some("all".into()))
+                .unwrap()
+                .contains(&Embed)
+        );
+    }
+
+    #[test]
+    fn corpus_config_passes_key_is_a_string_or_list() {
+        let mut c = Corpus::new("x".into(), "x".into(), "code".into(), "/tmp".into());
+        assert_eq!(super::corpus_passes(&c), None);
+        c.config = serde_json::json!({"passes": "decompile"});
+        assert_eq!(super::corpus_passes(&c).as_deref(), Some("decompile"));
+        c.config = serde_json::json!({"passes": ["chunk", "structure"]});
+        assert_eq!(super::corpus_passes(&c).as_deref(), Some("chunk,structure"));
+    }
+
+    #[tokio::test]
+    async fn estimate_on_c_corpus_writes_no_artifacts() {
+        let (_dir, db) = c_corpus();
+        index_c(&db, "chunk,structure", RunControl::default())
+            .await
+            .unwrap();
+        assert!(db.entity_count("c4").unwrap() >= 4);
+        let runs_before = db.run_latest("c4", 50).unwrap().len();
+
+        index_c(
+            &db,
+            "decompile",
+            RunControl {
+                entities: vec!["name:fun_*".into()],
+                estimate: true,
+                ..RunControl::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(db.summary_list("c4").unwrap().is_empty());
+        assert!(db.purpose_list("c4").unwrap().is_empty());
+        assert_eq!(db.run_latest("c4", 50).unwrap().len(), runs_before);
+
+        // A real, filtered run afterwards: only the matching entity, resumable.
+        index_c(
+            &db,
+            "purpose",
+            RunControl {
+                entities: vec!["callers-of:fun_b".into()],
+                ..RunControl::default()
+            },
+        )
+        .await
+        .unwrap();
+        let purposes = db.purpose_list("c4").unwrap();
+        assert_eq!(purposes.len(), 1);
+        assert!(purposes[0].entity_id.ends_with("fun_a"), "{purposes:?}");
+    }
+
+    #[tokio::test]
+    async fn inspect_artifacts_json_has_expected_keys() {
+        let (_dir, db) = c_corpus();
+        index_c(
+            &db,
+            "chunk,structure,summarize,purpose",
+            RunControl::default(),
+        )
+        .await
+        .unwrap();
+        let records =
+            crate::commands::inspect::run_artifacts("c4", &["name:fun_c".to_string()], db.as_ref())
+                .unwrap();
+        assert_eq!(records.len(), 1);
+        let json = serde_json::to_string_pretty(&records).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let first = &v.as_array().unwrap()[0];
+        for key in [
+            "id",
+            "name",
+            "kind",
+            "location",
+            "summary",
+            "purpose",
+            "purpose_model",
+            "contract",
+            "run_timestamp",
+        ] {
+            assert!(first.get(key).is_some(), "missing key {key}: {json}");
+        }
+        assert_eq!(first["name"], "fun_c");
+        assert!(first["purpose"].is_string(), "{json}");
+        assert!(first["summary"].is_string(), "{json}");
+        assert!(first["run_timestamp"].is_string());
+        let text = crate::commands::inspect::format_artifacts(&records);
+        assert!(text.contains("fun_c") && text.contains("purpose:"));
     }
 }

@@ -224,6 +224,8 @@ Once connected, Claude has access to 28 tools. Key tools:
 ```
 # Corpus management
 calli corpus add <kind> <name> <source> [--id <id>]
+#   kinds: book, capture, code, wiki,
+#          binary-export (decompiler export bundle: per-function C + disassembly)
 calli corpus list
 calli corpus show <id>
 calli corpus remove <id>
@@ -233,6 +235,8 @@ calli corpus set <id> <key> <json>  Merge one key into the corpus config (role, 
 calli index <id>                    Run all default passes
 calli index <id> --pass chunk       Run a single pass
 calli index <id> --full             Force full reindex (bypass skip guards)
+calli index <id> --pass decompile --entities 'name:fun_0000*' --estimate
+                                    Cost estimate for a subset, no LLM call (see docs/llm-runs.md)
 calli reindex <id>                  Incremental reindex since last run
 calli watch <id>                    Watch source and reindex on changes
 
@@ -244,6 +248,7 @@ calli upgrade [<id>]                Upgrade corpus artifacts to current pipeline
 calli inspect entities <id>         Browse entities
 calli inspect chunk <location>      Show a chunk by URI
 calli inspect runs <id>             Indexing run history
+calli inspect artifacts <id>        Summary / purpose / contract per entity (--entities, --json)
 calli inspect diegesis <id> <name>  BFS narrative for an entity (zero LLM calls)
 calli inspect scholia <id>          Applied scholia (corrections)
 

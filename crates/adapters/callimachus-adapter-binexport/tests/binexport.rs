@@ -785,3 +785,82 @@ fn annotate_leaves_other_offsets_and_registers_alone() {
     assert!(out.contains("/* 001006  move.w $10(a3),d0 */\n"), "{out}");
     assert!(!out.contains("; obj.x"), "{out}");
 }
+
+// ── S10c: cleanup ────────────────────────────────────────────────────────────
+
+fn write_cleanup_bundle(root: &Path) {
+    write(
+        root,
+        "manifest.json",
+        &json!({"format":1,"kind":"binary-export","counts":{"functions":1,"tables":1}}).to_string(),
+    );
+    write(
+        root,
+        "functions.jsonl",
+        &json!({"address":"0x001000","name":"FUN_00001000","size":8,"c":"c/00001000.c","asm":null,"decompile_ok":true,"discovered_by":["analysis"]}).to_string(),
+    );
+    write(
+        root,
+        "c/00001000.c",
+        "void FUN_00001000(void)\n{\n  uint x;\n  x = (uint)PTR_DAT_00012340[1];\n  x = x + sizeof(undefined4);\n  switch(x) { case 1: goto switchD_00001234; }\n  switchD_00001234:\n  x = register0x0000003c;\n  x = (undefined4)x;\n  return;\n}\n",
+    );
+    write(
+        root,
+        "tables.jsonl",
+        &json!({"address":"0x012340","name":"DAT_00012340","kind":"code-pointers","entry":"u32","count":2,"readers":["0x001000"]}).to_string(),
+    );
+}
+
+#[tokio::test]
+async fn c_spelling_of_a_table_address_reconciles_with_the_bundle_entity() {
+    let dir = tempfile::tempdir().unwrap();
+    write_cleanup_bundle(dir.path());
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index(dir.path(), db.clone(), Arc::new(BinExportAdapter::new())).await;
+
+    let with_addr: Vec<_> = db
+        .entity_list(CORP)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.aliases.contains(&"0x12340".to_string()))
+        .collect();
+    assert_eq!(with_addr.len(), 1, "{with_addr:?}");
+    let t = &with_addr[0];
+    assert_eq!(t.id, format!("{CORP}:dat_00012340"));
+    assert_eq!(t.canonical_name, "DAT_00012340");
+    assert_eq!(t.kind, "table");
+    assert!(
+        t.aliases.contains(&"PTR_DAT_00012340".to_string()),
+        "{:?}",
+        t.aliases
+    );
+    assert!(has_edge(&db, "uses_table", "fun_00001000", "dat_00012340"));
+    assert!(
+        db.edge_list(CORP)
+            .unwrap()
+            .iter()
+            .all(|e| !e.to_entity_id.ends_with("ptr_dat_00012340")),
+    );
+}
+
+#[tokio::test]
+async fn type_names_and_ghidra_pseudo_names_are_not_variables() {
+    let dir = tempfile::tempdir().unwrap();
+    write_cleanup_bundle(dir.path());
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index(dir.path(), db.clone(), Arc::new(BinExportAdapter::new())).await;
+    let names: Vec<String> = db
+        .entity_list(CORP)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.canonical_name)
+        .collect();
+    for bad in [
+        "uint",
+        "undefined4",
+        "switchD_00001234",
+        "register0x0000003c",
+    ] {
+        assert!(!names.iter().any(|n| n == bad), "{bad} in {names:?}");
+    }
+}

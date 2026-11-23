@@ -29,7 +29,12 @@ use callimachus_llm::{EmbeddingProvider, LlmProvider, StableSamplingProvider};
 use crate::{
     adapter::SourceAdapter,
     error::Result,
-    indexing::{change_manifest::ChangeManifest, model_tier::TierConfig},
+    indexing::{
+        change_manifest::ChangeManifest,
+        entity_filter::EntityFilter,
+        model_tier::TierConfig,
+        run_caps::{CapState, CappedProvider, RunCaps},
+    },
     storage::{StorageBackend, VirtualHead, run_log},
     types::{Corpus, Entity, Pass, RunStatus},
 };
@@ -151,6 +156,16 @@ pub struct IndexOptions {
     /// so identical inputs yield byte-identical outputs where the provider
     /// supports it.  Default `false` (preserves pre-PR-3 behaviour).
     pub stable_sampling: bool,
+    /// Restrict the LLM passes (summarize, purpose, contract) to a subset of
+    /// entities. Theme runs only when this is [`EntityFilter::All`].
+    pub entity_filter: EntityFilter,
+    /// Run-wide caps on LLM calls, input tokens and wall time.
+    pub caps: RunCaps,
+    /// Render every prompt the LLM passes would send, without sending it and
+    /// without writing artifacts or cache entries. The pipeline's provider is
+    /// expected to be an `EstimatingProvider`; per-pass totals come back in
+    /// [`IndexResult::estimates`].
+    pub estimate: bool,
 }
 
 impl Default for IndexOptions {
@@ -180,6 +195,9 @@ impl Default for IndexOptions {
             change_manifest: None,
             read_view: None,
             stable_sampling: false,
+            entity_filter: EntityFilter::All,
+            caps: RunCaps::default(),
+            estimate: false,
         }
     }
 }
@@ -311,6 +329,29 @@ pub struct IndexResult {
     /// Later LLM passes are not started; re-running resumes the work.
     pub stopped_reason: Option<String>,
     pub runs: Vec<run_log::RunRecord>,
+    /// Per-pass totals for an `--estimate` run; empty otherwise.
+    pub estimates: Vec<PassEstimate>,
+    /// Non-LLM passes an `--estimate` run skipped because it writes nothing.
+    pub estimate_skipped: Vec<String>,
+}
+
+/// What one LLM pass would cost, measured from the provider's estimated usage.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PassEstimate {
+    pub pass: String,
+    /// Entities (or chunks) the pass would generate an artifact for.
+    pub entities: u64,
+    /// Prompts that would actually be sent (cache hits and reuse excluded).
+    pub calls: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+fn is_llm_pass(pass: &Pass) -> bool {
+    matches!(
+        pass,
+        Pass::Summarize | Pass::Purpose | Pass::Contract | Pass::Theme
+    )
 }
 
 /// The orchestrator.  Runs each requested pass in order, recording a run-log
@@ -345,6 +386,17 @@ impl IndexPipeline {
             tiers.haiku = StableSamplingProvider::wrap(tiers.haiku);
             tiers.sonnet = StableSamplingProvider::wrap(tiers.sonnet);
             tiers.opus = StableSamplingProvider::wrap(tiers.opus);
+        }
+
+        // Run caps wrap outermost and share one state across every tier and
+        // pass. Nothing is sent in an estimate run, so caps do not apply.
+        let mut llm = Arc::clone(&self.llm);
+        if opts.caps.is_set() && !opts.estimate {
+            let state = CapState::new(opts.caps.clone());
+            tiers.haiku = CappedProvider::wrap(tiers.haiku, &state);
+            tiers.sonnet = CappedProvider::wrap(tiers.sonnet, &state);
+            tiers.opus = CappedProvider::wrap(tiers.opus, &state);
+            llm = CappedProvider::wrap(llm, &state);
         }
 
         // ── Run-time visibility: log the resolved provider + tier + concurrency
@@ -437,7 +489,11 @@ impl IndexPipeline {
 
         // Mark any runs that were interrupted mid-pass as failed so the pipeline
         // starts from a consistent state.
-        let abandoned = self.db.run_abandon_stale(&corpus.id)?;
+        let abandoned = if opts.estimate {
+            0
+        } else {
+            self.db.run_abandon_stale(&corpus.id)?
+        };
         if abandoned > 0 {
             tracing::warn!(
                 "marked {abandoned} stale 'running' run(s) as failed for corpus {}",
@@ -449,7 +505,10 @@ impl IndexPipeline {
         // Pass::History runs.  If passes don't include History, synthesise an
         // all-dirty manifest so downstream passes process everything.
         let mut opts_local = opts.clone();
-        if !opts_local.passes.contains(&Pass::History) && opts_local.change_manifest.is_none() {
+        // An estimate never runs History, so it needs the synthetic manifest too.
+        if (opts_local.estimate || !opts_local.passes.contains(&Pass::History))
+            && opts_local.change_manifest.is_none()
+        {
             opts_local.change_manifest = Some(ChangeManifest::all_dirty("synthetic"));
         }
 
@@ -467,10 +526,40 @@ impl IndexPipeline {
                 .first()
                 .is_some_and(|r| r.status == "stopped");
 
+        // An estimate works from what is already indexed and writes nothing.
+        if opts_local.estimate
+            && (self.db.chunk_count(&corpus.id)? == 0 || self.db.entity_count(&corpus.id)? == 0)
+        {
+            anyhow::bail!(
+                "estimate needs an indexed corpus: run calli index {} --pass chunk,structure first",
+                corpus.id
+            );
+        }
+
         for pass in &opts_local.passes.clone() {
-            let run_id = self
-                .db
-                .run_start(&corpus.id, &pass.to_string(), Some(self.llm.name()))?;
+            // The non-LLM passes write chunks, entities and the anchor, so an
+            // estimate skips them.
+            if opts_local.estimate && matches!(pass, Pass::History | Pass::Chunk | Pass::Structure)
+            {
+                tracing::info!("[{pass}] skipped in --estimate (non-LLM pass)");
+                result.estimate_skipped.push(pass.to_string());
+                continue;
+            }
+            // An estimate run leaves no trace in the run log, and only the
+            // LLM passes that can be rendered without side effects run.
+            if opts_local.estimate && matches!(pass, Pass::Semantic | Pass::Aliases | Pass::Embed) {
+                tracing::info!("[{pass}] not estimated (skipped in --estimate)");
+                continue;
+            }
+            let run_id = if opts_local.estimate {
+                None
+            } else {
+                Some(
+                    self.db
+                        .run_start(&corpus.id, &pass.to_string(), Some(self.llm.name()))?,
+                )
+            };
+            let usage_before = self.llm.usage();
 
             tracing::info!("[{}] starting…", pass);
 
@@ -493,6 +582,7 @@ impl IndexPipeline {
                     // start with a blank slate for the changed files.
                     if let Some(m) = opts_local.change_manifest.as_ref()
                         && !resuming
+                        && !opts_local.estimate
                     {
                         cascade::run(Arc::clone(&self.db), corpus, m).await?;
                     }
@@ -522,7 +612,7 @@ impl IndexPipeline {
                         Arc::clone(&self.db),
                         corpus,
                         Arc::clone(&self.adapter),
-                        Arc::clone(&self.llm),
+                        Arc::clone(&llm),
                         &opts_local,
                     )
                     .await?
@@ -532,7 +622,7 @@ impl IndexPipeline {
                         Arc::clone(&self.db),
                         corpus,
                         Arc::clone(&self.adapter),
-                        Arc::clone(&self.llm),
+                        Arc::clone(&llm),
                         &opts_local,
                     )
                     .await?
@@ -581,7 +671,7 @@ impl IndexPipeline {
                         Arc::clone(&self.db),
                         corpus,
                         Arc::clone(&self.adapter),
-                        Arc::clone(&self.llm),
+                        Arc::clone(&llm),
                         &opts_local,
                     )
                     .await?
@@ -593,7 +683,21 @@ impl IndexPipeline {
             } else {
                 RunStatus::Completed
             };
-            self.db.run_finish(&run_id, run_status, &stats)?;
+            if let Some(run_id) = &run_id {
+                self.db.run_finish(run_id, run_status, &stats)?;
+            }
+            if opts_local.estimate && is_llm_pass(pass) {
+                let used = self.llm.usage();
+                result.estimates.push(PassEstimate {
+                    pass: pass.to_string(),
+                    entities: stats.processed + stats.failed,
+                    calls: used.calls.saturating_sub(usage_before.calls),
+                    input_tokens: used.input_tokens.saturating_sub(usage_before.input_tokens),
+                    output_tokens: used
+                        .output_tokens
+                        .saturating_sub(usage_before.output_tokens),
+                });
+            }
 
             tracing::info!(
                 "[{}] done — processed={} skipped={} failed={}",
@@ -620,7 +724,7 @@ impl IndexPipeline {
         result.runs = self.db.run_latest(&corpus.id, 20)?;
 
         // Mark the corpus as ready with a last-indexed timestamp.
-        if !opts_local.dry_run {
+        if !opts_local.dry_run && !opts_local.estimate {
             let now = chrono::Utc::now().to_rfc3339();
             self.db.corpus_set_last_indexed(&corpus.id, &now)?;
 
