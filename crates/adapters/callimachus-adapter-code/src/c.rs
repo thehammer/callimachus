@@ -752,6 +752,9 @@ pub fn is_register_base(name: &str) -> bool {
 
 // ── Arrays of records ────────────────────────────────────────────────────────
 
+/// Longest `a + b + c ...` chain followed when matching a slot pointer.
+const MAX_SLOT_DEPTH: usize = 64;
+
 /// How a slot access picks its record.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SlotIndex {
@@ -967,7 +970,12 @@ fn slot_pointer(
     node: Node<'_>,
     source: &[u8],
     walkers: &Walkers,
+    depth: usize,
 ) -> Option<(u64, i64, Option<u64>, Option<SlotIndex>)> {
+    // Nesting depth is attacker-controlled in source files.
+    if depth > MAX_SLOT_DEPTH {
+        return None;
+    }
     let v = unwrap_casts(node);
     if v.kind() == "identifier" {
         let name = text_of(v, source);
@@ -988,7 +996,7 @@ fn slot_pointer(
     if !matches!(op.as_str(), "+" | "-") {
         return None;
     }
-    let (address, offset, stride, index) = slot_pointer(left, source, walkers)?;
+    let (address, offset, stride, index) = slot_pointer(left, source, walkers, depth + 1)?;
     if let Some(k) = const_value(right, source) {
         let k = i64::try_from(k).ok()?;
         let k = if op == "+" { k } else { -k };
@@ -1022,7 +1030,7 @@ pub fn match_slot_access<'t>(
                 ty = Some(t.replace('*', "").trim().to_string());
                 arg = arg.child_by_field_name("value")?;
             }
-            let (address, offset, stride, index) = slot_pointer(arg, source, walkers)?;
+            let (address, offset, stride, index) = slot_pointer(arg, source, walkers, 0)?;
             Some(SlotAccess {
                 node,
                 address,
