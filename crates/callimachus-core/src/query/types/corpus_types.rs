@@ -34,6 +34,9 @@ pub struct CorpusOverviewOutput {
     pub last_indexed: Option<String>,
     pub top_entities: Vec<crate::types::Entity>,
     pub summary: Option<String>,
+    /// Platform record from the corpus config (binary-export corpora).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<serde_json::Value>,
 }
 
 // ── corpus_themes ─────────────────────────────────────────────────────────────

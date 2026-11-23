@@ -12,7 +12,7 @@ use crate::languages::LangConfig;
 /// Slugifies to lowercase, keeping alphanumeric characters and underscores,
 /// and replacing everything else with `_`.  The result is
 /// `{corpus_id}:{slug}`.
-pub(crate) fn entity_id(corpus_id: &str, name: &str) -> String {
+pub fn entity_id(corpus_id: &str, name: &str) -> String {
     let slug: String = name
         .to_lowercase()
         .chars()
@@ -38,7 +38,7 @@ pub(crate) fn entity_id(corpus_id: &str, name: &str) -> String {
 /// function in the same file produce N edges with the **same** id, which the
 /// post-extraction aggregation step then collapses into one row with
 /// `occurrence_count = N`.
-pub(crate) fn edge_id(
+pub fn edge_id(
     corpus_id: &str,
     from_id: &str,
     kind: &str,
@@ -216,12 +216,62 @@ pub struct ExtractedCodeStructure {
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
+/// Analyse C source text on behalf of `chunk`.
+///
+/// Runs the same tree-sitter parse and C extractor as a `.c` corpus, but over
+/// `c_source` instead of `chunk.content`; entity and edge ids and locations are
+/// emitted against `chunk`.  Includes address aliases and `uses_table` edges.
+/// Used by adapters whose chunk content wraps C in extra text.
+pub fn analyse_c(chunk: &Chunk, c_source: &str) -> Result<ExtractedCodeStructure> {
+    let mut result = ExtractedCodeStructure::default();
+
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_c::LANGUAGE.into())
+        .map_err(|e| anyhow::anyhow!("set_language error: {e:?}"))?;
+
+    let tree = match parser.parse(c_source, None) {
+        Some(t) => t,
+        None => return Ok(result),
+    };
+    let root = tree.root_node();
+    let source = c_source.as_bytes();
+
+    // Same path-level test-scope rule as every other language.
+    let test_ranges: Vec<std::ops::Range<usize>> = if path_is_in_tests_dir(&chunk.location.path) {
+        std::iter::once(0..source.len()).collect()
+    } else {
+        vec![]
+    };
+
+    let file_path = chunk.location.path.split('#').next().unwrap_or("");
+    let mut file_entity = Entity::new(
+        entity_id(&chunk.corpus_id, file_path),
+        chunk.corpus_id.clone(),
+        file_path.to_string(),
+        "file".to_string(),
+    );
+    file_entity.first_location = Some(chunk.location.clone());
+    file_entity.last_location = Some(chunk.location.clone());
+    file_entity.confidence = 1.0;
+    result.entities.push(file_entity);
+    crate::c::extract(chunk, root, source, &test_ranges, &mut result);
+    finish(&mut result);
+    Ok(result)
+}
+
 /// Extract entities and edges from a chunk using tree-sitter.
 /// No LLM calls — purely structural.
 pub fn extract_structure(
     chunk: &Chunk,
     lang_config: &LangConfig,
 ) -> Result<ExtractedCodeStructure> {
+    // C has its own extractor: declarator-aware names, global reads/writes and
+    // indirect calls.  It replaces the generic entity/call passes.
+    if lang_config.name == "c" {
+        return analyse_c(chunk, &chunk.content);
+    }
+
     let mut result = ExtractedCodeStructure::default();
 
     let mut parser = Parser::new();
@@ -256,25 +306,6 @@ pub fn extract_structure(
     } else {
         vec![]
     };
-
-    // C has its own extractor: declarator-aware names, global reads/writes and
-    // indirect calls.  It replaces the generic entity/call passes.
-    if lang_config.name == "c" {
-        let file_path = chunk.location.path.split('#').next().unwrap_or("");
-        let mut file_entity = Entity::new(
-            entity_id(&chunk.corpus_id, file_path),
-            chunk.corpus_id.clone(),
-            file_path.to_string(),
-            "file".to_string(),
-        );
-        file_entity.first_location = Some(chunk.location.clone());
-        file_entity.last_location = Some(chunk.location.clone());
-        file_entity.confidence = 1.0;
-        result.entities.push(file_entity);
-        crate::c::extract(chunk, root, source, &test_ranges, &mut result);
-        finish(&mut result);
-        return Ok(result);
-    }
 
     // Extract top-level named entities.
     extract_entities(chunk, root, source, lang_config, &test_ranges, &mut result);
