@@ -12,7 +12,7 @@ use std::path::PathBuf;
 pub enum CorpusCommand {
     /// Register a new corpus.
     Add {
-        /// Adapter kind: book, capture, code, wiki.
+        /// Adapter kind: book, capture, code, wiki, binary-export (decompiler export bundle: per-function C and disassembly).
         kind: String,
         /// Human-readable name for this corpus.
         name: String,
@@ -328,6 +328,20 @@ fn short_date(iso: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn corpus_add_help_lists_binary_export() {
+        use clap::CommandFactory;
+        #[derive(clap::Parser)]
+        struct W {
+            #[command(subcommand)]
+            c: super::CorpusCommand,
+        }
+        let mut cmd = W::command();
+        let add = cmd.find_subcommand_mut("add").unwrap();
+        let help = add.render_long_help().to_string();
+        assert!(help.contains("binary-export"), "{help}");
+    }
+
     use super::*;
 
     #[test]

@@ -177,7 +177,7 @@ enum Command {
     /// `calli index <id>`, but also supports forward history walking via
     /// `--with-history`.
     Ingest {
-        /// Adapter kind: book, code, wiki.
+        /// Adapter kind: book, capture, code, wiki, binary-export (decompiler export bundle: per-function C and disassembly).
         kind: String,
         /// Human-readable name for this corpus.
         name: String,
