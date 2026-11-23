@@ -82,11 +82,16 @@ pub async fn run(
     // Determine concurrency width.
     let concurrency = opts.concurrency.unwrap_or(64);
 
+    let filter = opts
+        .entity_filter
+        .clone()
+        .resolved(&corpus.id, db.as_ref())?;
     let all_entities = db.entity_list(&corpus.id)?;
     let file_shapes = file_shape::file_shapes_by_uri(&all_entities);
     let candidates: Vec<Entity> = all_entities
         .into_iter()
         .filter(|e| CONTRACT_KINDS.contains(&e.kind.as_str()))
+        .filter(|e| filter.matches(e, db.as_ref()))
         .filter(|e| {
             // Dirty files, plus any entity with no output yet (e.g. left over
             // from a run that stopped on quota), regardless of dirty state.
@@ -123,6 +128,7 @@ pub async fn run(
         current_version: current_version.clone(),
         file_shapes,
         stable_sampling: opts.stable_sampling,
+        estimate: opts.estimate,
         quota: QuotaGate::default(),
     });
 
@@ -147,7 +153,9 @@ pub async fn run(
             }
             ContractOutcome::DefaultContract { entity_id } => {
                 // Entity has no location or no chunk content — store a default contract now.
-                store_default_contract_direct(&db, &corpus.id, &entity_id)?;
+                if !opts.estimate {
+                    store_default_contract_direct(&db, &corpus.id, &entity_id)?;
+                }
                 stats.processed += 1;
             }
             ContractOutcome::Extracted {
@@ -156,6 +164,10 @@ pub async fn run(
                 verified_by_edges,
                 discards_result_edges,
             } => {
+                if opts.estimate {
+                    stats.processed += 1;
+                    continue;
+                }
                 db.contract_upsert(&contract)?;
 
                 for spec in &verified_by_edges {
@@ -268,6 +280,8 @@ struct PassContext {
     current_version: Option<String>,
     file_shapes: HashMap<String, String>,
     stable_sampling: bool,
+    /// Render prompts only: never write cache entries.
+    estimate: bool,
     quota: QuotaGate,
 }
 
@@ -396,8 +410,9 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
                 {
                     Ok(Some(fresh)) => {
                         let sha = ctx.current_version.as_deref().unwrap_or("");
-                        if let Err(e) =
-                            layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, sha)
+                        if !ctx.estimate
+                            && let Err(e) =
+                                layer2_cache::cache_put(db.as_ref(), &cache_key, &fresh, sha)
                         {
                             tracing::warn!("contract cache_put failed for {}: {e}", entity.id);
                         }
