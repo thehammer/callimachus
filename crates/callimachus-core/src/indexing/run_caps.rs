@@ -52,8 +52,11 @@ impl CapState {
         })
     }
 
-    /// Admit one call, or return the name of the cap that is reached.
-    fn admit(&self) -> Result<(), &'static str> {
+    /// Admit one call, reserving `reserve` input tokens for it, or return the
+    /// name of the cap that is reached. The reservation counts against
+    /// `max_input_tokens` while the call is in flight, so concurrent calls
+    /// cannot overshoot the cap by more than one call's estimate.
+    fn admit(&self, reserve: u64) -> Result<(), &'static str> {
         let mut reached = self.reached.lock().unwrap();
         if let Some(which) = *reached {
             return Err(which);
@@ -84,7 +87,16 @@ impl CapState {
             return Err(which);
         }
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.input_tokens.fetch_add(reserve, Ordering::SeqCst);
         Ok(())
+    }
+
+    /// Replace a call's reservation with what it really used (0 if it failed).
+    fn settle(&self, reserved: u64, used: u64) {
+        let _guard = self.reached.lock().unwrap();
+        let current = self.input_tokens.load(Ordering::SeqCst);
+        self.input_tokens
+            .store(current.saturating_sub(reserved) + used, Ordering::SeqCst);
     }
 }
 
@@ -108,20 +120,26 @@ impl LlmProvider for CappedProvider {
         &self,
         req: CompletionRequest,
     ) -> callimachus_llm::error::Result<CompletionResponse> {
+        let prompt_estimate = estimate_input_tokens(req.prompt.len(), 0);
         self.state
-            .admit()
+            .admit(prompt_estimate)
             .map_err(|which| LlmError::QuotaExhausted {
                 message: format!("run cap reached: {which}"),
                 resets_at: None,
             })?;
-        let prompt_estimate = estimate_input_tokens(req.prompt.len(), 0);
-        let response = self.inner.complete(req).await?;
-        // Prefer the provider's real count; fall back to a size estimate.
+        let response = match self.inner.complete(req).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.state.settle(prompt_estimate, 0);
+                return Err(e);
+            }
+        };
+        // Prefer the provider's real count; fall back to the reserved estimate.
         let used = match u64::from(response.input_tokens) {
             0 => prompt_estimate,
             n => n,
         };
-        self.state.input_tokens.fetch_add(used, Ordering::SeqCst);
+        self.state.settle(prompt_estimate, used);
         Ok(response)
     }
 
@@ -229,5 +247,46 @@ mod tests {
         });
         let p = CappedProvider::wrap(Arc::new(DryRunProvider::new()), &state);
         assert!(reason(call(&p).await.unwrap_err()).contains("stop_after"));
+    }
+
+    /// Provider that yields while "in flight" so concurrent calls overlap.
+    struct Slow(Arc<DryRunProvider>);
+
+    #[async_trait::async_trait]
+    impl LlmProvider for Slow {
+        async fn complete(
+            &self,
+            req: CompletionRequest,
+        ) -> callimachus_llm::error::Result<CompletionResponse> {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            self.0.complete(req).await
+        }
+        fn name(&self) -> &str {
+            "slow"
+        }
+        fn supports_parallel(&self) -> bool {
+            true
+        }
+        fn usage(&self) -> ProviderUsage {
+            self.0.usage()
+        }
+        fn reset_usage(&self) {
+            self.0.reset_usage()
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_calls_cannot_overshoot_max_input_tokens_by_more_than_one_estimate() {
+        let dry = Arc::new(DryRunProvider::new());
+        let state = CapState::new(RunCaps {
+            max_input_tokens: Some(150),
+            ..Default::default()
+        });
+        let p = CappedProvider::wrap(Arc::new(Slow(dry.clone())), &state);
+        let results = futures::future::join_all((0..8).map(|_| call(&p))).await;
+        let admitted = results.iter().filter(|r| r.is_ok()).count();
+        assert!(admitted <= 2, "admitted {admitted}");
+        assert!(admitted >= 1);
+        assert_eq!(dry.call_count(), admitted as u64);
     }
 }

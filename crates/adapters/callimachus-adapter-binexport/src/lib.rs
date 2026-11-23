@@ -107,6 +107,10 @@ impl SourceAdapter for BinExportAdapter {
         vec!["function"]
     }
 
+    fn reuse_single_child_summary(&self) -> bool {
+        true
+    }
+
     async fn discover(&self, source: &str) -> Result<Vec<DiscoveredSource>> {
         let root = Path::new(source);
         if !root.is_dir() {
