@@ -20,7 +20,7 @@ pub const INDIRECT_NAME: &str = "<indirect>";
 /// Decompiler naming conventions recognised as carrying an address: a name is
 /// one of these prefixes (case-insensitive) followed by 4-16 hex digits.
 pub const ADDRESS_PREFIXES: &[&str] = &[
-    "_DAT_", "DAT_", "PTR_DAT_", "PTR_", "RAM_", "FUN_", "LAB_", "SUB_",
+    "_DAT_", "DAT_", "PTR_DAT_", "PTR_LAB_", "PTR_FUN_", "PTR_", "RAM_", "FUN_", "LAB_", "SUB_",
 ];
 
 /// Address encoded in a decompiler-style name (`_DAT_00c00004`, `FUN_000071d0`).

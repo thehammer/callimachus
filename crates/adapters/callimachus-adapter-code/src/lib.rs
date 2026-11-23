@@ -10,6 +10,7 @@ pub mod summarizer;
 pub mod vue;
 
 pub use adapter::CodeAdapter;
+pub use extractor::{ExtractedCodeStructure, analyse_c, edge_id, entity_id};
 
 pub fn create() -> CodeAdapter {
     CodeAdapter::new()

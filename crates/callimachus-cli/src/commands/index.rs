@@ -147,7 +147,14 @@ pub fn build_embedding_provider_config(config: &GlobalConfig) -> EmbeddingProvid
 /// first four; `docs`/`jira`/`sessions` are recognized future/proprietary
 /// adapters that other builds may carry.
 pub const KNOWN_KINDS: &[&str] = &[
-    "book", "capture", "code", "wiki", "docs", "jira", "sessions",
+    "book",
+    "capture",
+    "code",
+    "wiki",
+    "binary-export",
+    "docs",
+    "jira",
+    "sessions",
 ];
 
 /// Build the registry of adapters compiled into the default `calli` binary.
@@ -157,12 +164,14 @@ pub const KNOWN_KINDS: &[&str] = &[
 /// here, so adding/removing an adapter from the binary is a one-line change
 /// with no `match corpus.kind` to update (PRD A7).
 pub fn default_registry() -> AdapterRegistry {
+    use callimachus_adapter_binexport::BinExportAdapter;
     use callimachus_adapter_book::BookAdapter;
     use callimachus_adapter_capture::CaptureAdapter;
     use callimachus_adapter_code::CodeAdapter;
     use callimachus_adapter_wiki::WikiAdapter;
 
     let mut registry = AdapterRegistry::new();
+    registry.register(Arc::new(BinExportAdapter::new()));
     registry.register(Arc::new(BookAdapter::new()));
     registry.register(Arc::new(CaptureAdapter::new()));
     registry.register(Arc::new(CodeAdapter::new()));

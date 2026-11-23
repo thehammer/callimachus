@@ -25,11 +25,23 @@ use crate::{
 /// detected by extension, then shebang (so extensionless scripts such as
 /// `bin/deploy` are indexed), then well-known filename (`Makefile`, `Dockerfile`,
 /// `Caddyfile`, …); see [`languages::detect`].
-pub struct CodeAdapter;
+pub struct CodeAdapter {
+    prompt_options: summarizer::PromptOptions,
+}
 
 impl CodeAdapter {
     pub fn new() -> Self {
-        Self
+        Self {
+            prompt_options: summarizer::PromptOptions::default(),
+        }
+    }
+
+    /// A code adapter whose LLM prompts use `options` (wider code cap, extra
+    /// disassembly line).  `new()` keeps the built-in prompts byte-identical.
+    pub fn with_prompt_options(options: summarizer::PromptOptions) -> Self {
+        Self {
+            prompt_options: options,
+        }
     }
 }
 
@@ -149,7 +161,7 @@ impl SourceAdapter for CodeAdapter {
                 } else {
                     extractor::ExtractedCodeStructure::default()
                 };
-                summarizer::summarize_chunk(chunk, &structure, llm).await
+                summarizer::summarize_chunk_with(chunk, &structure, llm, &self.prompt_options).await
             }
             "file" => summarizer::summarize_file(chunk, llm).await,
             "corpus" => {
@@ -224,9 +236,10 @@ impl SourceAdapter for CodeAdapter {
         let signals = contracts::analyze(lang, content, &entity.canonical_name);
         let wants_blocks = signals.branch_count >= 3 || signals.body_lines >= 20;
 
-        let summary_section = summary
+        let mut summary_section = summary
             .map(|s| format!("\nExisting summary:\n{s}\n"))
             .unwrap_or_default();
+        summary_section.push_str(&self.prompt_options.hint_line(content));
 
         let blocks_instruction = if wants_blocks {
             r#"
@@ -261,7 +274,7 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
 {blocks_instruction}"#,
             name = entity.canonical_name,
             kind = entity.kind,
-            code = &content[..content.floor_char_boundary(4000.min(content.len()))],
+            code = self.prompt_options.excerpt(content, 4000),
         );
 
         let req = CompletionRequest {
@@ -367,11 +380,12 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
             }
             _ => "",
         };
-        let language_note_section = if language_note.is_empty() {
+        let mut language_note_section = if language_note.is_empty() {
             String::new()
         } else {
             format!("{language_note}\n")
         };
+        language_note_section.push_str(&self.prompt_options.hint_line(content));
 
         let prompt = format!(
             r#"You are analysing a {language} code entity to extract its behavioural contract.
@@ -405,7 +419,7 @@ Return JSON matching this schema exactly:
             name = entity.canonical_name,
             kind = entity.kind,
             language_note_section = language_note_section,
-            code = &content[..content.floor_char_boundary(4000.min(content.len()))],
+            code = self.prompt_options.excerpt(content, 4000),
         );
 
         let req = CompletionRequest {

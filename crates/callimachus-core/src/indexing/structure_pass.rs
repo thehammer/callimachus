@@ -16,6 +16,7 @@ pub async fn run(
     opts: &IndexOptions,
 ) -> anyhow::Result<PassStats> {
     let mut stats = PassStats::default();
+    adapter.attach_corpus(&corpus.id, &corpus.source);
 
     let mut chunks = db.chunk_list(&corpus.id)?;
 

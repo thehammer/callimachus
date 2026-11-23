@@ -4,7 +4,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     adapter::SourceAdapter,
-    storage::{StorageBackend, run_log::PassStats},
+    storage::{
+        StorageBackend,
+        run_log::{ChunkError, PassStats},
+    },
     types::Corpus,
 };
 
@@ -54,6 +57,10 @@ pub async fn run(
     let mut all_chunks = Vec::new();
     for source in &sources {
         let chunks = adapter.chunk(source).await?;
+        for (chunk_id, message) in adapter.take_chunk_warnings() {
+            stats.failed += 1;
+            stats.errors.push(ChunkError { chunk_id, message });
+        }
         // Per-chunk dirty filter. When `all_dirty` is true (first run, --full,
         // or no History pass) every chunk passes through.
         let chunks: Vec<_> = chunks

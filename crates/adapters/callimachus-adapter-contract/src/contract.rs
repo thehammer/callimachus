@@ -129,6 +129,17 @@ pub trait SourceAdapter: Send + Sync {
         vec![]
     }
 
+    /// Told which corpus (and source) a pass is about to run for, so an adapter
+    /// that keeps per-corpus state can recover it in a run that skips `chunk`
+    /// (e.g. `--pass structure` alone). Default: no-op.
+    fn attach_corpus(&self, _corpus_id: &str, _source: &str) {}
+
+    /// Per-entity problems `chunk` tolerated (chunk id, message). Drained by the
+    /// chunk pass into the run's error list. Default: none.
+    fn take_chunk_warnings(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+
     /// Expand a source path/URL into concrete inputs.
     async fn discover(&self, source: &str) -> anyhow::Result<Vec<DiscoveredSource>>;
 

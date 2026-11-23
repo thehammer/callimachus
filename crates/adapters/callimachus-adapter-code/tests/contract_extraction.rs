@@ -92,7 +92,7 @@ const SOURCE: &str = r#"pub fn do_thing(x: i32) -> Result<i32, String> {
 async fn parse_failure_does_not_leak_raw_text_into_risks() {
     let bad_json = "```json\n{this is not valid json at all,}\n```";
     let llm = StubLlm::new(bad_json);
-    let adapter = CodeAdapter;
+    let adapter = CodeAdapter::new();
     let entity = rust_entity("do_thing");
 
     let result = adapter
@@ -144,7 +144,7 @@ async fn valid_json_in_fence_is_parsed() {
     }\n```";
 
     let llm = StubLlm::new(good_json);
-    let adapter = CodeAdapter;
+    let adapter = CodeAdapter::new();
     let entity = rust_entity("do_thing");
 
     let result = adapter

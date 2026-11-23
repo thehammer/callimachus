@@ -160,6 +160,7 @@ impl QueryService {
                 last_indexed: corpus.last_indexed_at.clone(),
                 top_entities,
                 summary,
+                platform: corpus.config.get("platform").cloned(),
             })
             .with_corpus_freshness(freshness))
         })

@@ -173,7 +173,13 @@ fn register_or_find(
         id
     };
 
-    let corpus = Corpus::new(final_id.clone(), name.clone(), kind.clone(), path.clone());
+    let mut corpus = Corpus::new(final_id.clone(), name.clone(), kind.clone(), path.clone());
+    if kind == "binary-export" {
+        callimachus_adapter_binexport::merge_platform_config(
+            &mut corpus.config,
+            std::path::Path::new(&path),
+        )?;
+    }
     db.corpus_insert(&corpus)?;
     eprintln!("✓ Registered corpus {final_id:?} ({kind} at {path})");
     Ok(corpus)
