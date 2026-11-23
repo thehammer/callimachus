@@ -11,7 +11,7 @@ use crate::{
     types::{Corpus, Layer2CacheKey, Summary, SummaryTargetKind, chunk::hash_content},
 };
 
-use super::{layer2_cache, pipeline::IndexOptions};
+use super::{layer2_cache, pipeline::IndexOptions, quota::quota_reason};
 
 pub async fn run(
     db: Arc<dyn StorageBackend>,
@@ -30,7 +30,15 @@ pub async fn run(
 
     // Skip chunks whose source file is unchanged according to the manifest.
     if let Some(m) = opts.change_manifest.as_ref() {
-        all_chunks.retain(|c| m.is_dirty_for_chunk(c));
+        // Also keep chunks with no summary yet (left over from a stopped run).
+        all_chunks.retain(|c| {
+            m.is_dirty_for_chunk(c)
+                || db
+                    .summary_get(&corpus.id, &SummaryTargetKind::Chunk, &c.id)
+                    .ok()
+                    .flatten()
+                    .is_none()
+        });
     }
 
     let levels = adapter.summary_levels();
@@ -179,6 +187,12 @@ pub async fn run(
                 }
                 Ok(None) => {
                     stats.skipped += 1;
+                }
+                Err(e) if quota_reason(&e).is_some() => {
+                    // Sequential pass: nothing in flight, so stop right here.
+                    stats.stopped_reason = quota_reason(&e);
+                    tracing::warn!("[summarize] stopping: {e}");
+                    return Ok(stats);
                 }
                 Err(e) => {
                     tracing::warn!("{level_kind} summary failed for {}: {e}", chunk.id);
@@ -333,6 +347,10 @@ pub async fn run(
         }
         Ok(None) => {
             stats.skipped += 1;
+        }
+        Err(e) if quota_reason(&e).is_some() => {
+            stats.stopped_reason = quota_reason(&e);
+            tracing::warn!("[summarize] stopping: {e}");
         }
         Err(e) => {
             tracing::warn!("corpus summary failed: {e}");

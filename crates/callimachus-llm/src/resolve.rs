@@ -25,6 +25,10 @@ pub enum ProviderConfig {
         model: Option<String>,
         timeout_secs: Option<u64>,
         calls_per_minute: Option<u32>,
+        /// Trim the CLI's fixed per-call overhead (default `true`).
+        lean: bool,
+        effort: Option<String>,
+        extra_args: Vec<String>,
     },
     DryRun,
 }
@@ -48,6 +52,9 @@ pub fn auto_detect() -> Result<ProviderConfig> {
             model: None,
             timeout_secs: None,
             calls_per_minute: None,
+            lean: true,
+            effort: None,
+            extra_args: Vec::new(),
         });
     }
 
@@ -85,17 +92,20 @@ pub fn build(config: ProviderConfig) -> Result<Box<dyn LlmProvider>> {
             model,
             timeout_secs,
             calls_per_minute,
+            lean,
+            effort,
+            extra_args,
         } => {
             let bin = claude_bin
                 .or_else(|| std::env::var("CLAUDE_BIN").ok().map(PathBuf::from))
                 .or_else(find_claude_in_path)
                 .ok_or(LlmError::NoProvider)?;
-            Ok(Box::new(ClaudeCodeProvider::new(
-                bin,
-                model,
-                timeout_secs,
-                calls_per_minute,
-            )))
+            let provider = ClaudeCodeProvider::new(bin, model, timeout_secs, calls_per_minute)
+                .with_lean(lean)
+                .with_effort(effort)
+                .with_extra_args(extra_args);
+            provider.log_config();
+            Ok(Box::new(provider))
         }
         ProviderConfig::DryRun => Ok(Box::new(DryRunProvider::new())),
     }

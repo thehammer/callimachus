@@ -93,6 +93,45 @@ pub struct LlmConfig {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub api_key: Option<String>,
+    /// Options for the `claude-code` (subscription) provider.
+    #[serde(default)]
+    pub claude_code: ClaudeCodeConfig,
+}
+
+/// `[llm.claude_code]` table. Every field is optional; missing fields take
+/// their defaults (lean mode on, CLI model/effort unset).
+///
+/// ```toml
+/// [llm.claude_code]
+/// model = "sonnet"
+/// effort = "low"
+/// lean = true
+/// extra_args = []
+/// timeout_secs = 120
+/// calls_per_minute = 10
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClaudeCodeConfig {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub lean: bool,
+    pub extra_args: Vec<String>,
+    pub timeout_secs: Option<u64>,
+    pub calls_per_minute: Option<u32>,
+}
+
+impl Default for ClaudeCodeConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            effort: None,
+            lean: true,
+            extra_args: Vec::new(),
+            timeout_secs: None,
+            calls_per_minute: None,
+        }
+    }
 }
 
 impl GlobalConfig {
