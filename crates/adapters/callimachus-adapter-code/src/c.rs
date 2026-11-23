@@ -228,12 +228,36 @@ pub fn annotate(content: &str, fields: &[FieldName]) -> String {
     };
     let source = content.as_bytes();
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    // Local aliases (`p = unaff_A2`) of each function, so `p + 0x1c` is named
+    // like `unaff_A2 + 0x1c`.
+    let mut alias_maps = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "function_definition" {
+            let mut params = HashSet::new();
+            if let Some(decl) = n.child_by_field_name("declarator") {
+                collect_parameters(decl, source, &mut params);
+            }
+            if let Some(body) = n.child_by_field_name("body") {
+                alias_maps.push((n.byte_range(), local_aliases(body, source, &params)));
+            }
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
     let mut stack = vec![tree.root_node()];
     while let Some(n) = stack.pop() {
         if let Some(d) = match_field_deref(n, source)
-            && let Some(f) = fields
-                .iter()
-                .find(|f| f.base == d.base && f.offset == d.offset)
+            && let Some(f) = {
+                let resolved = alias_maps
+                    .iter()
+                    .find(|(r, _)| r.contains(&n.start_byte()))
+                    .and_then(|(_, m)| m.get(&d.base))
+                    .unwrap_or(&d.base);
+                fields
+                    .iter()
+                    .find(|f| f.base == *resolved && f.offset == d.offset)
+            }
         {
             let ty = f.ty.as_deref().map(|t| format!(" {t}")).unwrap_or_default();
             let sign = if f.offset < 0 { '-' } else { '+' };
@@ -241,7 +265,7 @@ pub fn annotate(content: &str, fields: &[FieldName]) -> String {
                 n.byte_range(),
                 format!(
                     "{}->{} /* {}{sign}0x{:x}{ty} */",
-                    f.base,
+                    d.base,
                     f.field,
                     f.layout,
                     f.offset.unsigned_abs()
@@ -440,6 +464,7 @@ fn analyse_function(
     }
     let mut bound = params.clone();
     collect_locals(body, source, &mut bound);
+    let aliases = local_aliases(body, source, &params);
 
     let mut accesses: BTreeMap<String, Access> = BTreeMap::new();
     let mut fields: BTreeMap<String, FieldAccess> = BTreeMap::new();
@@ -493,11 +518,10 @@ fn analyse_function(
             // so the base identifier is handled exactly as before.
             "pointer_expression" => {
                 if let Some(d) = match_field_deref(n, source)
-                    && is_field_base(&d.base, &params)
+                    && let base = aliases.get(&d.base).unwrap_or(&d.base)
+                    && is_field_base(base, &params)
                 {
-                    let access = fields
-                        .entry(field_entity_name(&d.base, d.offset))
-                        .or_default();
+                    let access = fields.entry(field_entity_name(base, d.offset)).or_default();
                     if let Some(w) = field_width(&d.ty)
                         && access.width.is_none_or(|(pos, _)| n.start_byte() < pos)
                     {
@@ -569,7 +593,7 @@ fn analyse_function(
         }
     }
     for (name, access) in fields {
-        let to_id = field_entity_id(&chunk.corpus_id, &name);
+        let to_id = field_entity_id(&chunk.corpus_id, &name, Some(&func_name));
         push_entity(chunk, result, &to_id, &name, "field", None, 0.5);
         if let (Some((_, width)), Some(entity)) = (access.width, result.entities.last_mut()) {
             entity.aliases.push(format!("width:{width}"));
@@ -666,10 +690,114 @@ pub fn field_entity_name(base: &str, offset: i64) -> String {
     format!("{base}{sign}0x{:x}", offset.unsigned_abs())
 }
 
-/// Entity id for a field entity: `{corpus}:{lowercased name}`. Unlike
-/// [`entity_id`] this keeps `+`/`-`, so `+0x4` and `-0x4` stay distinct.
-pub fn field_entity_id(corpus_id: &str, name: &str) -> String {
-    format!("{corpus_id}:{}", name.to_lowercase())
+/// Entity id for a field entity.
+///
+/// Register-style bases (see [`is_register_base`]) are named after a register
+/// at a function's entry, so `in_A0` in one function is usually not `in_A0` in
+/// another: their ids are function-qualified, `{corpus}:{name}@{function}`
+/// (both lowercased). Every other base keeps `{corpus}:{lowercased name}`.
+/// Unlike [`entity_id`] this keeps `+`/`-`, so `+0x4` and `-0x4` stay distinct.
+pub fn field_entity_id(corpus_id: &str, name: &str, function: Option<&str>) -> String {
+    let base = name.split(['+', '-']).next().unwrap_or(name);
+    match function {
+        Some(f) if is_register_base(base) => {
+            format!("{corpus_id}:{}@{}", name.to_lowercase(), f.to_lowercase())
+        }
+        _ => format!("{corpus_id}:{}", name.to_lowercase()),
+    }
+}
+
+/// True for decompiler register pseudo-variables: `in_*`, `unaff_*`,
+/// `extraout_*`, with or without a `_NN` suffix.
+pub fn is_register_base(name: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(FIELD_BASE_PATTERN).expect("valid pattern"))
+        .is_match(name)
+}
+
+/// Simple local aliases of a function body: `p = unaff_A2;`, `p = (byte *)unaff_A2;`
+/// or `byte *p = unaff_A2;` map `p` to the base. Only straight-line single
+/// assignment is tracked: a local that is assigned anywhere else (another `=`,
+/// a compound assignment, `++`/`--`, or has its address taken) has no alias, and
+/// neither has a parameter.
+pub fn local_aliases(
+    body: Node<'_>,
+    source: &[u8],
+    params: &HashSet<String>,
+) -> std::collections::HashMap<String, String> {
+    // name -> (assignment count, candidate base when the one assignment is eligible)
+    let mut seen: std::collections::HashMap<String, (usize, Option<String>)> =
+        std::collections::HashMap::new();
+    let mut note = |name: String, value: Option<Node<'_>>| {
+        let base = value
+            .map(unwrap_casts)
+            .filter(|v| v.kind() == "identifier")
+            .map(|v| text_of(v, source))
+            .filter(|b| is_field_base(b, params) && *b != name);
+        let entry = seen.entry(name).or_default();
+        entry.0 += 1;
+        entry.1 = base;
+    };
+    let mut stack = vec![body];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "assignment_expression" => {
+                if let Some(left) = n.child_by_field_name("left")
+                    && left.kind() == "identifier"
+                {
+                    let plain = n
+                        .child_by_field_name("operator")
+                        .is_some_and(|o| o.kind() == "=");
+                    let value = n.child_by_field_name("right").filter(|_| plain);
+                    note(text_of(left, source), value);
+                }
+            }
+            "update_expression" => {
+                if let Some(arg) = n.child_by_field_name("argument")
+                    && arg.kind() == "identifier"
+                {
+                    note(text_of(arg, source), None);
+                }
+            }
+            "pointer_expression" if n.child(0).is_some_and(|c| c.kind() == "&") => {
+                if let Some(arg) = n.child_by_field_name("argument")
+                    && arg.kind() == "identifier"
+                {
+                    note(text_of(arg, source), None);
+                }
+            }
+            "init_declarator" => {
+                if let Some(name) = n
+                    .child_by_field_name("declarator")
+                    .and_then(|d| declarator_name(d, source))
+                {
+                    note(name, n.child_by_field_name("value"));
+                }
+            }
+            _ => {}
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    seen.into_iter()
+        .filter(|(name, (count, base))| *count == 1 && base.is_some() && !params.contains(name))
+        .filter_map(|(name, (_, base))| base.map(|b| (name, b)))
+        .collect()
+}
+
+/// Strip casts and parentheses: `(byte *)(x)` → `x`.
+fn unwrap_casts(mut node: Node<'_>) -> Node<'_> {
+    loop {
+        let next = match node.kind() {
+            "cast_expression" => node.child_by_field_name("value"),
+            "parenthesized_expression" => node.named_child(0),
+            _ => None,
+        };
+        match next {
+            Some(n) => node = n,
+            None => return node,
+        }
+    }
 }
 
 /// Access width in bytes from the cast type, when it is a known type name.

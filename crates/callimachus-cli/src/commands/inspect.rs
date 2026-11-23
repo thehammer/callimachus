@@ -1,9 +1,10 @@
+use super::facts::{confidence_tag, fact_line};
 use anyhow::Result;
 use callimachus_core::corrections::CorrectionsEngine;
 use callimachus_core::corrections::types::{Correction, CorrectionKind, EntityLinkKind};
 use callimachus_core::indexing::EntityFilter;
 use callimachus_core::query::service::QueryService;
-use callimachus_core::query::types::ExplainComponentInput;
+use callimachus_core::query::types::{EntityInput, EntityOutput, ExplainComponentInput};
 use callimachus_core::storage::StorageBackend;
 use callimachus_core::types::ToolResult;
 use callimachus_core::types::chunk::Chunk;
@@ -202,6 +203,52 @@ pub fn run_corrections(corpus_id: &str, db: &dyn StorageBackend) -> Result<Vec<C
     Ok(db.correction_list(corpus_id)?)
 }
 
+/// Print one entity with the facts anchored on it; unconfirmed facts are
+/// tagged "(inferred)" / "(unknown)".
+pub fn run_entity(corpus_id: &str, name_or_id: &str, db: Arc<dyn StorageBackend>) -> Result<()> {
+    db.corpus_require(corpus_id)?;
+    let engine = CorrectionsEngine::load(db.as_ref(), corpus_id)?;
+    let svc = QueryService::with_corrections(db, engine);
+    match svc.entity(EntityInput {
+        corpus_id: corpus_id.to_string(),
+        name_or_id: name_or_id.to_string(),
+        kind: None,
+    }) {
+        ToolResult::Ok(s) => {
+            print!("{}", entity_text(&s.data));
+            Ok(())
+        }
+        _ => anyhow::bail!("no entity '{name_or_id}' in corpus '{corpus_id}'"),
+    }
+}
+
+/// Text rendering of an entity and its anchored facts, references and variants.
+pub fn entity_text(out: &EntityOutput) -> String {
+    let mut s = format!("{} [{}]\n", out.entity.canonical_name, out.entity.kind);
+    for f in &out.facts {
+        s.push_str(&fact_line(f));
+        s.push('\n');
+    }
+    for r in &out.reference {
+        s.push_str(&format!(
+            "reference: {}/{}{}  {}\n",
+            r.corpus_id,
+            r.name,
+            confidence_tag(&r.confidence),
+            r.summary.as_deref().unwrap_or("")
+        ));
+    }
+    for v in &out.variants {
+        s.push_str(&format!(
+            "variant: {}{}  {}\n",
+            v.id,
+            confidence_tag(&v.confidence),
+            v.summary.as_deref().unwrap_or("")
+        ));
+    }
+    s
+}
+
 /// Assemble and print a diegesis (narrative explanation) for `entity` in `corpus_id`.
 /// Uses BFS over call edges via the query service.
 pub fn run_diegesis(
@@ -393,6 +440,31 @@ mod tests {
 
     fn seed_correction(db: &dyn StorageBackend, kind: CorrectionKind) {
         db.correction_insert(Some(CORPUS), None, &kind).unwrap();
+    }
+
+    #[test]
+    fn entity_text_tags_unconfirmed_facts() {
+        use callimachus_core::query::types::EntityFact;
+        let db = SqliteBackend::open_in_memory().unwrap();
+        seed_corpus(&db);
+        let entity = seed_entity(&db, "e1", "obj+0x4", "field", 0.5, 1);
+        let fact = |id: &str, c: &str| EntityFact {
+            id: id.into(),
+            kind: "field".into(),
+            summary: "x".into(),
+            confidence: c.into(),
+            evidence: vec![],
+            notes: None,
+        };
+        let out = EntityOutput {
+            entity,
+            facts: vec![fact("a", "inferred"), fact("b", "confirmed")],
+            reference: vec![],
+            variants: vec![],
+        };
+        let text = entity_text(&out);
+        assert!(text.contains("fact: a [field] (inferred)  x"), "{text}");
+        assert!(text.contains("fact: b [field]  x"), "{text}");
     }
 
     /// Filtering by kind="character" returns only the 2 character entities, not the place.

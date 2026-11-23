@@ -138,8 +138,22 @@ local `puVar2`) is not a base.
 **Naming.** The entity is named `{B}+0x{k:x}` or `{B}-0x{k:x}` (negative
 offsets keep their sign; offset 0 is `param_1+0x0`), kind `field`, confidence
 0.5. Its id is `{corpus}:{name lowercased}` (so `+0x4` and `-0x4` stay
-distinct). The entity is shared by every function in the corpus that uses that
-base and offset.
+distinct), shared by every function in the corpus that uses that base and
+offset, **except** for register-style bases (`in_*`, `unaff_*`, `extraout_*`,
+with or without a `_NN` suffix). Those are named after a register at a
+function's entry and mean different objects in different functions, so their
+id is function-qualified: `{corpus}:{name lowercased}@{function lowercased}`
+(`game:in_a0+0x1c@fun_00001c04`). The entity name stays `in_A0+0x1c`. This
+applies to every corpus the C adapter indexes, binary exports included.
+
+**Local aliases.** Within one function, a local assigned directly from an
+eligible base, `p = unaff_A2;`, `p = (byte *)unaff_A2;` or `byte *p = unaff_A2;`,
+makes `*(T *)(p + 0xNN)` count as `unaff_A2+0xNN` (and annotate as `p->field`).
+The rule is exact: `p` must be a non-parameter local that is assigned
+**exactly once** in the whole function, with a (cast-wrapped) base on the right
+of a plain `=`. Any other assignment to `p` anywhere (a second `=`, `+=`, `++`,
+`--`) or taking its address (`&p`) cancels the alias. Aliases of aliases and
+branch-sensitive flow are not tracked.
 
 **Edges.** One edge per kind per (function, field): `writes` when the
 dereference is an assignment target (including `+=` and `++`), `reads`
@@ -154,7 +168,6 @@ Layout facts (`docs/facts.md`, kind `layout`) name these entities (`obj.x`) and
 drive source annotation (`unaff_A2->x /* obj+0x10 s16 */`). The adapter itself
 knows nothing about layouts.
 
-Limitations: aliasing through locals (`p = unaff_A2; *(short *)(p + 0x10)`) is
-not tracked; array-index forms such as `in_A0[0x20]` are not fields; offsets
+Limitations: aliasing is limited to the single-assignment rule above; array-index forms such as `in_A0[0x20]` are not fields; offsets
 must be number literals. Binary-export corpora get the same entities, since
 the adapter analyses each function's C.

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use callimachus_core::QueryService;
 use callimachus_core::corrections::fact_import::{ImportReport, import};
+use callimachus_core::corrections::facts::confidence_score;
 use callimachus_core::corrections::layouts::field_names_for;
 use callimachus_core::corrections::{CorrectionsEngine, FactRecord};
 use callimachus_core::query::{EntityEdgesInput, EntityInput};
@@ -48,21 +49,47 @@ fn world() -> Arc<SqliteBackend> {
     .unwrap();
     add_entity(db.as_ref(), "FUN_a", "function");
     add_entity(db.as_ref(), "FUN_b", "function");
-    add_entity(db.as_ref(), "unaff_A2+0x10", "field");
-    add_entity(db.as_ref(), "unaff_A2+0x12", "field");
+    // Register-style bases are per function: ids are `{name}@{function}`.
+    add_entity(db.as_ref(), "unaff_A2+0x10@FUN_a", "field");
+    add_entity(db.as_ref(), "unaff_A2+0x10@FUN_b", "field");
+    add_entity(db.as_ref(), "unaff_A2+0x12@FUN_a", "field");
+    add_entity(db.as_ref(), "in_A0+0x1c@FUN_a", "field");
+    add_entity(db.as_ref(), "in_A0+0x1c@FUN_b", "field");
+    add_entity(db.as_ref(), "obj_table+0x4", "field");
     add_edge(
         db.as_ref(),
         "e1",
         "game:fun_a",
-        "game:unaff_a2+0x10",
+        "game:unaff_a2+0x10@fun_a",
         "reads",
     );
     add_edge(
         db.as_ref(),
         "e2",
         "game:fun_b",
-        "game:unaff_a2+0x10",
+        "game:unaff_a2+0x10@fun_b",
         "writes",
+    );
+    add_edge(
+        db.as_ref(),
+        "e3",
+        "game:fun_a",
+        "game:in_a0+0x1c@fun_a",
+        "reads",
+    );
+    add_edge(
+        db.as_ref(),
+        "e4",
+        "game:fun_b",
+        "game:in_a0+0x1c@fun_b",
+        "reads",
+    );
+    add_edge(
+        db.as_ref(),
+        "e5",
+        "game:fun_b",
+        "game:obj_table+0x4",
+        "reads",
     );
     db
 }
@@ -71,7 +98,7 @@ fn layout_json(data_patch: impl FnOnce(&mut Value)) -> Value {
     let mut data = json!({
         "name": "obj",
         "bases": ["unaff_A2", "in_A2"],
-        "functions": {"include": [], "exclude": []},
+        "functions": {"include": ["FUN_a", "FUN_b"], "exclude": []},
         "fields": [
             {"offset": "0x10", "name": "x", "type": "s16",
              "summary": "x position", "confidence": "confirmed"},
@@ -132,19 +159,20 @@ fn assert_rejected(patch: impl FnOnce(&mut Value), needle: &str) {
 
 #[test]
 fn layout_dot_field_name_resolves_to_the_field_entity() {
-    let (db, _e) = imported(|_| {});
+    // Scoped to one function, `obj.x` names one entity; over two it is ambiguous.
+    let (db, _e) = imported(|d| d["functions"]["include"] = json!(["FUN_a"]));
     let out = ok(service(&db).entity(EntityInput {
         corpus_id: C.into(),
         name_or_id: "obj.x".into(),
         kind: None,
     }));
-    assert_eq!(out.id, "game:unaff_a2+0x10");
+    assert_eq!(out.id, "game:unaff_a2+0x10@fun_a");
 }
 
 #[test]
 fn field_entity_carries_a_synthetic_fact_with_the_field_summary_and_confidence() {
     let (_db, e) = imported(|_| {});
-    let facts = e.facts_for_entity("game:unaff_a2+0x10");
+    let facts = e.facts_for_entity("game:unaff_a2+0x10@fun_a");
     let (f, _anchors) = facts
         .iter()
         .find(|(f, _)| f.id == "layout.obj.x")
@@ -162,7 +190,7 @@ fn field_entity_carries_a_synthetic_fact_with_the_field_summary_and_confidence()
 #[test]
 fn field_without_summary_or_confidence_falls_back_to_name_and_layout_confidence() {
     let (_db, e) = imported(|_| {});
-    let facts = e.facts_for_entity("game:unaff_a2+0x12");
+    let facts = e.facts_for_entity("game:unaff_a2+0x12@fun_a");
     let (f, _) = facts
         .iter()
         .find(|(f, _)| f.id == "layout.obj.y")
@@ -308,4 +336,123 @@ fn from_json_rejects_malformed_layouts() {
     bad = layout_json(|d| d["name"] = json!("Obj"));
     assert!(FactRecord::from_json(&bad).is_err());
     assert!(FactRecord::from_json(&layout_json(|_| {})).is_ok());
+}
+
+// ── function scoping ─────────────────────────────────────────────────────────
+
+fn anchors_of(e: &CorrectionsEngine) -> Vec<String> {
+    e.anchors_for_fact(C, "layout.obj")
+}
+
+fn in_a0_layout(patch: impl FnOnce(&mut Value)) -> Value {
+    layout_json(|d| {
+        d["bases"] = json!(["in_A0"]);
+        d["fields"] = json!([{"offset": "0x1c", "name": "w"}]);
+        patch(d)
+    })
+}
+
+#[test]
+fn register_base_anchors_only_in_the_listed_functions() {
+    let db = world();
+    let r = run_import(
+        &db,
+        vec![in_a0_layout(|d| d["functions"] = json!(["FUN_a"]))],
+    );
+    assert!(r.rejected.is_empty(), "{:?}", r.rejected);
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(anchors_of(&engine(&db)), vec!["game:in_a0+0x1c@fun_a"]);
+}
+
+#[test]
+fn functions_may_be_given_as_ids_or_addresses() {
+    let db = world();
+    let mut f = Entity::new(
+        "game:fun_00001c04".into(),
+        C.into(),
+        "FUN_00001c04".into(),
+        "function".into(),
+    );
+    f.aliases.push("0x1c04".into());
+    db.entity_upsert(&f).unwrap();
+    add_entity(db.as_ref(), "in_A0+0x1c@FUN_00001c04", "field");
+    let r = run_import(
+        &db,
+        vec![in_a0_layout(|d| {
+            d["functions"] = json!(["game:fun_b", "0x1c04"])
+        })],
+    );
+    assert!(r.rejected.is_empty(), "{:?}", r.rejected);
+    assert_eq!(
+        anchors_of(&engine(&db)),
+        vec!["game:in_a0+0x1c@fun_00001c04", "game:in_a0+0x1c@fun_b"]
+    );
+}
+
+#[test]
+fn register_base_without_functions_does_not_anchor_and_warns() {
+    let db = world();
+    let r = run_import(
+        &db,
+        vec![in_a0_layout(|d| {
+            d.as_object_mut().unwrap().remove("functions");
+        })],
+    );
+    assert!(r.rejected.is_empty(), "{:?}", r.rejected);
+    assert_eq!(
+        r.warnings,
+        vec!["layout layout.obj: base in_A0 is per-function; give data.functions"]
+    );
+    assert!(anchors_of(&engine(&db)).is_empty());
+}
+
+#[test]
+fn global_base_anchors_without_functions() {
+    let db = world();
+    let r = run_import(
+        &db,
+        vec![layout_json(|d| {
+            d["bases"] = json!(["obj_table"]);
+            d["fields"] = json!([{"offset": "0x4", "name": "n"}]);
+            d.as_object_mut().unwrap().remove("functions");
+        })],
+    );
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(anchors_of(&engine(&db)), vec!["game:obj_table+0x4"]);
+}
+
+#[test]
+fn global_base_scoped_to_functions_needs_an_access_in_them() {
+    let db = world();
+    let patch = |f: &'static str| {
+        move |d: &mut Value| {
+            d["bases"] = json!(["obj_table"]);
+            d["fields"] = json!([{"offset": "0x4", "name": "n"}]);
+            d["functions"] = json!([f]);
+        }
+    };
+    run_import(&db, vec![layout_json(patch("FUN_a"))]);
+    assert!(anchors_of(&engine(&db)).is_empty());
+    run_import(&db, vec![layout_json(patch("FUN_b"))]);
+    assert_eq!(anchors_of(&engine(&db)), vec!["game:obj_table+0x4"]);
+}
+
+#[test]
+fn field_entity_confidence_follows_the_field_then_the_layout() {
+    let (db, _e) = imported(|_| {});
+    let conf = |name: &str| {
+        let e = engine(&db);
+        let mut ents = db.entity_list(C).unwrap();
+        e.apply_to_entities(&mut ents);
+        ents.iter().find(|x| x.id == name).unwrap().confidence
+    };
+    // x is `confirmed`, y inherits the layout's `inferred`.
+    assert_eq!(
+        conf("game:unaff_a2+0x10@fun_a"),
+        confidence_score("confirmed")
+    );
+    assert_eq!(
+        conf("game:unaff_a2+0x12@fun_a"),
+        confidence_score("inferred")
+    );
 }

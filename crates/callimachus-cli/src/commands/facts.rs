@@ -151,6 +151,9 @@ fn show(db: Arc<dyn StorageBackend>, corpus_id: &str, fact_id: &str) -> Result<(
         }) else {
             continue;
         };
+        for f in &s.data.facts {
+            println!("{}", fact_line(f));
+        }
         for r in &s.data.reference {
             println!(
                 "reference: {}/{}{}  {}",
@@ -173,10 +176,48 @@ fn show(db: Arc<dyn StorageBackend>, corpus_id: &str, fact_id: &str) -> Result<(
 }
 
 /// ` (inferred)` for any non-confirmed confidence label, else empty.
-fn confidence_tag(confidence: &str) -> String {
+pub(crate) fn confidence_tag(confidence: &str) -> String {
     if confidence == "confirmed" {
         String::new()
     } else {
         format!(" ({confidence})")
+    }
+}
+
+/// One line for a fact anchored on an entity.
+pub(crate) fn fact_line(f: &callimachus_core::query::types::EntityFact) -> String {
+    format!(
+        "fact: {} [{}]{}  {}",
+        f.id,
+        f.kind,
+        confidence_tag(&f.confidence),
+        f.summary
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use callimachus_core::query::types::EntityFact;
+
+    fn fact(confidence: &str) -> EntityFact {
+        EntityFact {
+            id: "layout.obj.x".into(),
+            kind: "field".into(),
+            summary: "x position".into(),
+            confidence: confidence.into(),
+            evidence: vec![],
+            notes: None,
+        }
+    }
+
+    #[test]
+    fn unconfirmed_facts_are_tagged() {
+        assert_eq!(
+            fact_line(&fact("inferred")),
+            "fact: layout.obj.x [field] (inferred)  x position"
+        );
+        assert!(fact_line(&fact("unknown")).contains("(unknown)"));
+        assert!(!fact_line(&fact("confirmed")).contains('('));
     }
 }

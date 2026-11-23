@@ -20,7 +20,10 @@ pub const LAYOUT_KIND: &str = "layout";
 pub struct Layout {
     pub name: String,
     pub bases: Vec<String>,
-    /// Functions the layout applies to when annotating; empty means all.
+    /// Functions (ids, names or addresses) the layout is scoped to; empty means
+    /// every function. Written as `data.functions: [..]` or
+    /// `data.functions: {include: [..], exclude: [..]}`. A scoped layout anchors
+    /// only the field entities accessed in these functions.
     pub include: Vec<String>,
     pub exclude: Vec<String>,
     pub fields: Vec<LayoutField>,
@@ -61,10 +64,13 @@ impl Layout {
         }
         let (include, exclude) = match obj.get("functions") {
             None | Some(serde_json::Value::Null) => (vec![], vec![]),
+            Some(serde_json::Value::Array(_)) => {
+                (string_list(obj.get("functions"), "data.functions")?, vec![])
+            }
             Some(f) => {
-                let f = f
-                    .as_object()
-                    .ok_or("`data.functions` must be an object with `include`/`exclude`")?;
+                let f = f.as_object().ok_or(
+                    "`data.functions` must be a list or an object with `include`/`exclude`",
+                )?;
                 (
                     string_list(f.get("include"), "data.functions.include")?,
                     string_list(f.get("exclude"), "data.functions.exclude")?,
@@ -113,26 +119,54 @@ impl Layout {
             .flatten()
     }
 
-    /// True when the layout applies to `function_name` (annotation scope).
+    /// True when the layout applies to `function_name` (annotation scope). An
+    /// entry may be the function name or its id (`corpus:name`).
     pub fn admits(&self, function_name: &str) -> bool {
-        (self.include.is_empty() || self.include.iter().any(|f| f == function_name))
-            && !self.exclude.iter().any(|f| f == function_name)
+        let is = |entry: &String| {
+            entry.eq_ignore_ascii_case(function_name)
+                || entry
+                    .split_once(':')
+                    .is_some_and(|(_, n)| n.eq_ignore_ascii_case(function_name))
+        };
+        (self.include.is_empty() || self.include.iter().any(is)) && !self.exclude.iter().any(is)
     }
 
-    /// Entity ids of every `(base, field)` pair in `corpus_id`.
-    pub fn anchor_ids(&self, corpus_id: &str) -> Vec<String> {
-        self.bases
-            .iter()
-            .flat_map(|b| {
-                self.fields
-                    .iter()
-                    .map(move |f| entity_id(corpus_id, b, f.offset))
-            })
-            .collect()
+    /// True when `data.functions` names the functions the layout is scoped to.
+    pub fn is_scoped(&self) -> bool {
+        !self.include.is_empty()
+    }
+
+    /// Bases that are per-function register names (`in_A0`, `unaff_A2`, ...).
+    pub fn register_bases(&self) -> impl Iterator<Item = &String> {
+        self.bases.iter().filter(|b| is_register_base(b))
+    }
+
+    /// Candidate anchor entity ids in `corpus_id`: a register-style base gives
+    /// one id per function name in `functions` (ids are function-qualified for
+    /// those, `{corpus}:{base+0xoff}@{function}`), any other base gives its
+    /// global id. The caller keeps those that exist.
+    pub fn anchor_ids(&self, corpus_id: &str, functions: &[String]) -> Vec<String> {
+        let mut out = Vec::new();
+        for b in &self.bases {
+            for f in &self.fields {
+                let id = entity_id(corpus_id, b, f.offset);
+                if is_register_base(b) {
+                    out.extend(
+                        functions
+                            .iter()
+                            .map(|func| format!("{id}@{}", func.to_lowercase())),
+                    );
+                } else {
+                    out.push(id);
+                }
+            }
+        }
+        out
     }
 
     /// The field that `anchor_id` (an entity id in `corpus_id`) names.
     pub fn field_for_anchor(&self, corpus_id: &str, anchor_id: &str) -> Option<&LayoutField> {
+        let anchor_id = anchor_id.rsplit_once('@').map_or(anchor_id, |(a, _)| a);
         self.bases.iter().find_map(|b| {
             self.fields
                 .iter()
@@ -203,6 +237,18 @@ pub fn entity_id(corpus_id: &str, base: &str, offset: i64) -> String {
         base.to_lowercase(),
         offset.unsigned_abs()
     )
+}
+
+/// True for decompiler register pseudo-variables (`in_*`, `unaff_*`,
+/// `extraout_*`, with or without a `_NN` suffix). They are named after a
+/// register at a function's entry, so they mean different objects in
+/// different functions.
+pub fn is_register_base(base: &str) -> bool {
+    ["in_", "unaff_", "extraout_"].iter().any(|p| {
+        base.strip_prefix(p).is_some_and(|rest| {
+            !rest.is_empty() && rest.chars().all(|c| c.is_alphanumeric() || c == '_')
+        })
+    })
 }
 
 /// Hex offset with optional sign: `0x10`, `-0x4`.
