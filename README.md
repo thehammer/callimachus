@@ -257,6 +257,7 @@ calli correct …                     (deprecated alias for calli scholion apply
 calli facts import <id> <path>... [--prune]   Import confirmed facts as scholia
 calli facts list <id> [--kind k] [--topic t] [--json]
 calli facts show <id> <fact-id>
+#   confidence: confirmed=1.0, inferred=0.6, unknown=0.3 (see docs/facts.md)
 
 # Cross-corpus
 calli link candidates <a> <b>       Suggest entity links between two corpora

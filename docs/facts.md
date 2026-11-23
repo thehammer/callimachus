@@ -36,12 +36,12 @@ Kinds with defined `data`:
 | `variable` | `space`, `address`, `size` |
 | `table` | `space`, `address`, and `record` or `stride` |
 | `routine` | `space`, `address`, `role` |
-| `region` | `space`, `start`, `end` |
-| `constant` | `value`, optional `meaning` |
+| `region` | `space`, `start`, `end` (`end` must not be less than `start`) |
+| `format`, `rule`, `constant`, `behaviour`, `asset` | optional, free JSON object (e.g. `{"bytes": 32}`); a non-object `data` is rejected |
 | `variant` | `variant` (id), `affects` (list of fact ids or addresses), optional `detects` |
 | `platform` | free object naming the variant values a game uses, e.g. `{"region": "pal-overseas", "pad": "6-button"}` |
 
-Other kinds (`rule`, `behaviour`, `format`, `codec`, `asset`, or any string)
+Other kinds (`codec`, or any string)
 are accepted and stored without anchoring.
 
 An **index file** is any JSON object with a `"facts": ["a.json", "b.json"]`
@@ -52,6 +52,21 @@ names containing `/`, or equal to `.` or `..`, are refused.
 
 An invalid record is rejected with a line naming the file, the fact id and the
 reason; the other records still import.
+
+### Confidence
+
+A fact's `confidence` label maps to the numeric confidence stored on its
+materialised entity and on `affects` edges (`confidence_score` in
+`corrections/facts.rs`): `confirmed` → 1.0, `inferred` → 0.6, `unknown` → 0.3.
+An `affects` edge takes the lower of the variant's and the target fact's
+score. `entity` output carries the label on each `reference` and `variant`
+entry, and text output marks non-confirmed ones, e.g. `(inferred)`.
+
+### Import warnings
+
+A variant whose `data.affects` names a fact id not in the import, or an
+address that matches no entity, does not fail the import. The import prints
+`warning: variant <id>: ...` and counts it in the summary (`warnings N`).
 
 ## Anchoring
 

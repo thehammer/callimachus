@@ -350,11 +350,28 @@ impl QueryService {
                         .first()
                         .map(|(f, _)| f.summary.clone())
                 });
+                let other_engine = CorrectionsEngine::load(self.db.as_ref(), &other_corpus).ok();
+                let fact_confidence = |entity: &Entity| -> String {
+                    other_engine
+                        .as_ref()
+                        .and_then(|e| {
+                            e.facts_in_corpus(&other_corpus)
+                                .into_iter()
+                                .find(|(f, anchors)| {
+                                    entity.kind.starts_with("fact_")
+                                        && f.id == entity.canonical_name
+                                        || anchors.contains(&entity.id)
+                                })
+                                .map(|(f, _)| f.confidence.clone())
+                        })
+                        .unwrap_or_else(|| "confirmed".to_string())
+                };
                 reference.push(EntityReference {
                     corpus_id: other_corpus.clone(),
                     entity_id: target.id.clone(),
                     name: target.canonical_name.clone(),
                     summary: anchored_summary.or_else(|| target.description.clone()),
+                    confidence: fact_confidence(&target),
                 });
                 let edges = self
                     .db
@@ -373,6 +390,7 @@ impl QueryService {
                         variants.push(EntityVariant {
                             id: v.canonical_name.clone(),
                             summary: v.description.clone(),
+                            confidence: fact_confidence(&v),
                         });
                     }
                 }

@@ -5,14 +5,14 @@ use crate::corrections::address::{
     apply_mask, canonical, cpu_spaces_from_config, entity_address, mask_from_config, parse_address,
 };
 use crate::corrections::engine::CorrectionsEngine;
-use crate::corrections::facts::FactRecord;
+use crate::corrections::facts::{FactRecord, confidence_score};
 use crate::corrections::types::CorrectionKind;
 use crate::error::{CalError, Result};
 use crate::storage::StorageBackend;
 use crate::types::edge::Edge;
 use crate::types::entity::Entity;
 use crate::types::location::Location;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Origin scope marking edges derived from facts.
@@ -28,6 +28,7 @@ pub struct ImportReport {
     pub unchanged: usize,
     pub retracted: usize,
     pub rejected: Vec<String>,
+    pub warnings: Vec<String>,
     pub anchored: usize,
     pub materialised: usize,
 }
@@ -144,7 +145,7 @@ pub fn import(
         }
     }
 
-    rebuild_variant_edges(db, corpus_id, mask)?;
+    report.warnings = rebuild_variant_edges(db, corpus_id, mask)?;
     Ok(report)
 }
 
@@ -277,7 +278,7 @@ fn materialise(
         format!("fact_{}", rec.kind),
     );
     e.description = Some(rec.summary.clone());
-    e.confidence = 1.0;
+    e.confidence = confidence_score(&rec.confidence);
     if matches!(rec.kind.as_str(), "variable" | "table" | "routine")
         && space_anchors(rec, cpu_spaces)
         && let Some(addr) = rec.address().and_then(parse_address)
@@ -295,7 +296,8 @@ fn rebuild_variant_edges(
     db: &dyn StorageBackend,
     corpus_id: &str,
     mask: Option<u64>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
+    let mut warnings = Vec::new();
     db.edge_delete_by_scope(corpus_id, "affects", FACT_EDGE_SCOPE)?;
 
     let engine = CorrectionsEngine::load(db, corpus_id)?;
@@ -320,21 +322,37 @@ fn rebuild_variant_edges(
             .and_then(|a| a.as_array())
             .map(|a| a.iter().filter_map(|i| i.as_str()).collect::<Vec<_>>())
             .unwrap_or_default();
-        let mut targets: BTreeSet<String> = BTreeSet::new();
+        let mut targets: BTreeMap<String, f32> = BTreeMap::new();
+        let own = confidence_score(&variant.confidence);
         for item in affects {
+            let mut resolved = false;
             if let Some((rec, anchors)) = by_fact.get(item) {
+                resolved = true;
+                let conf = own.min(confidence_score(&rec.confidence));
+                let mut add = |id: String| {
+                    targets.insert(id, conf);
+                };
                 if anchors.is_empty() || ALWAYS_MATERIALISED.contains(&rec.kind.as_str()) {
-                    targets.insert(fact_entity_id(corpus_id, &rec.id));
+                    add(fact_entity_id(corpus_id, &rec.id));
                 }
-                targets.extend(anchors.iter().cloned());
+                anchors.iter().cloned().for_each(&mut add);
             } else if let Some(addr) = parse_address(item)
                 && let Some(hits) = by_addr.get(&apply_mask(addr, mask))
             {
-                targets.extend(hits.iter().map(|e| e.id.clone()));
+                resolved = !hits.is_empty();
+                for e in hits {
+                    targets.insert(e.id.clone(), own);
+                }
+            }
+            if !resolved {
+                warnings.push(format!(
+                    "variant {}: `affects` target `{item}` does not resolve to a fact or address",
+                    variant.id
+                ));
             }
         }
         targets.remove(&from);
-        for to in targets {
+        for (to, conf) in targets {
             let mut edge = Edge::new(
                 format!("{corpus_id}:edge:fact:affects:{}:{to}", variant.id),
                 corpus_id.to_string(),
@@ -343,10 +361,10 @@ fn rebuild_variant_edges(
                 "affects".to_string(),
                 Location::new(corpus_id, format!("facts/{}", variant.id)),
             );
-            edge.confidence = 1.0;
+            edge.confidence = conf;
             edge.origin_scope = FACT_EDGE_SCOPE.to_string();
             db.edge_upsert(&edge)?;
         }
     }
-    Ok(())
+    Ok(warnings)
 }

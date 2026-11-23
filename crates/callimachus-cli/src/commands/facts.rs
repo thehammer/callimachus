@@ -61,16 +61,20 @@ pub fn run(cmd: FactsCommand, db: Arc<dyn StorageBackend>) -> Result<()> {
 fn import(db: &dyn StorageBackend, corpus_id: &str, paths: &[PathBuf], prune: bool) -> Result<()> {
     let r = fact_import::import(db, corpus_id, paths, prune)?;
     println!(
-        "added {}  changed {}  unchanged {}  retracted {}  rejected {}",
+        "added {}  changed {}  unchanged {}  retracted {}  rejected {}  warnings {}",
         r.added,
         r.changed,
         r.unchanged,
         r.retracted,
-        r.rejected.len()
+        r.rejected.len(),
+        r.warnings.len()
     );
     println!("anchored {}  materialised {}", r.anchored, r.materialised);
     for line in &r.rejected {
         eprintln!("rejected: {line}");
+    }
+    for line in &r.warnings {
+        eprintln!("warning: {line}");
     }
     Ok(())
 }
@@ -149,15 +153,30 @@ fn show(db: Arc<dyn StorageBackend>, corpus_id: &str, fact_id: &str) -> Result<(
         };
         for r in &s.data.reference {
             println!(
-                "reference: {}/{}  {}",
+                "reference: {}/{}{}  {}",
                 r.corpus_id,
                 r.name,
+                confidence_tag(&r.confidence),
                 r.summary.as_deref().unwrap_or("")
             );
         }
         for v in &s.data.variants {
-            println!("variant: {}  {}", v.id, v.summary.as_deref().unwrap_or(""));
+            println!(
+                "variant: {}{}  {}",
+                v.id,
+                confidence_tag(&v.confidence),
+                v.summary.as_deref().unwrap_or("")
+            );
         }
     }
     Ok(())
+}
+
+/// ` (inferred)` for any non-confirmed confidence label, else empty.
+fn confidence_tag(confidence: &str) -> String {
+    if confidence == "confirmed" {
+        String::new()
+    } else {
+        format!(" ({confidence})")
+    }
 }

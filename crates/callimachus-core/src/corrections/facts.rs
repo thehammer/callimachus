@@ -4,6 +4,16 @@ use serde::{Deserialize, Serialize};
 
 pub const CONFIDENCE_VALUES: [&str; 3] = ["confirmed", "inferred", "unknown"];
 
+/// Numeric confidence for a fact's `confidence` label:
+/// `confirmed` → 1.0, `inferred` → 0.6, anything else (`unknown`) → 0.3.
+pub fn confidence_score(label: &str) -> f32 {
+    match label {
+        "confirmed" => 1.0,
+        "inferred" => 0.6,
+        _ => 0.3,
+    }
+}
+
 /// One confirmed (or inferred) fact. Stored as the payload of a
 /// `CorrectionKind::Fact` scholion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,10 +95,10 @@ impl FactRecord {
             kind,
             topic: text("topic")?,
             summary,
-            data: obj
-                .get("data")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({})),
+            data: match obj.get("data") {
+                None | Some(serde_json::Value::Null) => serde_json::json!({}),
+                Some(v) => v.clone(),
+            },
             confidence,
             evidence,
             notes: text("notes")?,
@@ -129,13 +139,22 @@ impl FactRecord {
             "region" => {
                 need_str("space")?;
                 need_addr("start")?;
-                need_addr("end")
-            }
-            "constant" => {
-                if self.data.get("value").is_none() {
-                    return Err("`data.value` is required for kind `constant`".into());
+                need_addr("end")?;
+                let start = parse_address(need_str("start")?);
+                let end = parse_address(need_str("end")?);
+                if let (Some(start), Some(end)) = (start, end)
+                    && end < start
+                {
+                    return Err("`data.end` must not be less than `data.start`".into());
                 }
                 Ok(())
+            }
+            "format" | "rule" | "constant" | "behaviour" | "asset" => {
+                if self.data.is_object() {
+                    Ok(())
+                } else {
+                    Err(format!("`data` must be an object for kind `{}`", self.kind))
+                }
             }
             "variant" => {
                 need_str("variant")?;

@@ -31,6 +31,8 @@ pub struct EntityReference {
     pub entity_id: String,
     pub name: String,
     pub summary: Option<String>,
+    /// The fact's `confidence` label (`confirmed`, `inferred`, `unknown`).
+    pub confidence: String,
 }
 
 /// A hardware/behaviour variant reachable from a linked reference entity.
@@ -38,6 +40,8 @@ pub struct EntityReference {
 pub struct EntityVariant {
     pub id: String,
     pub summary: Option<String>,
+    /// The fact's `confidence` label (`confirmed`, `inferred`, `unknown`).
+    pub confidence: String,
 }
 
 /// `entity` output: the entity plus its facts, linked reference entities and variants.

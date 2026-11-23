@@ -742,3 +742,183 @@ fn corpus_overview_exposes_the_platform_fact_data() {
         Some(json!({"cpu": "toy16", "word_bits": 16}))
     );
 }
+
+// ── review fixes: data shapes, warnings, confidence, regions ─────────────────
+
+fn with_confidence(mut f: Value, confidence: &str) -> Value {
+    f["confidence"] = json!(confidence);
+    f
+}
+
+fn fresh_import(facts: Vec<Value>) -> (Arc<SqliteBackend>, ImportReport, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let db = game_db(None);
+    let p = write_facts(dir.path(), "f.json", facts);
+    let r = run_import(&db, GAME, &p, false);
+    (db, r, dir)
+}
+
+#[test]
+fn free_form_data_objects_import_for_constant_and_other_data_kinds() {
+    let (_db, r, _d) = fresh_import(vec![
+        fact("c.bytes", "constant", "Size", json!({"bytes": 32})),
+        fact(
+            "c.mask",
+            "constant",
+            "Mask",
+            json!({"mask": "0x08", "port": "0xC00004"}),
+        ),
+        fact(
+            "c.cols",
+            "constant",
+            "Columns",
+            json!({"h40": 80, "h32": 64}),
+        ),
+        fact("c.none", "constant", "No data", Value::Null),
+        fact("f.one", "format", "Fmt", json!({"anything": [1, 2]})),
+        fact("r.one", "rule", "Rule", json!({"x": true})),
+        fact("b.one", "behaviour", "Behaviour", json!({"y": 1})),
+        fact("a.one", "asset", "Asset", json!({"z": "w"})),
+    ]);
+    assert!(r.rejected.is_empty(), "{:?}", r.rejected);
+    assert_eq!(r.added, 8);
+}
+
+#[test]
+fn data_that_is_not_an_object_is_rejected_for_free_form_kinds() {
+    let (_db, r, _d) = fresh_import(vec![fact("c.bad", "constant", "Bad", json!(5))]);
+    assert_eq!(r.rejected.len(), 1, "{:?}", r.rejected);
+    assert!(r.rejected[0].contains("object"), "{:?}", r.rejected);
+}
+
+#[test]
+fn dangling_affects_warn_without_failing_the_import() {
+    let (_db, r, _d) = fresh_import(vec![
+        var_fact("var.counter", "Counter", "0xFF0010", "wram"),
+        fact(
+            "variant.v",
+            "variant",
+            "A variant",
+            json!({"variant": "v", "affects": ["var.counter", "no.such.fact", "0xdead00"]}),
+        ),
+    ]);
+    assert!(r.rejected.is_empty(), "{:?}", r.rejected);
+    assert_eq!(r.warnings.len(), 2, "{:?}", r.warnings);
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("variant.v") && w.contains("no.such.fact"))
+    );
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("variant.v") && w.contains("0xdead00"))
+    );
+}
+
+#[test]
+fn region_with_end_before_start_is_rejected() {
+    let (_db, r, _d) = fresh_import(vec![
+        fact(
+            "region.bad",
+            "region",
+            "Backwards",
+            json!({"space": "rom", "start": "0x2000", "end": "0x1000"}),
+        ),
+        fact(
+            "region.ok",
+            "region",
+            "Fine",
+            json!({"space": "rom", "start": "0x1000", "end": "0x2000"}),
+        ),
+    ]);
+    assert_eq!(r.rejected.len(), 1, "{:?}", r.rejected);
+    assert!(r.rejected[0].contains("region.bad"));
+    assert!(r.rejected[0].contains("end"));
+    assert_eq!(r.added, 1);
+}
+
+/// Reference with one confirmed and one inferred register, and an inferred
+/// variant affecting both.
+fn mixed_reference_facts() -> Vec<Value> {
+    vec![
+        var_fact("io.video-control", "Video control port", "0xC00004", "io"),
+        with_confidence(
+            var_fact("io.version", "Version register", "0xA10001", "io"),
+            "inferred",
+        ),
+        with_confidence(
+            fact(
+                "variant.region-bits",
+                "variant",
+                "Region bits differ",
+                json!({"variant": "region", "affects": ["io.version"]}),
+            ),
+            "inferred",
+        ),
+    ]
+}
+
+fn mixed_world(dir: &Path) -> Arc<SqliteBackend> {
+    let db = game_db(Some("0xffffff"));
+    add_corpus(
+        db.as_ref(),
+        REF,
+        config(Some("reference"), Some("0xffffff")),
+    );
+    db.collection_insert(&Collection::new(COLL, COLL, CollectionKind::Domain))
+        .unwrap();
+    db.collection_add_member(COLL, GAME, MemberType::Corpus)
+        .unwrap();
+    db.collection_add_member(COLL, REF, MemberType::Corpus)
+        .unwrap();
+    let p = write_facts(dir, "ref.json", mixed_reference_facts());
+    run_import(&db, REF, &p, false);
+    link_addresses(db.as_ref(), COLL).unwrap();
+    db
+}
+
+#[test]
+fn inferred_facts_get_reduced_confidence_on_entities_and_edges() {
+    let dir = TempDir::new().unwrap();
+    let db = mixed_world(dir.path());
+    let variant = db
+        .entity_get_by_id("ref:fact.variant.region-bits")
+        .unwrap()
+        .unwrap();
+    assert!(variant.confidence < 1.0, "{}", variant.confidence);
+    let edges: Vec<_> = db
+        .edge_list(REF)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "affects")
+        .collect();
+    assert_eq!(edges.len(), 1);
+    assert!(edges[0].confidence < 1.0, "{}", edges[0].confidence);
+}
+
+#[test]
+fn entity_output_keeps_inferred_and_confirmed_references_distinguishable() {
+    let dir = TempDir::new().unwrap();
+    let db = mixed_world(dir.path());
+
+    let inferred = entity_of(&db, GAME, "DAT_00a10001");
+    assert_eq!(inferred.reference.len(), 1);
+    assert_eq!(inferred.reference[0].confidence, "inferred");
+    assert_eq!(inferred.variants.len(), 1);
+    assert_eq!(inferred.variants[0].confidence, "inferred");
+
+    let confirmed = entity_of(&db, GAME, "_DAT_00c00004");
+    assert_eq!(confirmed.reference.len(), 1);
+    assert_eq!(confirmed.reference[0].confidence, "confirmed");
+}
+
+#[test]
+fn reimporting_mixed_confidence_facts_stays_idempotent() {
+    let dir = TempDir::new().unwrap();
+    let db = mixed_world(dir.path());
+    let p = dir.path().join("ref.json");
+    let r = run_import(&db, REF, &p, false);
+    assert_eq!((r.added, r.changed), (0, 0));
+    assert_eq!(r.unchanged, 3);
+}
