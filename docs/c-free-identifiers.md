@@ -114,3 +114,47 @@ the usual `reads`/`writes`) when:
 Limitations: rule 4 is a heuristic. Literals in comparisons such as
 `(T *)0xff3fff < p` are ignored, as are plain integers and struct-field offsets
 like `*(short *)(p + 0x10)`. One edge is emitted per (function, target).
+
+## Field accesses
+
+Object state is often reached through a pointer plus a byte offset:
+
+```c
+byte *unaff_A2;   // declared as a local by the decompiler
+*(short *)(unaff_A2 + 0x10) = *(short *)(unaff_A2 + 0x10) + *(short *)(unaff_A2 + 0x14);
+```
+
+The adapter turns each `(base, offset)` into a `field` entity.
+
+**Pattern.** `*(T *)(B + K)`, `*(T *)(B - K)` and `*(T *)B` (offset 0), where `B`
+is an identifier and `K` a number literal. The parentheses around `B + K` are
+optional.
+
+**Eligible bases** (`is_field_base` in `c.rs`): a parameter of the function, or a
+name matching `FIELD_BASE_PATTERN = ^(in|unaff|extraout)_\w+$`: the register
+pseudo-variables decompilers declare as locals. Any other name (such as a
+local `puVar2`) is not a base.
+
+**Naming.** The entity is named `{B}+0x{k:x}` or `{B}-0x{k:x}` (negative
+offsets keep their sign; offset 0 is `param_1+0x0`), kind `field`, confidence
+0.5. Its id is `{corpus}:{name lowercased}` (so `+0x4` and `-0x4` stay
+distinct). The entity is shared by every function in the corpus that uses that
+base and offset.
+
+**Edges.** One edge per kind per (function, field): `writes` when the
+dereference is an assignment target (including `+=` and `++`), `reads`
+otherwise. The existing handling of the base identifier is unchanged.
+
+**Width.** The cast type gives an alias `width:{n}`: `char`/`byte`/`undefined1`
+= 1, `short`/`ushort`/`undefined2` = 2, `int`/`uint`/`long`/`undefined4`/
+`pointer` = 4. The first width seen in a function wins; unknown types give no
+alias.
+
+Layout facts (`docs/facts.md`, kind `layout`) name these entities (`obj.x`) and
+drive source annotation (`unaff_A2->x /* obj+0x10 s16 */`). The adapter itself
+knows nothing about layouts.
+
+Limitations: aliasing through locals (`p = unaff_A2; *(short *)(p + 0x10)`) is
+not tracked; array-index forms such as `in_A0[0x20]` are not fields; offsets
+must be number literals. Binary-export corpora get the same entities, since
+the adapter analyses each function's C.
