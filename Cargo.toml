@@ -11,6 +11,7 @@ members = [
     "crates/adapters/callimachus-adapter-code",
     "crates/adapters/callimachus-adapter-wiki",
     "crates/adapters/callimachus-adapter-capture",
+    "crates/adapters/callimachus-adapter-binexport",
 ]
 resolver = "2"
 

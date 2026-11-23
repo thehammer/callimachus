@@ -125,6 +125,9 @@ fn add(
 
     let mut corpus = Corpus::new(id.clone(), name.clone(), kind.clone(), source.clone());
     corpus.config = config_value;
+    if kind == "binary-export" {
+        callimachus_adapter_binexport::merge_platform_config(&mut corpus.config, &source_path)?;
+    }
 
     db.corpus_insert(&corpus)?;
 
