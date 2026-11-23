@@ -393,7 +393,11 @@ fn analyse_function(
 /// Table-use heuristic for a named identifier: operand of unary `&`, base of a
 /// subscript (directly or via `(&X)[i]`), or a `PTR_`-prefixed name.
 fn is_table_use(ident: Node<'_>, name: &str) -> bool {
-    if name.len() >= 4 && name[..4].eq_ignore_ascii_case("PTR_") {
+    if name
+        .as_bytes()
+        .get(..4)
+        .is_some_and(|b| b.eq_ignore_ascii_case(b"PTR_"))
+    {
         return true;
     }
     let Some(parent) = ident.parent() else {
