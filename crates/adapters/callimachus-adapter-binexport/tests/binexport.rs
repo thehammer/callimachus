@@ -454,3 +454,23 @@ async fn summary_prompt_carries_hint_and_trimmed_content() {
         .unwrap();
     assert!(rec.0.lock().unwrap()[0].contains("more instructions */"));
 }
+
+#[tokio::test]
+async fn bundle_paths_cannot_escape_the_bundle() {
+    let d = tempfile::tempdir().unwrap();
+    write_bundle(d.path());
+    write(
+        d.path(),
+        "functions.jsonl",
+        &json!({"address":"0x001000","name":"FUN_00001000","c":"../outside.c","asm":null,"decompile_ok":true}).to_string(),
+    );
+    let a = BinExportAdapter::new();
+    let mut src = a
+        .discover(d.path().to_str().unwrap())
+        .await
+        .unwrap()
+        .remove(0);
+    src.meta = json!({"corpus_id": CORP});
+    let err = a.chunk(&src).await.unwrap_err().to_string();
+    assert!(err.contains("escapes the bundle root"), "{err}");
+}

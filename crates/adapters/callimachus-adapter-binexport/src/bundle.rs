@@ -183,8 +183,25 @@ impl Bundle {
     }
 
     /// Read a bundle-relative text file named by a functions.jsonl record.
+    /// The path must stay inside the bundle: absolute paths, `..` and symlinks
+    /// that leave the root are refused.
     pub fn read_text(&self, rel: &str) -> Result<String> {
-        let path = self.root.join(rel);
+        let rel_path = Path::new(rel);
+        if rel_path.is_absolute()
+            || rel_path
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            bail!("bundle path escapes the bundle root: {rel}");
+        }
+        let root = self.root.canonicalize()?;
+        let path = root
+            .join(rel_path)
+            .canonicalize()
+            .with_context(|| format!("resolving {rel} in {}", self.root.display()))?;
+        if !path.starts_with(&root) {
+            bail!("bundle path escapes the bundle root: {rel}");
+        }
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
     }
 }
