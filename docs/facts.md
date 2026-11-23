@@ -194,6 +194,70 @@ output of a game entity shows the linked `reference` entities and the
 The `platform` fact of a game corpus is reported by `corpus_overview` as
 `platform`.
 
+## How facts reach the LLM
+
+The summarize (function chunks), purpose and contract passes put a **verified
+context** block in each prompt, after `Kind:` and before the code, and (in
+`full` mode) show the code with struct fields named after layouts. No LLM is
+involved in building either.
+
+The block starts with this header, then one `- ` line per fact:
+
+```
+Verified context from the project's fact base (prefer it over guesses; if the code contradicts a fact, say so):
+```
+
+Lines are collected in this priority order and deduplicated:
+
+1. facts anchored to the entity itself (a routine's role, convention);
+2. for each `reads`/`writes`/`uses_table` target: its facts, its linked
+   reference entity (tagged `reference`) and the variants reachable through one
+   `affects` edge, e.g. `- reads _DAT_00a10001 = version port (reference, confirmed). Variant: region bits 7-6 select 50/60 Hz and language (confirmed)`;
+3. field facts of field-entity targets, looked up for the entity's own function:
+   `- writes unaff_A2+0x10 = obj.x: x position, whole pixels (s16, confirmed)`;
+4. direct callees with a `routine` fact:
+   `- calls FUN_00650c = unpack: decompress a blob into RAM (confirmed)`; a callee
+   name shared by several candidates (binary-export `caseD_1`) is listed once as
+   `- calls caseD_1 (ambiguous: N candidates)`, never with one candidate's fact;
+5. the `region` of any other address-named target: `- reads DAT_00012000: in ROM region "rom" (confirmed)`;
+6. `constant` facts (`data.value`) whose value occurs as a literal in the code
+   (hex compared case-insensitively and numerically: `0x2C0` matches `0x2c0`).
+
+Each line ends with the fact's own confidence word (`confirmed`, `inferred`);
+`unknown` facts read `(meaning open)`. The block is capped at 40 lines and 2,500
+characters in priority order; the rest becomes `- … N more omitted`. An entity
+with no lines gets no block, and its prompt is unchanged. When a block is
+present the prompt adds: "Use the names from the verified context (e.g. obj.x,
+the port names) in your answer."
+
+### Modes
+
+`calli index <corpus> --grounding none|facts|full`:
+
+| Mode | Prompt gets |
+|---|---|
+| `none` | exactly what it got before facts existed |
+| `facts` | the verified-context block |
+| `full` | the block and source with fields named (`unaff_A2->x /* obj+0x10 s16 */`) |
+
+Without the flag, the mode is `full` when the corpus has any fact or reference
+link, otherwise `none`. Each pass logs `[purpose] grounding=full
+entities_with_context=N avg_lines=M`, and `--estimate` includes the block in its
+prompt lengths.
+
+The Layer-2 cache key includes a hash of the block, the annotated source and the
+mode, so a changed fact re-derives the entity's artifacts; entities with no
+grounding keep their old keys. Existing artifacts are not re-derived
+automatically: re-run with `--full --entities …`.
+
+### Inspecting
+
+```
+calli inspect grounding <corpus> <entity> [--mode none|facts|full]
+```
+
+prints the block and the annotated source for one entity, with no LLM call.
+
 ## CLI
 
 ```

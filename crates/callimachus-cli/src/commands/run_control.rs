@@ -32,6 +32,8 @@ pub struct RunControl {
     /// `--stop-after`, e.g. `90m`, `4h`, `1h30m`.
     pub stop_after: Option<String>,
     pub estimate: bool,
+    /// `--grounding none|facts|full`; absent = the corpus default.
+    pub grounding: Option<String>,
 }
 
 impl RunControl {
@@ -45,6 +47,12 @@ impl RunControl {
             stop_after: self.stop_after.as_deref().map(parse_duration).transpose()?,
         };
         opts.estimate = self.estimate;
+        opts.grounding = self
+            .grounding
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|e: String| anyhow!(e))?;
         Ok(())
     }
 }

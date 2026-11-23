@@ -222,6 +222,74 @@ pub fn run_entity(corpus_id: &str, name_or_id: &str, db: Arc<dyn StorageBackend>
     }
 }
 
+/// Print what the LLM passes would be given for an entity: the verified-context
+/// block and the field-annotated source. No LLM is called.
+pub fn run_grounding(
+    corpus_id: &str,
+    name_or_id: &str,
+    mode: Option<&str>,
+    db: Arc<dyn StorageBackend>,
+) -> Result<()> {
+    print!("{}", grounding_text(corpus_id, name_or_id, mode, db)?);
+    Ok(())
+}
+
+/// The text `calli inspect grounding` prints.
+pub fn grounding_text(
+    corpus_id: &str,
+    name_or_id: &str,
+    mode: Option<&str>,
+    db: Arc<dyn StorageBackend>,
+) -> Result<String> {
+    use callimachus_core::indexing::grounding::{GroundingContext, GroundingMode};
+    let corpus = db.corpus_require(corpus_id)?;
+    let requested = mode
+        .map(str::parse::<GroundingMode>)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let engine = CorrectionsEngine::load(db.as_ref(), corpus_id)?;
+    let entity = match QueryService::with_corrections(Arc::clone(&db), engine).entity(EntityInput {
+        corpus_id: corpus_id.to_string(),
+        name_or_id: name_or_id.to_string(),
+        kind: None,
+    }) {
+        ToolResult::Ok(s) => s.data.entity,
+        _ => anyhow::bail!("no entity '{name_or_id}' in corpus '{corpus_id}'"),
+    };
+    let content = entity
+        .first_location
+        .as_ref()
+        .and_then(|l| db.chunk_get_by_uri(&l.uri()).ok().flatten())
+        .map(|c| c.content)
+        .unwrap_or_default();
+    let adapter = crate::commands::index::resolve_adapter(
+        &corpus,
+        &crate::commands::index::default_registry(),
+    )?;
+    let ctx = GroundingContext::load(Arc::clone(&db), &corpus, adapter, requested)?;
+    let g = ctx.build_for(&entity, &content);
+    let mut out = format!(
+        "{} [{}] grounding={}\n\n",
+        entity.canonical_name,
+        entity.kind,
+        ctx.mode.name()
+    );
+    if g.block.is_empty() {
+        out.push_str("(no verified context)\n");
+    } else {
+        out.push_str(&g.block);
+        out.push('\n');
+    }
+    if let Some(annotated) = &g.annotated_content {
+        out.push_str("\nAnnotated source:\n");
+        out.push_str(annotated);
+        if !annotated.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
 /// Text rendering of an entity and its anchored facts, references and variants.
 pub fn entity_text(out: &EntityOutput) -> String {
     let mut s = format!("{} [{}]\n", out.entity.canonical_name, out.entity.kind);
