@@ -167,6 +167,12 @@ pub fn print_estimate(result: &IndexResult, profile: &EstimateProfile, summaries
     table.print();
 
     println!("Estimates only: nothing was sent and no artifacts were written.");
+    if !result.estimate_skipped.is_empty() {
+        println!(
+            "Skipped non-LLM passes: {}",
+            result.estimate_skipped.join(", ")
+        );
+    }
     let needs_summaries = est
         .iter()
         .any(|e| e.pass == "purpose" || e.pass == "contract");

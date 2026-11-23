@@ -76,6 +76,10 @@ impl SourceAdapter for CodeAdapter {
         vec!["function", "file"]
     }
 
+    fn reuse_single_child_summary(&self) -> bool {
+        true
+    }
+
     /// Chunk the source directory using tree-sitter.
     async fn chunk(&self, source: &DiscoveredSource) -> Result<Vec<Chunk>> {
         let corpus_id = source

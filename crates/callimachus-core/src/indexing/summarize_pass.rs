@@ -115,7 +115,11 @@ pub async fn run(
                     .collect();
 
                 // A parent with a single summarized child would only restate it.
-                if let ([_], [only]) = (children.as_slice(), child_summaries.as_slice()) {
+                if let ([_], [only], true) = (
+                    children.as_slice(),
+                    child_summaries.as_slice(),
+                    adapter.reuse_single_child_summary(),
+                ) {
                     let reused = Summary {
                         id: Uuid::new_v4().to_string(),
                         target_id: chunk.id.clone(),

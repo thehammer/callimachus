@@ -331,6 +331,8 @@ pub struct IndexResult {
     pub runs: Vec<run_log::RunRecord>,
     /// Per-pass totals for an `--estimate` run; empty otherwise.
     pub estimates: Vec<PassEstimate>,
+    /// Non-LLM passes an `--estimate` run skipped because it writes nothing.
+    pub estimate_skipped: Vec<String>,
 }
 
 /// What one LLM pass would cost, measured from the provider's estimated usage.
@@ -503,7 +505,10 @@ impl IndexPipeline {
         // Pass::History runs.  If passes don't include History, synthesise an
         // all-dirty manifest so downstream passes process everything.
         let mut opts_local = opts.clone();
-        if !opts_local.passes.contains(&Pass::History) && opts_local.change_manifest.is_none() {
+        // An estimate never runs History, so it needs the synthetic manifest too.
+        if (opts_local.estimate || !opts_local.passes.contains(&Pass::History))
+            && opts_local.change_manifest.is_none()
+        {
             opts_local.change_manifest = Some(ChangeManifest::all_dirty("synthetic"));
         }
 
@@ -521,7 +526,25 @@ impl IndexPipeline {
                 .first()
                 .is_some_and(|r| r.status == "stopped");
 
+        // An estimate works from what is already indexed and writes nothing.
+        if opts_local.estimate
+            && (self.db.chunk_count(&corpus.id)? == 0 || self.db.entity_count(&corpus.id)? == 0)
+        {
+            anyhow::bail!(
+                "estimate needs an indexed corpus: run calli index {} --pass chunk,structure first",
+                corpus.id
+            );
+        }
+
         for pass in &opts_local.passes.clone() {
+            // The non-LLM passes write chunks, entities and the anchor, so an
+            // estimate skips them.
+            if opts_local.estimate && matches!(pass, Pass::History | Pass::Chunk | Pass::Structure)
+            {
+                tracing::info!("[{pass}] skipped in --estimate (non-LLM pass)");
+                result.estimate_skipped.push(pass.to_string());
+                continue;
+            }
             // An estimate run leaves no trace in the run log, and only the
             // LLM passes that can be rendered without side effects run.
             if opts_local.estimate && matches!(pass, Pass::Semantic | Pass::Aliases | Pass::Embed) {

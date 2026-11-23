@@ -24,7 +24,9 @@ use callimachus_llm::{
 
 const CORPUS: &str = "run-control";
 
-struct Adapter;
+struct Adapter {
+    reuse: bool,
+}
 
 #[async_trait::async_trait]
 impl SourceAdapter for Adapter {
@@ -47,6 +49,10 @@ impl SourceAdapter for Adapter {
     }
     fn summary_levels(&self) -> Vec<&'static str> {
         vec!["function", "file"]
+    }
+
+    fn reuse_single_child_summary(&self) -> bool {
+        self.reuse
     }
     async fn discover(&self, s: &str) -> anyhow::Result<Vec<DiscoveredSource>> {
         Ok(vec![DiscoveredSource {
@@ -194,6 +200,16 @@ async fn run(
     passes: Vec<Pass>,
     tweak: impl FnOnce(&mut IndexOptions),
 ) -> IndexResult {
+    try_run(db, true, llm, passes, tweak).await.unwrap()
+}
+
+async fn try_run(
+    db: &Arc<SqliteBackend>,
+    reuse: bool,
+    llm: Arc<dyn LlmProvider>,
+    passes: Vec<Pass>,
+    tweak: impl FnOnce(&mut IndexOptions),
+) -> anyhow::Result<IndexResult> {
     let corpus = db.corpus_get(CORPUS).unwrap().unwrap();
     let mut opts = IndexOptions {
         passes,
@@ -203,13 +219,12 @@ async fn run(
     tweak(&mut opts);
     IndexPipeline {
         db: Arc::clone(db) as _,
-        adapter: Arc::new(Adapter),
+        adapter: Arc::new(Adapter { reuse }),
         llm,
         embedder: None,
     }
     .run(&corpus, opts)
     .await
-    .unwrap()
 }
 
 fn filter(specs: &[&str]) -> EntityFilter {
@@ -389,4 +404,175 @@ async fn estimate_skips_entities_that_already_have_artifacts() {
         Arc::new(EstimatingProvider::new(Arc::new(DryRunProvider::new()), 0));
     let res = run(&db, est, vec![Pass::Purpose], |o| o.estimate = true).await;
     assert_eq!(res.estimates[0].calls, 3);
+}
+
+fn row_counts(db: &Arc<SqliteBackend>) -> [usize; 6] {
+    [
+        db.chunk_list(CORPUS).unwrap().len(),
+        db.entity_list(CORPUS).unwrap().len(),
+        db.summary_list(CORPUS).unwrap().len(),
+        db.purpose_list(CORPUS).unwrap().len(),
+        db.contract_list(CORPUS).unwrap().len(),
+        db.run_latest(CORPUS, 100).unwrap().len(),
+    ]
+}
+
+fn estimating() -> (Arc<DryRunProvider>, Arc<dyn LlmProvider>) {
+    let dry = Arc::new(DryRunProvider::new());
+    let est: Arc<dyn LlmProvider> = Arc::new(EstimatingProvider::new(dry.clone(), 0));
+    (dry, est)
+}
+
+#[tokio::test]
+async fn estimate_on_an_unindexed_corpus_errors_and_writes_nothing() {
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    db.corpus_insert(&Corpus::new(
+        CORPUS.into(),
+        "rc".into(),
+        "run-control".into(),
+        "/tmp/rc".into(),
+    ))
+    .unwrap();
+    let before = row_counts(&db);
+    let (dry, est) = estimating();
+    let err = try_run(
+        &db,
+        true,
+        est,
+        vec![Pass::Chunk, Pass::Structure, Pass::Summarize, Pass::Purpose],
+        |o| o.estimate = true,
+    )
+    .await
+    .expect_err("estimate needs an indexed corpus");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "estimate needs an indexed corpus: run calli index {CORPUS} --pass chunk,structure first"
+        )
+    );
+    assert_eq!(dry.call_count(), 0);
+    assert_eq!(row_counts(&db), before);
+    assert_eq!(before, [0; 6]);
+}
+
+#[tokio::test]
+async fn estimate_with_non_llm_passes_skips_them_and_writes_nothing() {
+    let db = seed(4, 0);
+    let before = row_counts(&db);
+    let (dry, est) = estimating();
+    let res = run(
+        &db,
+        est,
+        vec![
+            Pass::History,
+            Pass::Chunk,
+            Pass::Structure,
+            Pass::Summarize,
+            Pass::Purpose,
+        ],
+        |o| o.estimate = true,
+    )
+    .await;
+    assert_eq!(dry.call_count(), 0);
+    assert_eq!(res.estimate_skipped, vec!["history", "chunk", "structure"]);
+    assert!(
+        res.estimates
+            .iter()
+            .any(|e| e.pass == "purpose" && e.calls == 4)
+    );
+    assert_eq!(row_counts(&db), before);
+    let corpus = db.corpus_get(CORPUS).unwrap().unwrap();
+    assert!(corpus.last_indexed_version.is_none(), "anchor untouched");
+}
+
+#[tokio::test]
+async fn without_the_reuse_flag_file_chunks_get_their_own_summary_calls() {
+    let db = seed(5, 0);
+    let dry = Arc::new(DryRunProvider::new());
+    try_run(&db, false, dry.clone(), vec![Pass::Summarize], |_| {})
+        .await
+        .unwrap();
+    // 5 function + 5 file + 1 corpus summaries, each its own call.
+    assert_eq!(dry.call_count(), 11);
+    assert_eq!(db.summary_list(CORPUS).unwrap().len(), 11);
+}
+
+#[tokio::test]
+async fn max_calls_stops_the_contract_pass_and_keeps_completed_contracts() {
+    let db = seed(6, 0);
+    let dry = Arc::new(DryRunProvider::new());
+    let res = run(&db, dry.clone(), vec![Pass::Contract], |o| {
+        o.caps = RunCaps {
+            max_calls: Some(2),
+            ..Default::default()
+        };
+    })
+    .await;
+    assert!(res.stopped_reason.unwrap().contains("max_calls"));
+    assert_eq!(res.runs[0].status, "stopped");
+    assert_eq!(dry.call_count(), 2);
+    assert_eq!(db.contract_list(CORPUS).unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn cap_stop_at_concurrency_four_records_no_failures() {
+    for caps in [
+        RunCaps {
+            max_calls: Some(5),
+            ..Default::default()
+        },
+        RunCaps {
+            // purpose prompts are ~17 chars; a tiny budget stops early.
+            max_input_tokens: Some(1),
+            ..Default::default()
+        },
+    ] {
+        let db = seed(20, 0);
+        let dry = Arc::new(DryRunProvider::new());
+        let res = run(&db, dry.clone(), vec![Pass::Purpose], |o| {
+            o.concurrency = Some(4);
+            o.caps = caps.clone();
+        })
+        .await;
+        assert!(res.stopped_reason.is_some(), "{caps:?}");
+        for r in &res.runs {
+            assert_eq!(r.stats.failed, 0, "{caps:?}: {:?}", r.stats.errors);
+        }
+        assert_eq!(
+            db.purpose_list(CORPUS).unwrap().len() as u64,
+            dry.call_count(),
+            "completed work is kept"
+        );
+        assert!(dry.call_count() < 20);
+    }
+}
+
+#[tokio::test]
+async fn filtered_run_stopped_after_history_resumes_to_exactly_the_filtered_set() {
+    let db = seed(12, 5);
+    // Already indexed at the adapter's current version: History reports
+    // nothing dirty, so it must not cascade away the seeded entities.
+    db.corpus_set_last_indexed_version(CORPUS, "v1").unwrap();
+    let dry = Arc::new(DryRunProvider::new());
+    let first = run(&db, dry.clone(), vec![Pass::History, Pass::Purpose], |o| {
+        o.entity_filter = filter(&["name:fun_a*"]);
+        o.caps = RunCaps {
+            max_calls: Some(2),
+            ..Default::default()
+        };
+    })
+    .await;
+    assert!(first.stopped_reason.unwrap().contains("max_calls"));
+    assert_eq!(db.purpose_list(CORPUS).unwrap().len(), 2);
+
+    let dry2 = Arc::new(DryRunProvider::new());
+    let second = run(&db, dry2.clone(), vec![Pass::History, Pass::Purpose], |o| {
+        o.entity_filter = filter(&["name:fun_a*"]);
+    })
+    .await;
+    assert!(second.stopped_reason.is_none());
+    assert_eq!(dry2.call_count(), 3, "only the remaining filtered entities");
+    let purposes = db.purpose_list(CORPUS).unwrap();
+    assert_eq!(purposes.len(), 5);
+    assert!(purposes.iter().all(|p| p.entity_id.contains("fun_a")));
 }
