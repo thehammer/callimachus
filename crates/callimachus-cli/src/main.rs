@@ -95,6 +95,12 @@ enum Command {
         /// writing artifacts.
         #[arg(long)]
         estimate: bool,
+        /// How much of the fact base goes into the summarize, purpose and
+        /// contract prompts: none, facts (verified-context block) or full
+        /// (block plus field-annotated source). Default: full when the corpus
+        /// has facts or reference links, otherwise none.
+        #[arg(long, value_parser = ["none", "facts", "full"])]
+        grounding: Option<String>,
     },
 
     /// Incremental reindex since a commit or date.
@@ -255,6 +261,12 @@ enum Command {
         /// writing artifacts.
         #[arg(long)]
         estimate: bool,
+        /// How much of the fact base goes into the summarize, purpose and
+        /// contract prompts: none, facts (verified-context block) or full
+        /// (block plus field-annotated source). Default: full when the corpus
+        /// has facts or reference links, otherwise none.
+        #[arg(long, value_parser = ["none", "facts", "full"])]
+        grounding: Option<String>,
     },
 
     /// Show pipeline version status for all corpora.
@@ -315,6 +327,14 @@ enum InspectCommand {
     Entity {
         corpus_id: String,
         name_or_id: String,
+    },
+    /// Show the verified-context block and annotated source the LLM passes would get for an entity (no LLM).
+    Grounding {
+        corpus_id: String,
+        name_or_id: String,
+        /// none, facts or full (default: the corpus default).
+        #[arg(long, value_parser = ["none", "facts", "full"])]
+        mode: Option<String>,
     },
     /// Dump the LLM artifacts (summary, purpose, contract) per entity, for evaluation.
     Artifacts {
@@ -534,6 +554,7 @@ async fn main() -> Result<()> {
             max_input_tokens,
             stop_after,
             estimate,
+            grounding,
         } => {
             let db = open_db(&db_path)?;
             commands::index::run(
@@ -551,6 +572,7 @@ async fn main() -> Result<()> {
                     max_input_tokens,
                     stop_after,
                     estimate,
+                    grounding,
                 },
                 None,
                 db,
@@ -693,6 +715,7 @@ async fn main() -> Result<()> {
             max_input_tokens,
             stop_after,
             estimate,
+            grounding,
         } => {
             let db = open_db(&db_path)?;
             commands::ingest::run(
@@ -712,6 +735,7 @@ async fn main() -> Result<()> {
                     max_input_tokens,
                     stop_after,
                     estimate,
+                    grounding,
                 },
                 provider,
                 db,
@@ -882,6 +906,14 @@ fn run_inspect(sub: InspectCommand, db: Arc<dyn StorageBackend>) -> Result<()> {
             name_or_id,
         } => {
             commands::inspect::run_entity(&corpus_id, &name_or_id, db)?;
+        }
+
+        InspectCommand::Grounding {
+            corpus_id,
+            name_or_id,
+            mode,
+        } => {
+            commands::inspect::run_grounding(&corpus_id, &name_or_id, mode.as_deref(), db)?;
         }
 
         InspectCommand::Diegesis {

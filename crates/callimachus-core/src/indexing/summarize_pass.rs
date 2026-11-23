@@ -12,7 +12,12 @@ use crate::{
     types::{Corpus, Layer2CacheKey, Summary, SummaryTargetKind, chunk::hash_content},
 };
 
-use super::{layer2_cache, pipeline::IndexOptions, quota::quota_reason};
+use super::{
+    grounding::{Grounding, GroundingContext},
+    layer2_cache,
+    pipeline::IndexOptions,
+    quota::quota_reason,
+};
 
 pub async fn run(
     db: Arc<dyn StorageBackend>,
@@ -42,6 +47,12 @@ pub async fn run(
         });
     }
 
+    let grounding_ctx = GroundingContext::load(
+        Arc::clone(&db),
+        corpus,
+        Arc::clone(&adapter),
+        opts.grounding,
+    )?;
     let levels = adapter.summary_levels();
     let filter = opts
         .entity_filter
@@ -197,10 +208,22 @@ pub async fn run(
             // Layer-2 cache: a chunk summary is a deterministic function of the
             // (possibly rolled-up) input text, so we key on a hash of that
             // exact input plus depth + model. A hit skips the LLM call.
+            // Function chunks are grounded through the entity they define; file
+            // and corpus levels stay ungrounded.
+            let grounding = if level_kind == "function" {
+                function_grounding(db.as_ref(), &grounding_ctx, chunk)
+            } else {
+                None
+            };
             let cache_key = Layer2CacheKey {
                 artifact_kind: "summary".to_string(),
                 entity_id: Some(format!("{level_kind}:{}", chunk.id)),
-                content_hash: hash_content(&context_chunk.content),
+                content_hash: match &grounding {
+                    Some(g) if !g.is_empty() => {
+                        hash_content(&format!("{}{}", context_chunk.content, g.hash))
+                    }
+                    _ => hash_content(&context_chunk.content),
+                },
                 file_shape_hash: String::new(),
                 model: llm.name().to_string(),
                 stable_sampling: opts.stable_sampling,
@@ -212,7 +235,15 @@ pub async fn run(
                 .unwrap_or("");
             let summarized = match layer2_cache::cache_get::<String>(db.as_ref(), &cache_key) {
                 Ok(Some(hit)) => Ok(Some(hit)),
-                Ok(None) => match adapter.summarize(&context_chunk, llm, level_kind).await {
+                Ok(None) => match summarize_with(
+                    adapter.as_ref(),
+                    &context_chunk,
+                    llm,
+                    level_kind,
+                    grounding.as_ref(),
+                )
+                .await
+                {
                     Ok(Some(text)) => {
                         if !opts.estimate
                             && let Err(e) =
@@ -268,6 +299,8 @@ pub async fn run(
             log_progress(level_kind, i as u64 + 1, level_total);
         }
     }
+
+    tracing::info!("{}", grounding_ctx.log_line("summarize"));
 
     // ── Corpus-level summary ──────────────────────────────────────────────────
     // A corpus summary describes everything, so it only runs unfiltered.
@@ -468,5 +501,40 @@ fn make_summary(
         model_tier: tier,
         generated_at: chrono::Utc::now().to_rfc3339(),
         provenance: version.map(Provenance::concrete),
+    }
+}
+
+/// Grounding for a function chunk: that of the first `function` entity at its location.
+fn function_grounding(
+    db: &dyn StorageBackend,
+    ctx: &GroundingContext,
+    chunk: &crate::types::Chunk,
+) -> Option<Grounding> {
+    let entity = db
+        .entities_at_location(&chunk.corpus_id, &chunk.location.uri())
+        .ok()?
+        .into_iter()
+        .find(|e| e.kind == "function")?;
+    Some(ctx.build_for(&entity, &chunk.content))
+}
+
+async fn summarize_with(
+    adapter: &dyn crate::adapter::SourceAdapter,
+    chunk: &crate::types::Chunk,
+    llm: &dyn LlmProvider,
+    depth: &str,
+    grounding: Option<&Grounding>,
+) -> anyhow::Result<Option<String>> {
+    match grounding.filter(|g| !g.is_empty()) {
+        Some(g) => {
+            let mut grounded = chunk.clone();
+            if let Some(annotated) = &g.annotated_content {
+                grounded.content = annotated.clone();
+            }
+            adapter
+                .summarize_grounded(&grounded, llm, depth, g.block_opt())
+                .await
+        }
+        None => adapter.summarize(chunk, llm, depth).await,
     }
 }

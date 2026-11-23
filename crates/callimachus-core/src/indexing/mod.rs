@@ -7,6 +7,7 @@ pub mod contract_pass;
 pub mod embed_pass;
 pub mod entity_filter;
 pub mod file_shape;
+pub mod grounding;
 pub mod history_layer;
 pub mod history_pass;
 pub mod history_walk;

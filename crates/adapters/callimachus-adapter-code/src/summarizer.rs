@@ -22,6 +22,28 @@ pub struct PromptOptions {
 /// The extra prompt line added when disassembly is present.
 pub const DISASSEMBLY_HINT: &str = "The disassembly of the same routine follows the C; use it for register parameters, exact offsets and access widths.";
 
+/// Sentence added to a prompt's instructions when it carries a grounding block.
+pub const GROUNDING_INSTRUCTION: &str =
+    "Use the names from the verified context (e.g. obj.x, the port names) in your answer.";
+
+/// The grounding block as a prompt section (`"\n<block>\n"`), or empty when
+/// there is none, so ungrounded prompts stay byte-identical.
+pub fn grounding_section(grounding: Option<&str>) -> String {
+    match grounding.map(str::trim).filter(|g| !g.is_empty()) {
+        Some(g) => format!("\n{g}\n"),
+        None => String::new(),
+    }
+}
+
+/// `"\n<instruction>"` when there is a grounding block, otherwise empty.
+pub fn grounding_instruction(grounding: Option<&str>) -> String {
+    if grounding.is_some_and(|g| !g.trim().is_empty()) {
+        format!("\n{GROUNDING_INSTRUCTION}")
+    } else {
+        String::new()
+    }
+}
+
 impl PromptOptions {
     /// Code excerpt for a prompt: at most the cap (or `default_cap`) chars.
     pub fn excerpt<'a>(&self, content: &'a str, default_cap: usize) -> &'a str {
@@ -47,7 +69,7 @@ pub async fn summarize_chunk(
     structure: &ExtractedCodeStructure,
     llm: &dyn LlmProvider,
 ) -> Result<Option<String>> {
-    summarize_chunk_with(chunk, structure, llm, &PromptOptions::default()).await
+    summarize_chunk_with(chunk, structure, llm, &PromptOptions::default(), None).await
 }
 
 /// [`summarize_chunk`] with explicit [`PromptOptions`].
@@ -56,6 +78,7 @@ pub async fn summarize_chunk_with(
     structure: &ExtractedCodeStructure,
     llm: &dyn LlmProvider,
     opts: &PromptOptions,
+    grounding: Option<&str>,
 ) -> Result<Option<String>> {
     // Skip file-level chunks — they're summarized implicitly by their symbols.
     if chunk.kind == "file" {
@@ -77,6 +100,7 @@ pub async fn summarize_chunk_with(
         .map(|d| format!("\nDoc comment:\n{d}\n"))
         .unwrap_or_default();
     doc_comment_section.push_str(&opts.hint_line(&chunk.content));
+    doc_comment_section.push_str(&grounding_section(grounding));
 
     let prompt = format!(
         r#"You are summarizing a code chunk for a searchable index.
@@ -92,13 +116,14 @@ Code:
 
 Write a 1-3 sentence summary of what this {kind} does. Focus on purpose and behavior,
 not implementation details. If the code is self-explanatory from its name, a single
-sentence is sufficient.
+sentence is sufficient.{grounding_instruction}
 
 Return ONLY the summary text, no JSON, no preamble."#,
         language = language,
         symbol_name = symbol_name,
         kind = chunk.kind,
         content = opts.excerpt(&chunk.content, 3000),
+        grounding_instruction = grounding_instruction(grounding),
     );
 
     let req = CompletionRequest {

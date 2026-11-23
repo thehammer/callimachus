@@ -15,8 +15,8 @@ use crate::{
 };
 
 use super::{
-    change_manifest::file_path_from_uri, file_shape, layer2_cache, pipeline::IndexOptions,
-    quota::QuotaGate,
+    change_manifest::file_path_from_uri, file_shape, grounding::GroundingContext, layer2_cache,
+    pipeline::IndexOptions, quota::QuotaGate,
 };
 
 const MAX_RETRIES: u32 = 8;
@@ -108,7 +108,14 @@ pub async fn run(
         .as_ref()
         .map(|m| m.current_version.clone());
 
+    let grounding = GroundingContext::load(
+        Arc::clone(&db),
+        corpus,
+        Arc::clone(&adapter),
+        opts.grounding,
+    )?;
     let ctx = Arc::new(PassContext {
+        grounding,
         db: Arc::clone(&db),
         corpus_id: corpus.id.clone(),
         adapter: Arc::clone(&adapter),
@@ -191,6 +198,7 @@ pub async fn run(
         limiter.reset();
     }
 
+    tracing::info!("{}", ctx.grounding.log_line("purpose"));
     tracing::info!(
         "[purpose] tier distribution: haiku={} sonnet={} opus={}",
         tier_counts[ModelTier::Haiku as usize],
@@ -204,6 +212,7 @@ pub async fn run(
 // ─── Per-entity async work (read-only + LLM) ─────────────────────────────────
 
 struct PassContext {
+    grounding: GroundingContext,
     db: Arc<dyn StorageBackend>,
     corpus_id: String,
     adapter: Arc<dyn SourceAdapter>,
@@ -309,10 +318,16 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
         .and_then(|loc| ctx.file_shapes.get(&loc.uri()))
         .cloned()
         .unwrap_or_default();
+    let grounding = ctx.grounding.build_for(entity, &content);
     let cache_key = Layer2CacheKey {
         artifact_kind: "purpose".to_string(),
         entity_id: Some(entity.id.clone()),
-        content_hash: String::new(),
+        // Ungrounded entities keep the key they always had.
+        content_hash: if grounding.is_empty() {
+            String::new()
+        } else {
+            grounding.hash.clone()
+        },
         file_shape_hash,
         model: model_name.to_string(),
         stable_sampling: ctx.stable_sampling,
@@ -326,8 +341,9 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
             match extract_with_retry(
                 adapter.as_ref(),
                 entity,
-                &content,
+                grounding.content_or(&content),
                 summary_opt.as_deref(),
+                grounding.block_opt(),
                 llm,
             )
             .await
@@ -444,12 +460,16 @@ async fn extract_with_retry(
     entity: &Entity,
     content: &str,
     summary: Option<&str>,
+    grounding: Option<&str>,
     llm: &dyn LlmProvider,
 ) -> anyhow::Result<Option<crate::adapter::ExtractedPurpose>> {
     let mut attempts = 0u32;
     loop {
         attempts += 1;
-        match adapter.extract_purpose(entity, content, summary, llm).await {
+        match adapter
+            .extract_purpose_grounded(entity, content, summary, grounding, llm)
+            .await
+        {
             Ok(result) => return Ok(result),
             Err(e) => {
                 if let Some(LlmError::RateLimited { retry_after_secs }) =

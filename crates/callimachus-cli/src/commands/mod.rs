@@ -3,6 +3,8 @@ pub mod corpus;
 pub mod correct;
 pub mod export;
 pub mod facts;
+#[cfg(test)]
+mod grounding_tests;
 pub mod history;
 pub mod index;
 pub mod ingest;

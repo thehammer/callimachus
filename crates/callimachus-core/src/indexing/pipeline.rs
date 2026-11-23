@@ -166,6 +166,10 @@ pub struct IndexOptions {
     /// expected to be an `EstimatingProvider`; per-pass totals come back in
     /// [`IndexResult::estimates`].
     pub estimate: bool,
+    /// How much of the fact base reaches the summarize, purpose and contract
+    /// prompts. `None` applies the default rule: `Full` when the corpus has
+    /// any fact or reference link, otherwise no grounding.
+    pub grounding: Option<super::grounding::GroundingMode>,
 }
 
 impl Default for IndexOptions {
@@ -198,6 +202,7 @@ impl Default for IndexOptions {
             entity_filter: EntityFilter::All,
             caps: RunCaps::default(),
             estimate: false,
+            grounding: None,
         }
     }
 }
