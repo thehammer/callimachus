@@ -20,7 +20,17 @@ pub const INDIRECT_NAME: &str = "<indirect>";
 /// Decompiler naming conventions recognised as carrying an address: a name is
 /// one of these prefixes (case-insensitive) followed by 4-16 hex digits.
 pub const ADDRESS_PREFIXES: &[&str] = &[
-    "_DAT_", "DAT_", "PTR_DAT_", "PTR_LAB_", "PTR_FUN_", "PTR_", "RAM_", "FUN_", "LAB_", "SUB_",
+    "_DAT_",
+    "DAT_",
+    "PTR_DAT_",
+    "PTR_LAB_",
+    "PTR_FUN_",
+    "PTR_caseD_",
+    "PTR_",
+    "RAM_",
+    "FUN_",
+    "LAB_",
+    "SUB_",
 ];
 
 /// Address encoded in a decompiler-style name (`_DAT_00c00004`, `FUN_000071d0`).
@@ -42,9 +52,18 @@ pub fn canonical_address(v: u64) -> String {
     format!("0x{v:x}")
 }
 
-/// Plain C / Ghidra type names that decompiled C uses as bare identifiers
-/// (casts, `sizeof`, undeclared typedefs). They are not globals.
-const NON_VARIABLE_TYPE_NAMES: &[&str] = &[
+/// C keywords and standard typedefs that can never be variables. Applied to
+/// every C corpus.
+const LANGUAGE_TYPE_NAMES: &[&str] = &[
+    "char", "short", "int", "long", "float", "double", "void", "unsigned", "signed", "uint8_t",
+    "uint16_t", "uint32_t", "uint64_t", "int8_t", "int16_t", "int32_t", "int64_t", "size_t",
+    "bool",
+];
+
+/// Ghidra typedefs that decompiled C uses as bare identifiers (casts,
+/// `sizeof`, undeclared typedefs). Only filtered in decompiler output, where
+/// they are not globals; in plain C they may be real globals.
+const DECOMPILER_TYPE_NAMES: &[&str] = &[
     "uint",
     "ushort",
     "ulong",
@@ -53,14 +72,6 @@ const NON_VARIABLE_TYPE_NAMES: &[&str] = &[
     "word",
     "dword",
     "qword",
-    "bool",
-    "char",
-    "short",
-    "int",
-    "long",
-    "float",
-    "double",
-    "void",
     "undefined",
     "code",
     "pointer",
@@ -70,8 +81,8 @@ const NON_VARIABLE_TYPE_NAMES: &[&str] = &[
 /// Decompiler pseudo-name prefixes followed by a suffix (hex digits, a number
 /// or a register name) that never denote a global: switch/case labels,
 /// register pseudo-variables, unresolved-register locals and `local_`/`param_`
-/// stack slots.
-const NON_VARIABLE_PREFIXES: &[&str] = &[
+/// stack slots. Decompiler output only.
+const DECOMPILER_PREFIXES: &[&str] = &[
     "switchD_",
     "caseD_",
     "register0x",
@@ -83,11 +94,17 @@ const NON_VARIABLE_PREFIXES: &[&str] = &[
 ];
 
 /// True for identifiers that look like free variables to the extractor but are
-/// really C/Ghidra type names or decompiler pseudo-names. This is the single
-/// place that list lives; without it each of these became a `variable` entity
-/// with many incoming edges.
-fn is_non_variable_name(name: &str) -> bool {
-    if NON_VARIABLE_TYPE_NAMES.contains(&name) {
+/// really C type names or, when `decompiler_names` is set (binary-export
+/// corpora, or the C adapter's `decompiler_names` option), Ghidra type names
+/// and decompiler pseudo-names.
+fn is_non_variable_name(name: &str, decompiler_names: bool) -> bool {
+    if LANGUAGE_TYPE_NAMES.contains(&name) {
+        return true;
+    }
+    if !decompiler_names {
+        return false;
+    }
+    if DECOMPILER_TYPE_NAMES.contains(&name) {
         return true;
     }
     // `undefined1`, `undefined4`, ...
@@ -97,7 +114,7 @@ fn is_non_variable_name(name: &str) -> bool {
     {
         return true;
     }
-    NON_VARIABLE_PREFIXES
+    DECOMPILER_PREFIXES
         .iter()
         .any(|p| name.strip_prefix(p).is_some_and(|rest| !rest.is_empty()))
 }
@@ -134,6 +151,7 @@ pub fn extract(
     root: Node<'_>,
     source: &[u8],
     test_ranges: &[std::ops::Range<usize>],
+    decompiler_names: bool,
     result: &mut ExtractedCodeStructure,
 ) {
     let file_path = chunk
@@ -159,7 +177,15 @@ pub fn extract(
 
     for item in &items {
         if item.kind() == "function_definition" {
-            analyse_function(chunk, *item, source, &enum_constants, test_ranges, result);
+            analyse_function(
+                chunk,
+                *item,
+                source,
+                &enum_constants,
+                test_ranges,
+                decompiler_names,
+                result,
+            );
         }
     }
 
@@ -319,6 +345,7 @@ fn analyse_function(
     source: &[u8],
     enum_constants: &HashSet<String>,
     test_ranges: &[std::ops::Range<usize>],
+    decompiler_names: bool,
     result: &mut ExtractedCodeStructure,
 ) {
     let Some(func_name) = func
@@ -400,7 +427,7 @@ fn analyse_function(
                 let name = text_of(n, source);
                 if !bound.contains(&name)
                     && !enum_constants.contains(&name)
-                    && !is_non_variable_name(&name)
+                    && !is_non_variable_name(&name, decompiler_names)
                 {
                     let table = is_table_use(n, &name);
                     let access = accesses.entry(name).or_default();

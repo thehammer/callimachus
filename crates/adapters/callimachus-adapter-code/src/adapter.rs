@@ -1,4 +1,6 @@
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Mutex;
 
 use anyhow::Result;
 use callimachus_adapter_contract::{
@@ -27,12 +29,15 @@ use crate::{
 /// `Caddyfile`, …); see [`languages::detect`].
 pub struct CodeAdapter {
     prompt_options: summarizer::PromptOptions,
+    /// Corpora whose config sets `decompiler_names = true`, recorded at chunk time.
+    decompiler_corpora: Mutex<HashSet<String>>,
 }
 
 impl CodeAdapter {
     pub fn new() -> Self {
         Self {
             prompt_options: summarizer::PromptOptions::default(),
+            decompiler_corpora: Mutex::default(),
         }
     }
 
@@ -41,7 +46,12 @@ impl CodeAdapter {
     pub fn with_prompt_options(options: summarizer::PromptOptions) -> Self {
         Self {
             prompt_options: options,
+            decompiler_corpora: Mutex::default(),
         }
+    }
+
+    fn decompiler_names(&self, corpus_id: &str) -> bool {
+        self.decompiler_corpora.lock().unwrap().contains(corpus_id)
     }
 }
 
@@ -89,6 +99,18 @@ impl SourceAdapter for CodeAdapter {
             .unwrap_or("unknown")
             .to_string();
 
+        if source
+            .meta
+            .get("decompiler_names")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            self.decompiler_corpora
+                .lock()
+                .unwrap()
+                .insert(corpus_id.clone());
+        }
+
         let opts = build_chunk_options(&source.meta);
         let path = Path::new(&source.path);
 
@@ -111,7 +133,11 @@ impl SourceAdapter for CodeAdapter {
             }
         };
 
-        let code_structure = extractor::extract_structure(chunk, lang)?;
+        let code_structure = extractor::extract_structure_with(
+            chunk,
+            lang,
+            self.decompiler_names(&chunk.corpus_id),
+        )?;
 
         Ok(ExtractedStructure {
             parent_path: chunk.parent_path.clone(),
@@ -161,7 +187,12 @@ impl SourceAdapter for CodeAdapter {
             "function" | "class" | "interface" => {
                 // Per-symbol summary.
                 let structure = if let Some(lang) = grammar_of_chunk(chunk) {
-                    extractor::extract_structure(chunk, lang).unwrap_or_default()
+                    extractor::extract_structure_with(
+                        chunk,
+                        lang,
+                        self.decompiler_names(&chunk.corpus_id),
+                    )
+                    .unwrap_or_default()
                 } else {
                     extractor::ExtractedCodeStructure::default()
                 };

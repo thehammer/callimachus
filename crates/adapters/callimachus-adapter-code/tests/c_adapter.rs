@@ -667,3 +667,33 @@ fn uses_table_negative_cases() {
     assert!(reads(&r, "f", "DAT_00012340"));
     assert!(!uses_table(&r, "f", "DAT_00012340"));
 }
+
+// ── S10d: decompiler-name filter is scoped ───────────────────────────────────
+
+const DECOMPILER_NAMED_SRC: &str = "void f(void) { code = 1; addr = word; g(in_buffer); }";
+
+#[test]
+fn plain_c_keeps_globals_named_like_ghidra_types() {
+    let r = extract(DECOMPILER_NAMED_SRC);
+    let vars = entities_of_kind(&r, "variable");
+    for name in ["code", "addr", "word", "in_buffer"] {
+        assert!(vars.contains(&name), "{name} missing from {vars:?}");
+    }
+    assert!(has_edge(&r, "writes", "f", "code"));
+    assert!(has_edge(&r, "reads", "f", "word"));
+    assert!(has_edge(&r, "reads", "f", "in_buffer"));
+}
+
+#[test]
+fn decompiler_names_option_filters_ghidra_names() {
+    let chunk = make_chunk(CORP, "src/f.c", "file", DECOMPILER_NAMED_SRC);
+    let r = callimachus_adapter_code::analyse_c(&chunk, &chunk.content, true).unwrap();
+    assert!(entities_of_kind(&r, "variable").is_empty(), "{r:?}");
+}
+
+#[test]
+fn ghidra_stub_prefixes_carry_addresses() {
+    assert_eq!(address_of_name("PTR_LAB_00001234"), Some(0x1234));
+    assert_eq!(address_of_name("PTR_FUN_00001234"), Some(0x1234));
+    assert_eq!(address_of_name("PTR_caseD_00001234"), Some(0x1234));
+}

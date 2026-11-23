@@ -225,7 +225,7 @@ impl SourceAdapter for BinExportAdapter {
         };
 
         let (c_part, _) = content::split_content(&chunk.content);
-        let analysed: ExtractedCodeStructure = analyse_c(chunk, c_part)?;
+        let analysed: ExtractedCodeStructure = analyse_c(chunk, c_part, true)?;
 
         let table_entity = |t: &bundle::TableRecord| -> Result<Entity> {
             let mut aliases = vec![canonical_of(&t.address)?];

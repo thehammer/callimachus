@@ -791,3 +791,46 @@ async fn type_names_and_ghidra_pseudo_names_are_not_variables() {
         assert!(!names.iter().any(|n| n == bad), "{bad} in {names:?}");
     }
 }
+
+#[tokio::test]
+async fn ptr_lab_stub_reconciles_with_table_at_its_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "manifest.json",
+        &json!({"format":1,"kind":"binary-export","counts":{"functions":1,"tables":1}}).to_string(),
+    );
+    write(
+        root,
+        "functions.jsonl",
+        &json!({"address":"0x001000","name":"FUN_00001000","size":8,"c":"c/00001000.c","asm":null,"decompile_ok":true,"discovered_by":["analysis"]}).to_string(),
+    );
+    write(
+        root,
+        "c/00001000.c",
+        "void FUN_00001000(void)\n{\n  g(PTR_LAB_00001234[1]);\n}\n",
+    );
+    write(
+        root,
+        "tables.jsonl",
+        &json!({"address":"0x001234","name":"DAT_00001234","kind":"code-pointers","entry":"u32","count":2,"readers":["0x001000"]}).to_string(),
+    );
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index(root, db.clone(), Arc::new(BinExportAdapter::new())).await;
+    let with_addr: Vec<_> = db
+        .entity_list(CORP)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.aliases.contains(&"0x1234".to_string()))
+        .collect();
+    assert_eq!(with_addr.len(), 1, "{with_addr:?}");
+    assert_eq!(with_addr[0].kind, "table");
+    assert!(
+        with_addr[0]
+            .aliases
+            .contains(&"PTR_LAB_00001234".to_string()),
+        "{:?}",
+        with_addr[0].aliases
+    );
+}
