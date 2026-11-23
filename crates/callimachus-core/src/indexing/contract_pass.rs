@@ -15,8 +15,8 @@ use crate::{
 };
 
 use super::{
-    change_manifest::file_path_from_uri, file_shape, layer2_cache, pipeline::IndexOptions,
-    quota::QuotaGate,
+    change_manifest::file_path_from_uri, file_shape, grounding::GroundingContext, layer2_cache,
+    pipeline::IndexOptions, quota::QuotaGate,
 };
 
 const MAX_RETRIES: u32 = 8;
@@ -116,7 +116,14 @@ pub async fn run(
         .as_ref()
         .map(|m| m.current_version.clone());
 
+    let grounding = GroundingContext::load(
+        Arc::clone(&db),
+        corpus,
+        Arc::clone(&adapter),
+        opts.grounding,
+    )?;
     let ctx = Arc::new(PassContext {
+        grounding,
         db: Arc::clone(&db),
         corpus_id: corpus.id.clone(),
         adapter: Arc::clone(&adapter),
@@ -256,6 +263,7 @@ pub async fn run(
         limiter.reset();
     }
 
+    tracing::info!("{}", ctx.grounding.log_line("contract"));
     tracing::info!(
         "[contract] tier distribution: haiku={} sonnet={} opus={}",
         tier_counts[ModelTier::Haiku as usize],
@@ -269,6 +277,7 @@ pub async fn run(
 // ─── Per-entity async work (read-only + LLM) ─────────────────────────────────
 
 struct PassContext {
+    grounding: GroundingContext,
     db: Arc<dyn StorageBackend>,
     corpus_id: String,
     adapter: Arc<dyn SourceAdapter>,
@@ -384,10 +393,16 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
         .and_then(|loc| ctx.file_shapes.get(&loc.uri()))
         .cloned()
         .unwrap_or_default();
+    let grounding = ctx.grounding.build_for(entity, &content);
     let cache_key = Layer2CacheKey {
         artifact_kind: "contract".to_string(),
         entity_id: Some(entity.id.clone()),
-        content_hash: String::new(),
+        // Ungrounded entities keep the key they always had.
+        content_hash: if grounding.is_empty() {
+            String::new()
+        } else {
+            grounding.hash.clone()
+        },
         file_shape_hash,
         model: model_name.to_string(),
         stable_sampling: ctx.stable_sampling,
@@ -400,10 +415,11 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
                 match extract_with_retry(
                     adapter.as_ref(),
                     entity,
-                    &content,
+                    grounding.content_or(&content),
                     summary_opt.as_deref(),
                     purpose_opt.as_deref(),
                     &signals_json,
+                    grounding.block_opt(),
                     llm,
                 )
                 .await
@@ -545,13 +561,14 @@ async fn extract_with_retry(
     summary: Option<&str>,
     purpose: Option<&str>,
     signals: &serde_json::Value,
+    grounding: Option<&str>,
     llm: &dyn LlmProvider,
 ) -> anyhow::Result<Option<crate::adapter::ExtractedContract>> {
     let mut attempts = 0u32;
     loop {
         attempts += 1;
         match adapter
-            .extract_contract(entity, content, summary, purpose, signals, llm)
+            .extract_contract_grounded(entity, content, summary, purpose, signals, grounding, llm)
             .await
         {
             Ok(result) => return Ok(result),

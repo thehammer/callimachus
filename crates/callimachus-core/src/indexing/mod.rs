@@ -9,6 +9,7 @@ pub mod entity_filter;
 pub mod file_shape;
 pub mod history_layer;
 pub mod history_pass;
+pub mod grounding;
 pub mod history_walk;
 pub mod layer2_cache;
 pub mod model_tier;
