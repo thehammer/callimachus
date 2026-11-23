@@ -110,6 +110,14 @@ pub fn set_backfill_cursor(db: &Database, id: &str, cursor: Option<&str>) -> Res
     Ok(())
 }
 
+pub fn set_config(db: &Database, id: &str, config: &serde_json::Value) -> Result<()> {
+    db.conn().execute(
+        "UPDATE corpora SET config = ?1 WHERE id = ?2",
+        params![serde_json::to_string(config)?, id],
+    )?;
+    Ok(())
+}
+
 pub fn get_backfill_cursor(db: &Database, id: &str) -> Result<Option<String>> {
     let v: Option<String> = db.conn().query_row(
         "SELECT backfill_cursor FROM corpora WHERE id = ?1",

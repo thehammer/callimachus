@@ -217,6 +217,12 @@ impl StorageBackend for PostgresBackend {
     fn edge_list(&self, _corpus_id: &str) -> Result<Vec<Edge>> {
         Err(unimplemented())
     }
+    fn edge_delete_by_scope(&self, _corpus_id: &str, _kind: &str, _scope: &str) -> Result<u64> {
+        Err(unimplemented())
+    }
+    fn corpus_set_config(&self, _id: &str, _config: &serde_json::Value) -> Result<()> {
+        Err(unimplemented())
+    }
     fn edge_count(&self, _corpus_id: &str) -> Result<u64> {
         Err(unimplemented())
     }

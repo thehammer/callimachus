@@ -37,7 +37,7 @@ pub fn insert(
 pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Correction>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, corpus_id, collection_id, payload, applied_at FROM scholia
-         WHERE corpus_id = ?1 ORDER BY applied_at ASC",
+         WHERE corpus_id = ?1 ORDER BY applied_at ASC, rowid ASC",
     )?;
     collect_corrections(stmt.query_map(params![corpus_id], row_to_correction)?)
 }
@@ -46,7 +46,7 @@ pub fn list(db: &Database, corpus_id: &str) -> Result<Vec<Correction>> {
 pub fn list_for_collection(db: &Database, collection_id: &str) -> Result<Vec<Correction>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, corpus_id, collection_id, payload, applied_at FROM scholia
-         WHERE collection_id = ?1 ORDER BY applied_at ASC",
+         WHERE collection_id = ?1 ORDER BY applied_at ASC, rowid ASC",
     )?;
     collect_corrections(stmt.query_map(params![collection_id], row_to_correction)?)
 }
@@ -55,7 +55,7 @@ pub fn list_for_collection(db: &Database, collection_id: &str) -> Result<Vec<Cor
 pub fn list_all(db: &Database) -> Result<Vec<Correction>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, corpus_id, collection_id, payload, applied_at FROM scholia
-         ORDER BY applied_at ASC",
+         ORDER BY applied_at ASC, rowid ASC",
     )?;
     collect_corrections(stmt.query_map([], row_to_correction)?)
 }
