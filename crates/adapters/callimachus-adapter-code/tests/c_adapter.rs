@@ -674,6 +674,64 @@ fn uses_table_negative_cases() {
     assert!(!uses_table(&r, "f", "DAT_00012340"));
 }
 
+// ── S10d: decompiler-name filter is scoped ───────────────────────────────────
+
+const DECOMPILER_NAMED_SRC: &str = "void f(void) { code = 1; addr = word; g(in_buffer); }";
+
+#[test]
+fn plain_c_keeps_globals_named_like_ghidra_types() {
+    let r = extract(DECOMPILER_NAMED_SRC);
+    let vars = entities_of_kind(&r, "variable");
+    for name in ["code", "addr", "word", "in_buffer"] {
+        assert!(vars.contains(&name), "{name} missing from {vars:?}");
+    }
+    assert!(has_edge(&r, "writes", "f", "code"));
+    assert!(has_edge(&r, "reads", "f", "word"));
+    assert!(has_edge(&r, "reads", "f", "in_buffer"));
+}
+
+#[test]
+fn decompiler_names_option_filters_ghidra_names() {
+    let chunk = make_chunk(CORP, "src/f.c", "file", DECOMPILER_NAMED_SRC);
+    let r = callimachus_adapter_code::analyse_c(&chunk, &chunk.content, true).unwrap();
+    assert!(entities_of_kind(&r, "variable").is_empty(), "{r:?}");
+}
+
+#[test]
+fn ghidra_stub_prefixes_carry_addresses() {
+    assert_eq!(address_of_name("PTR_LAB_00001234"), Some(0x1234));
+    assert_eq!(address_of_name("PTR_FUN_00001234"), Some(0x1234));
+    assert_eq!(address_of_name("PTR_caseD_00001234"), Some(0x1234));
+}
+
+#[test]
+fn address_of_name_handles_multi_segment_ghidra_stubs() {
+    assert_eq!(address_of_name("PTR_caseD_21_00010080"), Some(0x10080));
+    assert_eq!(address_of_name("PTR_caseD_43_00010110"), Some(0x10110));
+    assert_eq!(
+        address_of_name("PTR_LAB_000043c6_2_00060878"),
+        Some(0x60878)
+    );
+    assert_eq!(address_of_name("PTR_caseD_21_zz"), None);
+    assert_eq!(address_of_name("PTR_caseD_21_"), None);
+    assert_eq!(address_of_name("PTR_caseD_21_00010080x"), None);
+    assert_eq!(address_of_name("DAT_00012340x"), None);
+}
+
+#[test]
+fn multi_segment_ghidra_stubs_carry_address_aliases() {
+    let r = extract(
+        "void f(void) {\n\
+         g(PTR_caseD_21_00010080);\n\
+         g(PTR_caseD_43_00010110);\n\
+         g(PTR_LAB_000043c6_2_00060878);\n\
+         }",
+    );
+    assert_eq!(aliases_of(&r, "PTR_caseD_21_00010080"), ["0x10080"]);
+    assert_eq!(aliases_of(&r, "PTR_caseD_43_00010110"), ["0x10110"]);
+    assert_eq!(aliases_of(&r, "PTR_LAB_000043c6_2_00060878"), ["0x60878"]);
+}
+
 // ── Struct-field access entities ─────────────────────────────────────────────
 
 fn field_entity<'a>(

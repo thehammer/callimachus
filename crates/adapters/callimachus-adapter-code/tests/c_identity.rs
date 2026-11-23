@@ -29,7 +29,7 @@ fn analyse_c_is_what_extract_structure_returns_for_c() {
     let c = chunk();
     let lang = callimachus_adapter_code::languages::for_extension("c").unwrap();
     let via_extract = extract_structure(&c, lang).unwrap();
-    let direct = analyse_c(&c, &c.content).unwrap();
+    let direct = analyse_c(&c, &c.content, false).unwrap();
     let norm = |mut s: callimachus_adapter_code::ExtractedCodeStructure| {
         let mut e: Vec<String> = s.entities.drain(..).map(|e| format!("{e:?}")).collect();
         let mut d: Vec<String> = s

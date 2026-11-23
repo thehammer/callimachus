@@ -222,7 +222,11 @@ pub struct ExtractedCodeStructure {
 /// `c_source` instead of `chunk.content`; entity and edge ids and locations are
 /// emitted against `chunk`.  Includes address aliases and `uses_table` edges.
 /// Used by adapters whose chunk content wraps C in extra text.
-pub fn analyse_c(chunk: &Chunk, c_source: &str) -> Result<ExtractedCodeStructure> {
+pub fn analyse_c(
+    chunk: &Chunk,
+    c_source: &str,
+    decompiler_names: bool,
+) -> Result<ExtractedCodeStructure> {
     let mut result = ExtractedCodeStructure::default();
 
     let mut parser = Parser::new();
@@ -255,7 +259,14 @@ pub fn analyse_c(chunk: &Chunk, c_source: &str) -> Result<ExtractedCodeStructure
     file_entity.last_location = Some(chunk.location.clone());
     file_entity.confidence = 1.0;
     result.entities.push(file_entity);
-    crate::c::extract(chunk, root, source, &test_ranges, &mut result);
+    crate::c::extract(
+        chunk,
+        root,
+        source,
+        &test_ranges,
+        decompiler_names,
+        &mut result,
+    );
     finish(&mut result);
     Ok(result)
 }
@@ -266,10 +277,20 @@ pub fn extract_structure(
     chunk: &Chunk,
     lang_config: &LangConfig,
 ) -> Result<ExtractedCodeStructure> {
+    extract_structure_with(chunk, lang_config, false)
+}
+
+/// As [`extract_structure`]; `decompiler_names` makes the C extractor also
+/// filter Ghidra type names and pseudo-names (`code`, `in_*`, `local_*`, ...).
+pub fn extract_structure_with(
+    chunk: &Chunk,
+    lang_config: &LangConfig,
+    decompiler_names: bool,
+) -> Result<ExtractedCodeStructure> {
     // C has its own extractor: declarator-aware names, global reads/writes and
     // indirect calls.  It replaces the generic entity/call passes.
     if lang_config.name == "c" {
-        return analyse_c(chunk, &chunk.content);
+        return analyse_c(chunk, &chunk.content, decompiler_names);
     }
 
     let mut result = ExtractedCodeStructure::default();

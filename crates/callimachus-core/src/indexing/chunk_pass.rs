@@ -21,6 +21,7 @@ pub async fn run(
 ) -> anyhow::Result<PassStats> {
     let mut stats = PassStats::default();
 
+    adapter.configure_corpus(&corpus.id, &corpus.config);
     let mut sources = adapter.discover(&corpus.source).await?;
 
     // Inject corpus_id and pipeline flags into each source's meta so the adapter can use them.
