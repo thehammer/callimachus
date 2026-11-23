@@ -13,6 +13,53 @@ pub struct EntityInput {
     pub kind: Option<String>,
 }
 
+/// A fact anchored to an entity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityFact {
+    pub id: String,
+    pub kind: String,
+    pub summary: String,
+    pub confidence: String,
+    pub evidence: Vec<String>,
+    pub notes: Option<String>,
+}
+
+/// A reference-corpus entity linked to an entity by address.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityReference {
+    pub corpus_id: String,
+    pub entity_id: String,
+    pub name: String,
+    pub summary: Option<String>,
+}
+
+/// A hardware/behaviour variant reachable from a linked reference entity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityVariant {
+    pub id: String,
+    pub summary: Option<String>,
+}
+
+/// `entity` output: the entity plus its facts, linked reference entities and variants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityOutput {
+    #[serde(flatten)]
+    pub entity: Entity,
+    #[serde(default)]
+    pub facts: Vec<EntityFact>,
+    #[serde(default)]
+    pub reference: Vec<EntityReference>,
+    #[serde(default)]
+    pub variants: Vec<EntityVariant>,
+}
+
+impl std::ops::Deref for EntityOutput {
+    type Target = Entity;
+    fn deref(&self) -> &Entity {
+        &self.entity
+    }
+}
+
 // ── entity_edges ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

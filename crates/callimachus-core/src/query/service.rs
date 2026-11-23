@@ -1,4 +1,7 @@
 use crate::corrections::CorrectionsEngine;
+use crate::corrections::address;
+use crate::corrections::types::EntityLinkKind;
+use crate::query::collection_service::EntityLinkIndex;
 use crate::query::search;
 use crate::query::types::*;
 use crate::storage::{EdgeDirection, StorageBackend};
@@ -160,6 +163,7 @@ impl QueryService {
                 last_indexed: corpus.last_indexed_at.clone(),
                 top_entities,
                 summary,
+                platform: self.platform_fact(&corpus.id),
             })
             .with_corpus_freshness(freshness))
         })
@@ -254,7 +258,172 @@ impl QueryService {
 
     // ── entity ───────────────────────────────────────────────────────────────
 
-    pub fn entity(&self, input: EntityInput) -> ToolResult<Entity> {
+    pub fn entity(&self, input: EntityInput) -> ToolResult<EntityOutput> {
+        let corpus_id = input.corpus_id.clone();
+        self.entity_base(input)
+            .map_data(|e| self.enrich_entity(&corpus_id, e))
+    }
+
+    /// Facts anchored to the entity, reference entities linked to it, and the
+    /// variants reachable from those. Best-effort: lookup failures yield empties.
+    fn enrich_entity(&self, corpus_id: &str, entity: Entity) -> EntityOutput {
+        let loaded;
+        let engine = match &self.corrections {
+            Some(e) => Some(e),
+            None => {
+                loaded = CorrectionsEngine::load(self.db.as_ref(), corpus_id).ok();
+                loaded.as_ref()
+            }
+        };
+        let facts = engine
+            .map(|e| {
+                e.facts_for_entity(&entity.id)
+                    .into_iter()
+                    .map(|(f, _)| EntityFact {
+                        id: f.id.clone(),
+                        kind: f.kind.clone(),
+                        summary: f.summary.clone(),
+                        confidence: f.confidence.clone(),
+                        evidence: f.evidence.clone(),
+                        notes: f.notes.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (reference, variants) = self.linked_references(engine, corpus_id, &entity.id);
+        EntityOutput {
+            entity,
+            facts,
+            reference,
+            variants,
+        }
+    }
+
+    /// Reference-corpus entities linked (via any collection containing
+    /// `corpus_id`) to the entity, plus the variants that `affect` them.
+    fn linked_references(
+        &self,
+        engine: Option<&CorrectionsEngine>,
+        corpus_id: &str,
+        entity_id: &str,
+    ) -> (Vec<EntityReference>, Vec<EntityVariant>) {
+        let mut reference: Vec<EntityReference> = Vec::new();
+        let mut variants: Vec<EntityVariant> = Vec::new();
+        let Ok(collections) = self.db.collection_list() else {
+            return (reference, variants);
+        };
+        for collection in collections {
+            let member = self
+                .db
+                .collection_resolve_corpus_ids(&collection.id)
+                .map(|ids| ids.iter().any(|c| c == corpus_id))
+                .unwrap_or(false);
+            if !member {
+                continue;
+            }
+            let Ok(corrections) = self.db.correction_list_for_collection(&collection.id) else {
+                continue;
+            };
+            let index = EntityLinkIndex::from_corrections(&corrections);
+            for (other_corpus, other_entity, _) in
+                index.linked(corpus_id, entity_id, &[EntityLinkKind::References])
+            {
+                if other_corpus == corpus_id
+                    || reference.iter().any(|r| r.entity_id == other_entity)
+                {
+                    continue;
+                }
+                let is_reference = self
+                    .db
+                    .corpus_get(&other_corpus)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|c| address::is_reference(&c.config));
+                if !is_reference {
+                    continue;
+                }
+                let Ok(Some(target)) = self.db.entity_get_by_id(&other_entity) else {
+                    continue;
+                };
+                let anchored_summary = engine.and_then(|e| {
+                    e.facts_for_entity(&target.id)
+                        .first()
+                        .map(|(f, _)| f.summary.clone())
+                });
+                reference.push(EntityReference {
+                    corpus_id: other_corpus.clone(),
+                    entity_id: target.id.clone(),
+                    name: target.canonical_name.clone(),
+                    summary: anchored_summary.or_else(|| target.description.clone()),
+                });
+                let edges = self
+                    .db
+                    .edge_get_for_entity(&target.id, EdgeDirection::Both, Some("affects"), 100)
+                    .unwrap_or_default();
+                for edge in edges {
+                    let other = if edge.from_entity_id == target.id {
+                        &edge.to_entity_id
+                    } else {
+                        &edge.from_entity_id
+                    };
+                    if let Ok(Some(v)) = self.db.entity_get_by_id(other)
+                        && v.kind == "fact_variant"
+                        && !variants.iter().any(|x| x.id == v.canonical_name)
+                    {
+                        variants.push(EntityVariant {
+                            id: v.canonical_name.clone(),
+                            summary: v.description.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        (reference, variants)
+    }
+
+    fn platform_fact(&self, corpus_id: &str) -> Option<serde_json::Value> {
+        let loaded;
+        let engine = match &self.corrections {
+            Some(e) => e,
+            None => {
+                loaded = CorrectionsEngine::load(self.db.as_ref(), corpus_id).ok()?;
+                &loaded
+            }
+        };
+        engine
+            .facts_in_corpus(corpus_id)
+            .into_iter()
+            .find(|(f, _)| f.kind == "platform")
+            .map(|(f, _)| f.data.clone())
+    }
+
+    // ── list_facts ───────────────────────────────────────────────────────────
+
+    pub fn list_facts(&self, input: ListFactsInput) -> ToolResult<ListFactsOutput> {
+        let freshness = self.corpus_freshness_for(&input.corpus_id);
+        self.try_result(|| {
+            let engine = CorrectionsEngine::load(self.db.as_ref(), &input.corpus_id)?;
+            let facts = engine
+                .facts_in_corpus(&input.corpus_id)
+                .into_iter()
+                .filter(|(f, _)| input.kind.as_ref().is_none_or(|k| &f.kind == k))
+                .filter(|(f, _)| {
+                    input
+                        .topic
+                        .as_ref()
+                        .is_none_or(|t| f.topic.as_ref() == Some(t))
+                })
+                .map(|(f, a)| ListedFact {
+                    fact: f.clone(),
+                    anchors: a.to_vec(),
+                })
+                .collect();
+            Ok(ToolResult::ok(ListFactsOutput { facts }))
+        })
+        .with_corpus_freshness(freshness)
+    }
+
+    fn entity_base(&self, input: EntityInput) -> ToolResult<Entity> {
         let freshness = self.corpus_freshness_for(&input.corpus_id);
         self.try_result(|| {
             // Resolve the requested id through merge corrections before DB lookup.
@@ -272,6 +441,19 @@ impl QueryService {
                 }
                 if let Some(e) = entities.into_iter().next() {
                     return Ok(ToolResult::ok(e));
+                }
+            }
+            // A fact id resolves to the entities it is anchored to.
+            if let Some(engine) = &self.corrections {
+                let mut anchored = Vec::new();
+                for id in engine.anchors_for_fact(&input.corpus_id, &input.name_or_id) {
+                    if let Some(e) = self.db.entity_get_by_id(&id)? {
+                        anchored.push(e);
+                    }
+                }
+                if anchored.len() == 1 {
+                    engine.apply_to_entities(&mut anchored);
+                    return Ok(ToolResult::ok(anchored.remove(0)));
                 }
             }
             // Try by name.
@@ -692,7 +874,7 @@ impl QueryService {
         };
 
         ToolResult::ok(CharacterProfileOutput {
-            entity,
+            entity: entity.entity,
             edges,
             summary,
         })
