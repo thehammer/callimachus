@@ -218,6 +218,48 @@ pub trait SourceAdapter: Send + Sync {
         Ok(None)
     }
 
+    /// [`extract_purpose`](Self::extract_purpose) with a verified-context block
+    /// from the fact base. Default: ignores the block.
+    async fn extract_purpose_grounded(
+        &self,
+        entity: &Entity,
+        content: &str,
+        summary: Option<&str>,
+        _grounding: Option<&str>,
+        llm: &dyn LlmProvider,
+    ) -> anyhow::Result<Option<ExtractedPurpose>> {
+        self.extract_purpose(entity, content, summary, llm).await
+    }
+
+    /// [`extract_contract`](Self::extract_contract) with a verified-context
+    /// block from the fact base. Default: ignores the block.
+    #[allow(clippy::too_many_arguments)]
+    async fn extract_contract_grounded(
+        &self,
+        entity: &Entity,
+        content: &str,
+        summary: Option<&str>,
+        purpose: Option<&str>,
+        signals: &serde_json::Value,
+        _grounding: Option<&str>,
+        llm: &dyn LlmProvider,
+    ) -> anyhow::Result<Option<ExtractedContract>> {
+        self.extract_contract(entity, content, summary, purpose, signals, llm)
+            .await
+    }
+
+    /// [`summarize`](Self::summarize) with a verified-context block from the
+    /// fact base. Default: ignores the block.
+    async fn summarize_grounded(
+        &self,
+        chunk: &Chunk,
+        llm: &dyn LlmProvider,
+        depth: &str,
+        _grounding: Option<&str>,
+    ) -> anyhow::Result<Option<String>> {
+        self.summarize(chunk, llm, depth).await
+    }
+
     /// Return static routing signals for tier selection without any LLM call.
     ///
     /// Called by indexing passes before each LLM invocation to decide which

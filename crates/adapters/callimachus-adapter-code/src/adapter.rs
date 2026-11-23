@@ -196,6 +196,16 @@ impl SourceAdapter for CodeAdapter {
         llm: &dyn LlmProvider,
         depth: &str,
     ) -> Result<Option<String>> {
+        self.summarize_grounded(chunk, llm, depth, None).await
+    }
+
+    async fn summarize_grounded(
+        &self,
+        chunk: &Chunk,
+        llm: &dyn LlmProvider,
+        depth: &str,
+        grounding: Option<&str>,
+    ) -> Result<Option<String>> {
         match depth {
             "function" | "class" | "interface" => {
                 // Per-symbol summary.
@@ -209,7 +219,14 @@ impl SourceAdapter for CodeAdapter {
                 } else {
                     extractor::ExtractedCodeStructure::default()
                 };
-                summarizer::summarize_chunk_with(chunk, &structure, llm, &self.prompt_options).await
+                summarizer::summarize_chunk_with(
+                    chunk,
+                    &structure,
+                    llm,
+                    &self.prompt_options,
+                    grounding,
+                )
+                .await
             }
             "file" => summarizer::summarize_file(chunk, llm).await,
             "corpus" => {
@@ -272,6 +289,18 @@ impl SourceAdapter for CodeAdapter {
         summary: Option<&str>,
         llm: &dyn LlmProvider,
     ) -> Result<Option<ExtractedPurpose>> {
+        self.extract_purpose_grounded(entity, content, summary, None, llm)
+            .await
+    }
+
+    async fn extract_purpose_grounded(
+        &self,
+        entity: &Entity,
+        content: &str,
+        summary: Option<&str>,
+        grounding: Option<&str>,
+        llm: &dyn LlmProvider,
+    ) -> Result<Option<ExtractedPurpose>> {
         // Run static analysis to determine complexity.
         // Infer language from the entity's location URI so we don't run the
         // Rust tree-sitter grammar on PHP/JS/TS/Vue content (the external scanner
@@ -288,6 +317,7 @@ impl SourceAdapter for CodeAdapter {
             .map(|s| format!("\nExisting summary:\n{s}\n"))
             .unwrap_or_default();
         summary_section.push_str(&self.prompt_options.hint_line(content));
+        summary_section.push_str(&summarizer::grounding_section(grounding));
 
         let blocks_instruction = if wants_blocks {
             r#"
@@ -318,11 +348,12 @@ Source:
 {code}
 </code>
 
-Write a single sentence explaining the *purpose* of this entity. Focus on the business/design intent rather than mechanics.
+Write a single sentence explaining the *purpose* of this entity. Focus on the business/design intent rather than mechanics.{grounding_instruction}
 {blocks_instruction}"#,
             name = entity.canonical_name,
             kind = entity.kind,
             code = self.prompt_options.excerpt(content, 4000),
+            grounding_instruction = summarizer::grounding_instruction(grounding),
         );
 
         let req = CompletionRequest {
@@ -390,6 +421,20 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
         signals: &serde_json::Value,
         llm: &dyn LlmProvider,
     ) -> Result<Option<ExtractedContract>> {
+        self.extract_contract_grounded(entity, content, summary, purpose, signals, None, llm)
+            .await
+    }
+
+    async fn extract_contract_grounded(
+        &self,
+        entity: &Entity,
+        content: &str,
+        summary: Option<&str>,
+        purpose: Option<&str>,
+        signals: &serde_json::Value,
+        grounding: Option<&str>,
+        llm: &dyn LlmProvider,
+    ) -> Result<Option<ExtractedContract>> {
         // Prefer the language the contract pass resolved from the persisted chunk
         // language; otherwise detect from the entity's URI.
         let lang = entity_language(entity, content, Some(signals));
@@ -434,6 +479,7 @@ Write a single sentence explaining the *purpose* of this entity. Focus on the bu
             format!("{language_note}\n")
         };
         language_note_section.push_str(&self.prompt_options.hint_line(content));
+        language_note_section.push_str(&summarizer::grounding_section(grounding));
 
         let prompt = format!(
             r#"You are analysing a {language} code entity to extract its behavioural contract.
@@ -462,8 +508,9 @@ Return JSON matching this schema exactly:
 - intent_gap: a brief description if the code does something unexpected given its name/summary (null if none)
 - caller_notes: any caveats callers should know about (null if none)
 - verified_by_names: names of other entities that test/verify this one (usually empty unless this is a test)
-- discards_result_callees: names of callees whose Result/Option return value is ignored"#,
+- discards_result_callees: names of callees whose Result/Option return value is ignored{grounding_instruction}"#,
             language = language,
+            grounding_instruction = summarizer::grounding_instruction(grounding),
             name = entity.canonical_name,
             kind = entity.kind,
             language_note_section = language_note_section,

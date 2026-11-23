@@ -462,12 +462,27 @@ impl SourceAdapter for BinExportAdapter {
         llm: &dyn LlmProvider,
         depth: &str,
     ) -> Result<Option<String>> {
+        self.summarize_grounded(chunk, llm, depth, None).await
+    }
+
+    async fn summarize_grounded(
+        &self,
+        chunk: &Chunk,
+        llm: &dyn LlmProvider,
+        depth: &str,
+        grounding: Option<&str>,
+    ) -> Result<Option<String>> {
         if depth == "function" {
             let mut trimmed = chunk.clone();
             trimmed.content = content::trim_for_prompt(&chunk.content);
-            return self.code.summarize(&trimmed, llm, depth).await;
+            return self
+                .code
+                .summarize_grounded(&trimmed, llm, depth, grounding)
+                .await;
         }
-        self.code.summarize(chunk, llm, depth).await
+        self.code
+            .summarize_grounded(chunk, llm, depth, grounding)
+            .await
     }
 
     async fn resolve_aliases(
@@ -522,9 +537,21 @@ impl SourceAdapter for BinExportAdapter {
         summary: Option<&str>,
         llm: &dyn LlmProvider,
     ) -> Result<Option<ExtractedPurpose>> {
+        self.extract_purpose_grounded(entity, content, summary, None, llm)
+            .await
+    }
+
+    async fn extract_purpose_grounded(
+        &self,
+        entity: &Entity,
+        content: &str,
+        summary: Option<&str>,
+        grounding: Option<&str>,
+        llm: &dyn LlmProvider,
+    ) -> Result<Option<ExtractedPurpose>> {
         let trimmed = content::trim_for_prompt(content);
         self.code
-            .extract_purpose(entity, &trimmed, summary, llm)
+            .extract_purpose_grounded(entity, &trimmed, summary, grounding, llm)
             .await
     }
 
@@ -537,9 +564,23 @@ impl SourceAdapter for BinExportAdapter {
         signals: &serde_json::Value,
         llm: &dyn LlmProvider,
     ) -> Result<Option<ExtractedContract>> {
+        self.extract_contract_grounded(entity, content, summary, purpose, signals, None, llm)
+            .await
+    }
+
+    async fn extract_contract_grounded(
+        &self,
+        entity: &Entity,
+        content: &str,
+        summary: Option<&str>,
+        purpose: Option<&str>,
+        signals: &serde_json::Value,
+        grounding: Option<&str>,
+        llm: &dyn LlmProvider,
+    ) -> Result<Option<ExtractedContract>> {
         let trimmed = content::trim_for_prompt(content);
         self.code
-            .extract_contract(entity, &trimmed, summary, purpose, signals, llm)
+            .extract_contract_grounded(entity, &trimmed, summary, purpose, signals, grounding, llm)
             .await
     }
 }
