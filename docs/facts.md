@@ -157,7 +157,7 @@ so `entity obj.x` resolves (ambiguously when it spans several functions;
 synthetic fact `layout.obj.x` of kind `field`: summary is the field's `summary`
 or `obj.x`, confidence the field's or the layout's. A field entity anchored by a
 layout takes `confidence_score` of that confidence instead of the adapter's 0.5.
-`calli facts show` prints the facts anchored on each entity, tagged `(inferred)`
+`calli facts show` and `calli inspect entity <corpus> <name>` print the facts anchored on each entity, tagged `(inferred)`
 or `(unknown)` when not confirmed.
 
 **Annotation.** `functions` (names or ids; `exclude` removes some; empty = all) restricts where the layout applies when annotating source. `read` with
