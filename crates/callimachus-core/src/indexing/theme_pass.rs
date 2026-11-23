@@ -10,7 +10,7 @@ use crate::{
     types::{Corpus, Edge, Entity, Layer2CacheKey, Theme},
 };
 
-use super::{file_shape, layer2_cache, pipeline::IndexOptions};
+use super::{file_shape, layer2_cache, pipeline::IndexOptions, quota::quota_reason};
 
 const MIN_ENTITIES_FOR_THEMES: u64 = 20;
 
@@ -194,6 +194,10 @@ pub async fn run(
         }
         Ok(None) => {
             stats.skipped += 1;
+        }
+        Err(e) if quota_reason(&e).is_some() => {
+            stats.stopped_reason = quota_reason(&e);
+            tracing::warn!("[theme] stopping: {e}");
         }
         Err(e) => {
             tracing::warn!("theme pass failed for corpus {}: {e}", corpus.id);

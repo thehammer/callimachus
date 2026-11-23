@@ -16,6 +16,7 @@ use crate::{
 
 use super::{
     change_manifest::file_path_from_uri, file_shape, layer2_cache, pipeline::IndexOptions,
+    quota::QuotaGate,
 };
 
 const MAX_RETRIES: u32 = 8;
@@ -37,6 +38,10 @@ struct ExtractedPurpose {
 enum PurposeOutcome {
     Skip,
     Failed(String),
+    /// Quota exhausted: carries the `stopped_reason` string.
+    QuotaStop(String),
+    /// Not started because the quota gate had already tripped.
+    NotStarted,
     Extracted(Box<ExtractedPurpose>),
 }
 
@@ -107,6 +112,7 @@ pub async fn run(
         current_version,
         file_shapes,
         stable_sampling: opts.stable_sampling,
+        quota: QuotaGate::default(),
     });
 
     // ── Interleaved concurrent LLM + per-entity DB writes ────────────────────
@@ -128,6 +134,11 @@ pub async fn run(
         match outcome {
             PurposeOutcome::Skip => {
                 stats.skipped += 1;
+            }
+            PurposeOutcome::NotStarted => {}
+            PurposeOutcome::QuotaStop(reason) => {
+                tracing::warn!("[purpose] stopping: {reason}");
+                stats.stopped_reason.get_or_insert(reason);
             }
             PurposeOutcome::Failed(msg) => {
                 tracing::warn!("purpose pass failed for entity {completed}/{total}: {msg}");
@@ -194,9 +205,13 @@ struct PassContext {
     /// `file_location_uri -> file_shape_hash`, the Layer-2 cache key boundary.
     file_shapes: HashMap<String, String>,
     stable_sampling: bool,
+    quota: QuotaGate,
 }
 
 async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
+    if ctx.quota.is_tripped() {
+        return PurposeOutcome::NotStarted;
+    }
     let db = &ctx.db;
     let corpus_id = ctx.corpus_id.as_str();
     let adapter = &ctx.adapter;
@@ -382,7 +397,10 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> PurposeOutcome {
             }))
         }
         Ok(None) => PurposeOutcome::Skip,
-        Err(e) => PurposeOutcome::Failed(format!("{}: {e}", entity.id)),
+        Err(e) => match ctx.quota.check(&e) {
+            Some(reason) => PurposeOutcome::QuotaStop(reason),
+            None => PurposeOutcome::Failed(format!("{}: {e}", entity.id)),
+        },
     }
 }
 

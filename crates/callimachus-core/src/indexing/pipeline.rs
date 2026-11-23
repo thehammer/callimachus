@@ -307,6 +307,9 @@ pub struct IndexResult {
     pub total_entities: u64,
     pub total_edges: u64,
     pub cost_usd: f64,
+    /// Set when a pass stopped early (e.g. subscription quota exhausted).
+    /// Later LLM passes are not started; re-running resumes the work.
+    pub stopped_reason: Option<String>,
     pub runs: Vec<run_log::RunRecord>,
 }
 
@@ -573,7 +576,12 @@ impl IndexPipeline {
                 }
             };
 
-            self.db.run_finish(&run_id, RunStatus::Completed, &stats)?;
+            let run_status = if stats.stopped_reason.is_some() {
+                RunStatus::Stopped
+            } else {
+                RunStatus::Completed
+            };
+            self.db.run_finish(&run_id, run_status, &stats)?;
 
             tracing::info!(
                 "[{}] done — processed={} skipped={} failed={}",
@@ -585,6 +593,12 @@ impl IndexPipeline {
 
             // Accumulate cost.
             result.cost_usd += stats.cost_usd.unwrap_or(0.0);
+
+            if let Some(reason) = stats.stopped_reason {
+                tracing::warn!("[{pass}] stopped: {reason}; skipping remaining passes");
+                result.stopped_reason = Some(reason);
+                break;
+            }
         }
 
         // Tally final counts from DB.

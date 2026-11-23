@@ -11,7 +11,7 @@ use crate::{
     types::{Corpus, Layer2CacheKey, Summary, SummaryTargetKind, chunk::hash_content},
 };
 
-use super::{layer2_cache, pipeline::IndexOptions};
+use super::{layer2_cache, pipeline::IndexOptions, quota::quota_reason};
 
 pub async fn run(
     db: Arc<dyn StorageBackend>,
@@ -180,6 +180,12 @@ pub async fn run(
                 Ok(None) => {
                     stats.skipped += 1;
                 }
+                Err(e) if quota_reason(&e).is_some() => {
+                    // Sequential pass: nothing in flight, so stop right here.
+                    stats.stopped_reason = quota_reason(&e);
+                    tracing::warn!("[summarize] stopping: {e}");
+                    return Ok(stats);
+                }
                 Err(e) => {
                     tracing::warn!("{level_kind} summary failed for {}: {e}", chunk.id);
                     stats.failed += 1;
@@ -333,6 +339,10 @@ pub async fn run(
         }
         Ok(None) => {
             stats.skipped += 1;
+        }
+        Err(e) if quota_reason(&e).is_some() => {
+            stats.stopped_reason = quota_reason(&e);
+            tracing::warn!("[summarize] stopping: {e}");
         }
         Err(e) => {
             tracing::warn!("corpus summary failed: {e}");
