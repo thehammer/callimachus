@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 callimachus-adapter-contract = { path = "../callimachus-adapter-contract" }
 callimachus-adapter-code = { path = "../callimachus-adapter-code" }
+regex = "1"
 callimachus-llm = { path = "../../callimachus-llm" }
 anyhow.workspace = true
 serde.workspace = true

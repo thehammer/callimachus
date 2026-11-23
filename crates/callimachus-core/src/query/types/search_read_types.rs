@@ -64,6 +64,11 @@ pub struct ReadInput {
     pub location: String,
     #[serde(default)]
     pub depth: ReadDepth,
+    /// Name struct fields in code content from the corpus's layouts
+    /// (`unaff_A2->x /* obj+0x10 s16 */`). Needs adapters; see
+    /// `QueryService::with_adapters`.
+    #[serde(default)]
+    pub annotate: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

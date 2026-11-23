@@ -39,6 +39,7 @@ Kinds with defined `data`:
 | `region` | `space`, `start`, `end` (`end` must not be less than `start`) |
 | `format`, `rule`, `constant`, `behaviour`, `asset` | optional, free JSON object (e.g. `{"bytes": 32}`); a non-object `data` is rejected |
 | `variant` | `variant` (id), `affects` (list of fact ids or addresses), optional `detects` |
+| `layout` | `name`, `bases`, `fields` (see "Layouts"), optional `functions`, `registers` |
 | `platform` | free object naming the variant values a game uses, e.g. `{"region": "pal-overseas", "pad": "6-button"}` |
 
 Other kinds (`codec`, or any string)
@@ -109,6 +110,44 @@ A scholion is appended only for new or changed records (the record plus its
 anchors are compared). Re-importing the same file adds nothing. With
 `--prune`, facts present in the corpus but absent from the import get a
 `retracted` scholion and disappear from queries.
+
+## Layouts
+
+A `layout` fact names the fields of an object reached through a pointer plus
+offset (see "Field accesses" in `c-free-identifiers.md`):
+
+```json
+{"id": "layout.obj", "kind": "layout", "topic": "other", "summary": "Active object record",
+ "data": {"name": "obj", "bases": ["unaff_A2", "in_A2"],
+          "functions": {"include": [], "exclude": ["FUN_00001a58"]},
+          "fields": [{"offset": "0x10", "name": "x", "type": "s16", "summary": "x position, whole pixels", "confidence": "confirmed"},
+                     {"offset": "0x12", "name": "y", "type": "s16"}]},
+ "confidence": "inferred", "evidence": ["ev.dec-objects"]}
+```
+
+Validation: `name` matches `[a-z][a-z0-9_]{0,31}`; `bases` is non-empty; `fields`
+is non-empty with unique names (same pattern) and hex `offset`s (`-0x4` is
+allowed); `type` is free text (letters, digits, `_`, space, `*`, up to 32
+characters, as for `variable`); a field's `confidence` defaults to the
+layout's. Optional `registers` maps a base to its CPU register
+(`{"unaff_A2": "a2"}`); otherwise a base ending `_<letter><digit>` gives the
+register (`unaff_A2` → `a2`).
+
+**Anchoring.** For each field and base, the entity `{corpus}:{base lowercased}+0x{off}`
+is an anchor (so import after indexing). Each anchor gets the virtual alias
+`{name}.{field}` (`obj.x`), so `entity obj.x` resolves, and `entity_edges` lists
+its readers and writers. The entity output shows a synthetic fact
+`layout.obj.x` of kind `field`: summary is the field's `summary` or `obj.x`,
+confidence the field's or the layout's. Anchoring is corpus-wide, so one field
+entity is shared by every function using that base.
+
+**Annotation.** `functions.include` / `exclude` (function names; empty include
+= all) restrict where the layout applies when annotating source. `read` with
+`annotate: true` (MCP) and `calli inspect chunk <location> --annotate` rewrite
+C as `unaff_A2->x /* obj+0x10 s16 */`; in binary-export chunks, disassembly
+comments with an operand `$10(a2)`, `0x10(a2)` or `($10,a2)` on a field's
+register get ` ; obj.x` appended. Bare displacements in disassembly are decimal;
+`$` and `0x` mark hex.
 
 ## Reference corpora, linking and variants
 

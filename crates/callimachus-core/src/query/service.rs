@@ -1,11 +1,13 @@
 use crate::corrections::CorrectionsEngine;
 use crate::corrections::address;
+use crate::corrections::layouts;
 use crate::corrections::types::EntityLinkKind;
 use crate::query::collection_service::EntityLinkIndex;
 use crate::query::search;
 use crate::query::types::*;
 use crate::storage::{EdgeDirection, StorageBackend};
 use crate::types::{CorpusFreshness, Entity, Location, Scope, SummaryTargetKind, ToolResult};
+use callimachus_adapter_contract::{AdapterRegistry, FieldName};
 use callimachus_llm::LlmProvider;
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -19,6 +21,8 @@ pub struct QueryService {
     /// Optional embedding provider for semantic/hybrid search.
     /// When `None`, semantic and hybrid modes fall back to keyword search.
     embedder: Option<Arc<dyn LlmProvider>>,
+    /// Adapters by corpus kind; used by `read` with `annotate`.
+    adapters: Option<Arc<AdapterRegistry>>,
 }
 
 impl QueryService {
@@ -27,6 +31,7 @@ impl QueryService {
             db,
             corrections: None,
             embedder: None,
+            adapters: None,
         }
     }
 
@@ -37,12 +42,19 @@ impl QueryService {
             db,
             corrections: Some(corrections),
             embedder: None,
+            adapters: None,
         }
     }
 
     /// Attach an embedding provider for semantic and hybrid search.
     pub fn with_embedder(mut self, embedder: Arc<dyn LlmProvider>) -> Self {
         self.embedder = Some(embedder);
+        self
+    }
+
+    /// Attach the adapter registry so `read` can annotate source.
+    pub fn with_adapters(mut self, adapters: Arc<AdapterRegistry>) -> Self {
+        self.adapters = Some(adapters);
         self
     }
 
@@ -475,6 +487,24 @@ impl QueryService {
                     engine.apply_to_entities(&mut anchored);
                     return Ok(ToolResult::ok(anchored.remove(0)));
                 }
+                // A layout alias (`obj.x`) names the field entity of each base.
+                let mut fields = Vec::new();
+                for id in engine.anchors_for_layout_field(&input.corpus_id, &input.name_or_id) {
+                    if let Some(e) = self.db.entity_get_by_id(&id)? {
+                        fields.push(e);
+                    }
+                }
+                match fields.len() {
+                    0 => {}
+                    1 => {
+                        engine.apply_to_entities(&mut fields);
+                        return Ok(ToolResult::ok(fields.remove(0)));
+                    }
+                    _ => {
+                        let candidates = fields.iter().map(|e| e.canonical_name.clone()).collect();
+                        return Ok(ToolResult::ambiguous(candidates));
+                    }
+                }
             }
             // Try by name.
             let mut matches = self
@@ -552,9 +582,26 @@ impl QueryService {
             };
             let limit = input.limit.unwrap_or(50) as usize;
             let kind = input.kind.as_deref();
-            let edges = self
-                .db
-                .edge_get_for_entity(&input.entity_id, direction, kind, limit)?;
+            // A layout alias (`obj.x`) stands for the field entity of each base.
+            let ids = match (
+                &self.corrections,
+                self.db.entity_get_by_id(&input.entity_id)?,
+            ) {
+                (Some(engine), None) => {
+                    let ids = engine.anchors_for_layout_field(&input.corpus_id, &input.entity_id);
+                    if ids.is_empty() {
+                        vec![input.entity_id.clone()]
+                    } else {
+                        ids
+                    }
+                }
+                _ => vec![input.entity_id.clone()],
+            };
+            let mut edges = Vec::new();
+            for id in &ids {
+                edges.extend(self.db.edge_get_for_entity(id, direction, kind, limit)?);
+            }
+            edges.truncate(limit);
             let count = edges.len();
             Ok(ToolResult::ok(EntityEdgesOutput {
                 entity_id: input.entity_id,
@@ -676,13 +723,18 @@ impl QueryService {
                 .or(db_summary);
 
             // Content: only if depth=Full.
-            let content = match input.depth {
+            let mut content = match input.depth {
                 ReadDepth::Full => Some(chunk.content.clone()),
                 _ => None,
             };
 
             // Entities present: entities whose first or last location is this URI.
             let mut entities_present = self.db.entities_at_location(corpus_id, &uri)?;
+            if input.annotate
+                && let Some(text) = &content
+            {
+                content = Some(self.annotated(&chunk, &entities_present, text));
+            }
             if let Some(engine) = &self.corrections {
                 engine.apply_to_entities(&mut entities_present);
             }
@@ -702,6 +754,50 @@ impl QueryService {
             })
             .with_corpus_freshness(freshness))
         })
+    }
+
+    /// `content` with struct fields named after the corpus's layouts. Returns
+    /// `content` unchanged when there is no adapter, language or layout.
+    fn annotated(&self, chunk: &crate::types::Chunk, entities: &[Entity], content: &str) -> String {
+        let (Some(adapters), Some(language)) = (&self.adapters, chunk.language.as_deref()) else {
+            return content.to_string();
+        };
+        let Some(adapter) = self
+            .db
+            .corpus_get(&chunk.corpus_id)
+            .ok()
+            .flatten()
+            .and_then(|c| adapters.get(&c.kind))
+        else {
+            return content.to_string();
+        };
+        let loaded;
+        let engine = match &self.corrections {
+            Some(e) => e,
+            None => match CorrectionsEngine::load(self.db.as_ref(), &chunk.corpus_id) {
+                Ok(e) => {
+                    loaded = e;
+                    &loaded
+                }
+                Err(_) => return content.to_string(),
+            },
+        };
+        let mut fields: Vec<FieldName> = Vec::new();
+        let mut functions = entities.iter().filter(|e| e.kind == "function").peekable();
+        // No function entity: only layouts that apply to every function.
+        let names: Vec<&str> = if functions.peek().is_some() {
+            functions.map(|e| e.canonical_name.as_str()).collect()
+        } else {
+            vec![""]
+        };
+        for name in names {
+            for f in layouts::field_names_for_corpus(engine, &chunk.corpus_id, name) {
+                if !fields.contains(&f) {
+                    fields.push(f);
+                }
+            }
+        }
+        adapter.annotate_source(content, language, &fields)
     }
 
     // ── summarize ────────────────────────────────────────────────────────────
@@ -839,6 +935,7 @@ impl QueryService {
                 corpus_id: Some(input.corpus_id),
                 location,
                 depth: ReadDepth::Summary,
+                annotate: false,
             }),
             None => ToolResult::not_found(Some(vec![format!(
                 "Chapter '{}' not found in corpus '{}'",
@@ -925,6 +1022,7 @@ impl QueryService {
             corpus_id: Some(input.corpus_id),
             location: meet.first_co_occurrence.uri(),
             depth: ReadDepth::Full,
+            annotate: false,
         }) {
             ToolResult::Ok(s) => s.data,
             other => {
@@ -1843,6 +1941,7 @@ mod tests {
             corpus_id: Some("c1".into()),
             location: chunk.location.uri(),
             depth: ReadDepth::Full,
+            annotate: false,
         });
         let ToolResult::Ok(s) = result else {
             panic!("expected Ok")
@@ -1867,6 +1966,7 @@ mod tests {
             corpus_id: Some("c1".into()),
             location: chunk.location.uri(),
             depth: ReadDepth::Summary,
+            annotate: false,
         });
         let ToolResult::Ok(s) = result else {
             panic!("expected Ok")
@@ -1901,6 +2001,7 @@ mod tests {
             corpus_id: Some("c1".into()),
             location: uri,
             depth: ReadDepth::Scenes,
+            annotate: false,
         });
         let ToolResult::Ok(s) = result else {
             panic!("expected Ok")
@@ -1920,6 +2021,7 @@ mod tests {
             corpus_id: Some("c1".into()),
             location: chunk_uri.clone(),
             depth: ReadDepth::Full,
+            annotate: false,
         });
         let ToolResult::Ok(s) = result else {
             panic!("expected Ok")

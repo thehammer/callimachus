@@ -115,3 +115,83 @@ pub fn trim_for_prompt(content: &str) -> String {
     }
     out
 }
+
+/// Operands that address memory at a displacement from a register:
+/// `$10(a2)`, `0x10(a2)`, `-4(a2)` and `($10,a2)`. A bare number is decimal;
+/// `$` and `0x` mark hex.
+static DISPLACEMENT_OPERAND: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)(-?)(\$|0x)?([0-9a-f]+)\(([a-z][a-z0-9]*)\)|\((-?)(\$|0x)?([0-9a-f]+),\s*([a-z][a-z0-9]*)\)",
+    )
+    .expect("valid pattern")
+});
+
+/// `(register, displacement)` pairs in one disassembly line.
+fn displacement_operands(line: &str) -> Vec<(String, i64)> {
+    DISPLACEMENT_OPERAND
+        .captures_iter(line)
+        .filter_map(|c| {
+            let (neg, prefix, digits, reg) = if c.get(4).is_some() {
+                (&c[1], c.get(2), &c[3], &c[4])
+            } else {
+                (&c[5], c.get(6), &c[7], &c[8])
+            };
+            let radix = if prefix.is_some() { 16 } else { 10 };
+            let magnitude = i64::from_str_radix(digits, radix).ok()?;
+            let disp = if neg.is_empty() {
+                magnitude
+            } else {
+                -magnitude
+            };
+            Some((reg.to_ascii_lowercase(), disp))
+        })
+        .collect()
+}
+
+/// Append ` ; layout.field` inside each disassembly comment line whose operand
+/// is a displacement from a field's register. Other bytes are unchanged.
+pub fn annotate_disassembly(
+    asm: &str,
+    fields: &[callimachus_adapter_contract::FieldName],
+) -> String {
+    let mut out = String::with_capacity(asm.len());
+    for line in asm.split_inclusive('\n') {
+        let (text, eol) = match line.strip_suffix('\n') {
+            Some(t) => (t, "\n"),
+            None => (line, ""),
+        };
+        let body = text.trim_end();
+        let Some(inner) = body.strip_prefix("/*").and_then(|b| b.strip_suffix("*/")) else {
+            out.push_str(line);
+            continue;
+        };
+        let mut notes: Vec<String> = Vec::new();
+        for (reg, disp) in displacement_operands(inner) {
+            for f in fields {
+                let note = format!("{}.{}", f.layout, f.field);
+                if f.offset == disp
+                    && f.register
+                        .as_deref()
+                        .is_some_and(|r| r.eq_ignore_ascii_case(&reg))
+                    && !notes.contains(&note)
+                {
+                    notes.push(note);
+                }
+            }
+        }
+        if notes.is_empty() {
+            out.push_str(line);
+            continue;
+        }
+        let head = inner.trim_end();
+        out.push_str("/*");
+        out.push_str(head);
+        for n in notes {
+            out.push_str(" ; ");
+            out.push_str(&n);
+        }
+        out.push_str(" */");
+        out.push_str(eol);
+    }
+    out
+}
