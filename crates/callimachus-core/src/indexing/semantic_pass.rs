@@ -14,7 +14,7 @@ use crate::{
     types::{Chunk, Corpus},
 };
 
-use super::pipeline::IndexOptions;
+use super::{pipeline::IndexOptions, quota::quota_reason};
 
 const MAX_RETRIES: u32 = 5;
 const TASK_TIMEOUT_SECS: u64 = 120;
@@ -23,6 +23,8 @@ const HEARTBEAT_SECS: u64 = 60;
 enum TaskOutcome {
     Ok(Option<ExtractedSemantic>),
     Err(String),
+    /// Quota exhausted: carries the `stopped_reason` string.
+    QuotaStop(String),
     TimedOut,
 }
 
@@ -42,7 +44,12 @@ pub async fn run(
     };
 
     // Skip chunks whose source file is unchanged according to the manifest.
-    if let Some(m) = opts.change_manifest.as_ref() {
+    // Without `--full`, `chunk_list_unprocessed` already selects exactly the
+    // chunks with no semantic output yet, so the dirty filter must not drop
+    // them (they may be left over from a run that stopped on quota).
+    if opts.full
+        && let Some(m) = opts.change_manifest.as_ref()
+    {
         chunks.retain(|c| m.is_dirty_for_chunk(c));
     }
 
@@ -73,8 +80,12 @@ pub async fn run(
 
         let parallel_result: anyhow::Result<()> = async {
             for chunk in chunks {
+                // Quota exhausted: leave the remaining chunks unprocessed.
+                if stats.stopped_reason.is_some() {
+                    break;
+                }
                 // Throttle to `concurrency` in-flight tasks.
-                while join_set.len() >= concurrency {
+                while join_set.len() >= concurrency && stats.stopped_reason.is_none() {
                     if let Some(res) = join_set.join_next().await {
                         apply_join_result(res, &db, &mut stats, opts.dry_run, version.as_deref())?;
                         let n = completed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -82,6 +93,10 @@ pub async fn run(
                             tracing::info!("[semantic] {}/{} chunks", n, total);
                         }
                     }
+                }
+
+                if stats.stopped_reason.is_some() {
+                    break;
                 }
 
                 let adapter_c = Arc::clone(&adapter);
@@ -95,7 +110,10 @@ pub async fn run(
                             .await
                         {
                             Ok(Ok(v)) => TaskOutcome::Ok(v),
-                            Ok(Err(e)) => TaskOutcome::Err(e.to_string()),
+                            Ok(Err(e)) => match quota_reason(&e) {
+                                Some(reason) => TaskOutcome::QuotaStop(reason),
+                                None => TaskOutcome::Err(e.to_string()),
+                            },
                             Err(_elapsed) => TaskOutcome::TimedOut,
                         };
                     (chunk_id, outcome)
@@ -147,6 +165,12 @@ pub async fn run(
                         db.chunk_set_semantic_processed(&chunk.id)?;
                     }
                     stats.skipped += 1;
+                }
+                Err(e) if quota_reason(&e).is_some() => {
+                    // Sequential: nothing in flight; leave the rest unprocessed.
+                    stats.stopped_reason = quota_reason(&e);
+                    tracing::warn!("[semantic] stopping: {e}");
+                    break;
                 }
                 Err(e) => {
                     tracing::warn!("semantic extraction failed for {}: {e}", chunk.id);
@@ -243,6 +267,10 @@ fn apply_join_result(
                 db.chunk_set_semantic_processed(&chunk_id)?;
             }
             stats.skipped += 1;
+        }
+        Ok((_chunk_id, TaskOutcome::QuotaStop(reason))) => {
+            tracing::warn!("[semantic] stopping: {reason}");
+            stats.stopped_reason.get_or_insert(reason);
         }
         Ok((_chunk_id, TaskOutcome::Err(msg))) => {
             tracing::warn!("semantic pass error: {msg}");

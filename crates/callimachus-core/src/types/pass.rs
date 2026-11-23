@@ -141,6 +141,8 @@ pub enum RunStatus {
     Completed,
     Failed,
     Cancelled,
+    /// Pass ended early on a recoverable stop (e.g. subscription quota).
+    Stopped,
 }
 
 impl std::fmt::Display for RunStatus {
@@ -150,6 +152,7 @@ impl std::fmt::Display for RunStatus {
             RunStatus::Completed => write!(f, "completed"),
             RunStatus::Failed => write!(f, "failed"),
             RunStatus::Cancelled => write!(f, "cancelled"),
+            RunStatus::Stopped => write!(f, "stopped"),
         }
     }
 }
@@ -162,6 +165,7 @@ impl std::str::FromStr for RunStatus {
             "completed" => Ok(RunStatus::Completed),
             "failed" => Ok(RunStatus::Failed),
             "cancelled" => Ok(RunStatus::Cancelled),
+            "stopped" => Ok(RunStatus::Stopped),
             other => Err(format!("unknown run status: {other}")),
         }
     }

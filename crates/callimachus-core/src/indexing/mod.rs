@@ -13,6 +13,7 @@ pub mod layer2_cache;
 pub mod model_tier;
 pub mod pipeline;
 pub mod purpose_pass;
+pub(crate) mod quota;
 pub mod reindex_pass;
 pub mod semantic_pass;
 pub mod structure_pass;

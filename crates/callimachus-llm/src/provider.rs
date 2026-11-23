@@ -195,5 +195,8 @@ pub struct ProviderUsage {
     pub output_tokens: u64,
     /// Always 0.0 for subscription mode.
     pub cost_usd: f64,
+    /// API-equivalent cost reported by the claude CLI. Informational only:
+    /// subscription calls are not billed, so `cost_usd` stays 0.
+    pub equivalent_cost_usd: f64,
     pub calls: u64,
 }

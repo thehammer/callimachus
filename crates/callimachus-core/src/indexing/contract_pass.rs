@@ -16,6 +16,7 @@ use crate::{
 
 use super::{
     change_manifest::file_path_from_uri, file_shape, layer2_cache, pipeline::IndexOptions,
+    quota::QuotaGate,
 };
 
 const MAX_RETRIES: u32 = 8;
@@ -45,6 +46,10 @@ enum ContractOutcome {
         entity_id: String,
         message: String,
     },
+    /// Quota exhausted: carries the `stopped_reason` string.
+    QuotaStop(String),
+    /// Not started because the quota gate had already tripped.
+    NotStarted,
     Skip,
 }
 
@@ -83,6 +88,8 @@ pub async fn run(
         .into_iter()
         .filter(|e| CONTRACT_KINDS.contains(&e.kind.as_str()))
         .filter(|e| {
+            // Dirty files, plus any entity with no output yet (e.g. left over
+            // from a run that stopped on quota), regardless of dirty state.
             opts.change_manifest
                 .as_ref()
                 .map(|m| {
@@ -92,6 +99,7 @@ pub async fn run(
                         .unwrap_or(true)
                 })
                 .unwrap_or(true)
+                || db.contract_get(&corpus.id, &e.id).ok().flatten().is_none()
         })
         .collect();
     let total = candidates.len() as u64;
@@ -115,6 +123,7 @@ pub async fn run(
         current_version: current_version.clone(),
         file_shapes,
         stable_sampling: opts.stable_sampling,
+        quota: QuotaGate::default(),
     });
 
     // ── Interleaved concurrent LLM + per-entity DB writes ────────────────────
@@ -201,6 +210,11 @@ pub async fn run(
                 tier_counts[tier as usize] += 1;
                 stats.processed += 1;
             }
+            ContractOutcome::NotStarted => {}
+            ContractOutcome::QuotaStop(reason) => {
+                tracing::warn!("[contract] stopping: {reason}");
+                stats.stopped_reason.get_or_insert(reason);
+            }
             ContractOutcome::Failed { entity_id, message } => {
                 tracing::warn!("contract pass failed for entity {entity_id}: {message}");
                 // Write nothing on failure — leave the entity contract-less so a later
@@ -254,9 +268,13 @@ struct PassContext {
     current_version: Option<String>,
     file_shapes: HashMap<String, String>,
     stable_sampling: bool,
+    quota: QuotaGate,
 }
 
 async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
+    if ctx.quota.is_tripped() {
+        return ContractOutcome::NotStarted;
+    }
     let db = &ctx.db;
     let corpus_id = ctx.corpus_id.as_str();
     let adapter = &ctx.adapter;
@@ -454,9 +472,12 @@ async fn process_entity(ctx: &PassContext, entity: &Entity) -> ContractOutcome {
                 entity_id: entity.id.clone(),
             }
         }
-        Err(e) => ContractOutcome::Failed {
-            entity_id: entity.id.clone(),
-            message: e.to_string(),
+        Err(e) => match ctx.quota.check(&e) {
+            Some(reason) => ContractOutcome::QuotaStop(reason),
+            None => ContractOutcome::Failed {
+                entity_id: entity.id.clone(),
+                message: e.to_string(),
+            },
         },
     }
 }

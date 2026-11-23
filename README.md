@@ -132,6 +132,22 @@ If `claude` is on your PATH, Callimachus will use it automatically via subproces
 
 Auto-detection priority: `--provider` flag → config file api_key → `claude` on PATH.
 
+**Lean mode (default).** Each call spawns `claude --print`. By default Callimachus runs it in lean mode: no session persistence, `--safe-mode`, no tools, no MCP servers, a short system prompt, and a fresh empty working directory, so your user `CLAUDE.md`, settings, hooks and MCP servers are not loaded. That is roughly 50x less fixed overhead per call than a bare `claude --print`. With no configured model, lean mode pins `sonnet`. Token usage from the CLI is recorded per call.
+
+Tune it in `config.toml` (every key is optional):
+
+```toml
+[llm.claude_code]
+model = "sonnet"       # default model; the lean path falls back to "sonnet"
+effort = "low"         # passed as --effort
+lean = true            # false restores a plain `claude --print`
+extra_args = []        # appended to the claude argv
+timeout_secs = 120
+calls_per_minute = 10
+```
+
+**Quota exhaustion stops the run.** When the subscription window is used up, the current pass stops pulling new entities, finishes or fails the ones in flight, and later LLM passes are not started. The run is recorded with status `stopped` and `calli index` prints `stopped: <reason> — re-run the same command to resume`. Finished work is kept, and the stopped run does not advance the version anchor, so re-running the exact same command (no `--full`) after the window resets resumes: entities that have no output yet are picked up, and finished ones are not processed again. Only specific usage-limit messages ("usage limit", "5-hour limit", "weekly limit", "out of extra usage") count as quota; transient rate limits still back off and retry.
+
 ### Tiered model routing (optional)
 
 For large corpora, Callimachus can route each entity to the cheapest model capable of handling its complexity — Haiku for simple entities, Sonnet for moderately complex ones, Opus for high-risk or highly-connected components. Disabled by default; enable in `config.toml`:
