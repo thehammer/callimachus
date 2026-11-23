@@ -554,6 +554,7 @@ fn detect_language(entity: &Entity) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn extract_with_retry(
     adapter: &dyn SourceAdapter,
     entity: &Entity,

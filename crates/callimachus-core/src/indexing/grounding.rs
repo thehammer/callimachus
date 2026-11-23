@@ -10,11 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sha2::{Digest, Sha256};
 
 use crate::adapter::SourceAdapter;
-use crate::corrections::address::{self, apply_mask, entity_address, mask_from_config, parse_address};
+use crate::corrections::CorrectionsEngine;
+use crate::corrections::address::{
+    self, apply_mask, entity_address, mask_from_config, parse_address,
+};
 use crate::corrections::facts::FactRecord;
 use crate::corrections::layouts;
 use crate::corrections::types::{CorrectionKind, EntityLinkKind};
-use crate::corrections::CorrectionsEngine;
 use crate::error::Result;
 use crate::query::collection_service::EntityLinkIndex;
 use crate::storage::{EdgeDirection, StorageBackend};
@@ -198,8 +200,14 @@ impl GroundingContext {
                 match fact.kind.as_str() {
                     "region" => {
                         let (Some(start), Some(end)) = (
-                            fact.data.get("start").and_then(|v| v.as_str()).and_then(parse_address),
-                            fact.data.get("end").and_then(|v| v.as_str()).and_then(parse_address),
+                            fact.data
+                                .get("start")
+                                .and_then(|v| v.as_str())
+                                .and_then(parse_address),
+                            fact.data
+                                .get("end")
+                                .and_then(|v| v.as_str())
+                                .and_then(parse_address),
                         ) else {
                             continue;
                         };
@@ -253,7 +261,11 @@ impl GroundingContext {
         })
     }
 
-    fn empty(db: Arc<dyn StorageBackend>, adapter: Arc<dyn SourceAdapter>, corpus_id: String) -> Self {
+    fn empty(
+        db: Arc<dyn StorageBackend>,
+        adapter: Arc<dyn SourceAdapter>,
+        corpus_id: String,
+    ) -> Self {
         Self {
             db,
             adapter,
@@ -351,7 +363,11 @@ fn collect_lines(ctx: &GroundingContext, entity: &Entity, content: &str) -> Vec<
         ));
     }
 
-    for (kind, verb) in [("reads", "reads"), ("writes", "writes"), ("uses_table", "uses table")] {
+    for (kind, verb) in [
+        ("reads", "reads"),
+        ("writes", "writes"),
+        ("uses_table", "uses table"),
+    ] {
         let edges = ctx
             .db
             .edge_get_for_entity(&entity.id, EdgeDirection::Outbound, Some(kind), EDGE_LIMIT)
@@ -411,7 +427,11 @@ fn confidence_suffix(qualifiers: &[&str], confidence: &str) -> String {
 }
 
 fn field_line(verb: &str, target_name: &str, fact: &FactRecord) -> String {
-    let layout = fact.data.get("layout").and_then(|v| v.as_str()).unwrap_or("");
+    let layout = fact
+        .data
+        .get("layout")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let field = fact.id.rsplit('.').next().unwrap_or("");
     let qualified = format!("{layout}.{field}");
     let ty = fact.data.get("type").and_then(|v| v.as_str());
@@ -429,14 +449,20 @@ fn field_line(verb: &str, target_name: &str, fact: &FactRecord) -> String {
 
 /// Reference-corpus entities linked to `target`, with the variants reaching
 /// them through one `affects` edge. Returns whether any line was added.
-fn reference_lines(ctx: &GroundingContext, verb: &str, target: &Entity, out: &mut Vec<String>) -> bool {
+fn reference_lines(
+    ctx: &GroundingContext,
+    verb: &str,
+    target: &Entity,
+    out: &mut Vec<String>,
+) -> bool {
     let mut added = false;
     let mut seen: HashSet<String> = HashSet::new();
     for index in &ctx.links {
         for (other_corpus, other_entity, _) in
             index.linked(&ctx.corpus_id, &target.id, &[EntityLinkKind::References])
         {
-            let Some(reference) = ctx.references.iter().find(|r| r.corpus_id == other_corpus) else {
+            let Some(reference) = ctx.references.iter().find(|r| r.corpus_id == other_corpus)
+            else {
                 continue;
             };
             if !seen.insert(other_entity.clone()) {
@@ -471,7 +497,10 @@ fn reference_lines(ctx: &GroundingContext, verb: &str, target: &Entity, out: &mu
                     && v.kind == "fact_variant"
                     && let Some(d) = v.description.as_deref()
                 {
-                    let text = format!("Variant: {d} {}", confidence_suffix(&[], &fact_confidence(reference, &v)));
+                    let text = format!(
+                        "Variant: {d} {}",
+                        confidence_suffix(&[], &fact_confidence(reference, &v))
+                    );
                     if !variants.contains(&text) {
                         variants.push(text);
                     }
@@ -528,7 +557,12 @@ fn region_line(ctx: &GroundingContext, verb: &str, target: &Entity) -> Option<St
 fn callee_lines(ctx: &GroundingContext, entity: &Entity, out: &mut Vec<String>) {
     let edges = ctx
         .db
-        .edge_get_for_entity(&entity.id, EdgeDirection::Outbound, Some("calls"), EDGE_LIMIT)
+        .edge_get_for_entity(
+            &entity.id,
+            EdgeDirection::Outbound,
+            Some("calls"),
+            EDGE_LIMIT,
+        )
         .unwrap_or_default();
     let mut callees: Vec<Entity> = Vec::new();
     for edge in edges {
@@ -586,8 +620,8 @@ fn constant_lines(ctx: &GroundingContext, content: &str, out: &mut Vec<String>) 
     let numbers: HashSet<u64> = tokens.iter().filter_map(|t| parse_number(t)).collect();
     for c in &ctx.constants {
         let lower = c.value.trim().to_ascii_lowercase();
-        let hit = tokens.contains(&lower)
-            || c.number.is_some_and(|n| n > 9 && numbers.contains(&n));
+        let hit =
+            tokens.contains(&lower) || c.number.is_some_and(|n| n > 9 && numbers.contains(&n));
         if hit {
             out.push(format!(
                 "- constant {} = {} {}",
@@ -601,9 +635,7 @@ fn constant_lines(ctx: &GroundingContext, content: &str, out: &mut Vec<String>) 
 
 /// `0x2c0` (any case, optional `u`/`l` suffix) or a decimal number.
 fn parse_number(token: &str) -> Option<u64> {
-    let t = token
-        .trim()
-        .trim_end_matches(|c: char| matches!(c, 'u' | 'U' | 'l' | 'L'));
+    let t = token.trim().trim_end_matches(['u', 'U', 'l', 'L']);
     match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
         Some(hex) => u64::from_str_radix(hex, 16).ok(),
         None => t.parse().ok(),
@@ -646,7 +678,9 @@ mod tests {
 
     #[test]
     fn render_caps_chars() {
-        let lines: Vec<String> = (0..10).map(|i| format!("- {i} {}", "x".repeat(400))).collect();
+        let lines: Vec<String> = (0..10)
+            .map(|i| format!("- {i} {}", "x".repeat(400)))
+            .collect();
         let block = render(&lines);
         assert!(block.len() < MAX_CHARS, "{}", block.len());
         assert!(block.contains("more omitted"));

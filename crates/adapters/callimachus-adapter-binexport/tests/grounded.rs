@@ -19,7 +19,10 @@ const BLOCK: &str = "Verified context from the project's fact base (prefer it ov
 /// A routine whose C is ~2,800 characters and whose disassembly is far over
 /// budget, so the prompt must keep all the C and drop assembly lines.
 fn long_routine() -> String {
-    let mut s = format!("// F @ 0x004000\nvoid F(void)\n{{\n{}}}\n", "  x = 1;\n".repeat(350));
+    let mut s = format!(
+        "// F @ 0x004000\nvoid F(void)\n{{\n{}}}\n",
+        "  x = 1;\n".repeat(350)
+    );
     s.push_str(content::DISASSEMBLY_MARKER);
     s.push('\n');
     for i in 0..400 {
@@ -29,23 +32,46 @@ fn long_routine() -> String {
 }
 
 fn entity() -> Entity {
-    Entity::new("toy:0x4000".into(), "toy".into(), "FUN_00004000".into(), "function".into())
+    Entity::new(
+        "toy:0x4000".into(),
+        "toy".into(),
+        "FUN_00004000".into(),
+        "function".into(),
+    )
 }
 
 fn chunk(content: String) -> Chunk {
-    Chunk::new("toy".into(), None, "function".into(), Location::new("toy", "fn/00004000"), content)
+    Chunk::new(
+        "toy".into(),
+        None,
+        "function".into(),
+        Location::new("toy", "fn/00004000"),
+        content,
+    )
 }
 
 fn assert_grounded_and_trimmed(prompt: &str, what: &str) {
     let c_part = content::split_content(&long_routine()).0.to_string();
     let (header, code) = (prompt.find(HEADER), prompt.find("<code>"));
-    assert!(header.is_some() && header < code, "{what}: block before the code\n{prompt}");
-    assert!(prompt.contains("- calls FUN_00001000 = decompress a blob into RAM (confirmed)"), "{what}");
+    assert!(
+        header.is_some() && header < code,
+        "{what}: block before the code\n{prompt}"
+    );
+    assert!(
+        prompt.contains("- calls FUN_00001000 = decompress a blob into RAM (confirmed)"),
+        "{what}"
+    );
     assert!(prompt.contains(INSTRUCTION), "{what}");
     // C first: every character of the C survives; the assembly is what is cut.
     assert!(prompt.contains(&c_part), "{what}: all of the C is kept");
-    assert!(prompt.contains("more instructions */"), "{what}: assembly lines were dropped");
-    assert!(!prompt.contains("/* 00018f"), "{what}: the last assembly lines are not sent");
+    assert!(
+        prompt.contains("more instructions */"),
+        "{what}: assembly lines were dropped"
+    );
+    assert!(
+        !prompt.contains("/* 00018f"),
+        "{what}: the last assembly lines are not sent"
+    );
 }
 
 #[tokio::test]
@@ -91,12 +117,24 @@ async fn without_a_block_the_grounded_methods_give_the_prompts_they_always_gave(
     let a = BinExportAdapter::new();
     let (plain, grounded) = (RecordingProvider::new(), RecordingProvider::new());
 
-    a.extract_purpose(&entity(), &long_routine(), Some("a summary"), &plain).await.unwrap();
-    a.extract_purpose_grounded(&entity(), &long_routine(), Some("a summary"), None, &grounded)
+    a.extract_purpose(&entity(), &long_routine(), Some("a summary"), &plain)
         .await
         .unwrap();
-    a.summarize(&chunk(long_routine()), &plain, "function").await.unwrap();
-    a.summarize_grounded(&chunk(long_routine()), &grounded, "function", None).await.unwrap();
+    a.extract_purpose_grounded(
+        &entity(),
+        &long_routine(),
+        Some("a summary"),
+        None,
+        &grounded,
+    )
+    .await
+    .unwrap();
+    a.summarize(&chunk(long_routine()), &plain, "function")
+        .await
+        .unwrap();
+    a.summarize_grounded(&chunk(long_routine()), &grounded, "function", None)
+        .await
+        .unwrap();
 
     for pass in ["purpose", "summarize"] {
         let (p, g) = (plain.prompt(pass, ""), grounded.prompt(pass, ""));

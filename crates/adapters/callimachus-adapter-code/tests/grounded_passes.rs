@@ -59,7 +59,13 @@ struct Prompts {
 async fn grounded_prompts(mode: Option<GroundingMode>) -> Prompts {
     let db = toy_world();
     let llm = Arc::new(RecordingProvider::new());
-    run(&db, &llm, vec![Pass::Summarize, Pass::Purpose, Pass::Contract], mode).await;
+    run(
+        &db,
+        &llm,
+        vec![Pass::Summarize, Pass::Purpose, Pass::Contract],
+        mode,
+    )
+    .await;
     Prompts {
         summarize: llm.prompt("summarize", SUMMARY_NEEDLE),
         purpose: llm.prompt("purpose", ENTITY_NEEDLE),
@@ -79,12 +85,25 @@ fn find(prompt: &str, needle: &str) -> usize {
 fn the_code_adapter_names_register_fields_in_the_annotated_source() {
     let db = toy_world();
     let adapter: Arc<dyn SourceAdapter> = Arc::new(CodeAdapter::new());
-    let ctx = GroundingContext::load(db.clone(), &game_corpus(&db), adapter, Some(GroundingMode::Full))
-        .unwrap();
-    let g = build(&ctx, &function_entity(&db), FUNC_SOURCE, GroundingMode::Full);
+    let ctx = GroundingContext::load(
+        db.clone(),
+        &game_corpus(&db),
+        adapter,
+        Some(GroundingMode::Full),
+    )
+    .unwrap();
+    let g = build(
+        &ctx,
+        &function_entity(&db),
+        FUNC_SOURCE,
+        GroundingMode::Full,
+    );
 
     let annotated = g.annotated_content.expect("annotated source in full mode");
-    assert!(annotated.contains("unaff_A2->x /* obj+0x10 s16 */"), "{annotated}");
+    assert!(
+        annotated.contains("unaff_A2->x /* obj+0x10 s16 */"),
+        "{annotated}"
+    );
     assert!(!annotated.contains("unaff_A2 + 0x10"), "{annotated}");
     assert_eq!(g.block.lines().next(), Some(HEADER));
     assert_eq!(
@@ -103,31 +122,67 @@ fn the_code_adapter_names_register_fields_in_the_annotated_source() {
 #[tokio::test]
 async fn every_grounded_prompt_carries_the_block_between_kind_and_the_code() {
     let p = grounded_prompts(Some(GroundingMode::Full)).await;
-    for (pass, prompt) in [("summarize", &p.summarize), ("purpose", &p.purpose), ("contract", &p.contract)] {
-        let (kind, header, code) = (find(prompt, "Kind:"), find(prompt, HEADER), find(prompt, "<code>"));
-        assert!(kind < header && header < code, "{pass}: Kind@{kind} header@{header} code@{code}\n{prompt}");
+    for (pass, prompt) in [
+        ("summarize", &p.summarize),
+        ("purpose", &p.purpose),
+        ("contract", &p.contract),
+    ] {
+        let (kind, header, code) = (
+            find(prompt, "Kind:"),
+            find(prompt, HEADER),
+            find(prompt, "<code>"),
+        );
+        assert!(
+            kind < header && header < code,
+            "{pass}: Kind@{kind} header@{header} code@{code}\n{prompt}"
+        );
         assert!(prompt.contains("- reads DAT_00a10001 = Version port (reference, confirmed). Variant: region bits 7-6 select 50/60 Hz and language (confirmed)"), "{pass}");
-        assert!(prompt.contains("- writes unaff_A2+0x10 = obj.x: x position, whole pixels (s16, confirmed)"), "{pass}");
-        assert!(prompt.contains("- calls FUN_00001000 = decompress a blob into RAM (confirmed)"), "{pass}");
-        assert!(prompt.contains("- constant 0x2c0 = pickup tile (confirmed)"), "{pass}");
-        assert!(prompt.contains(INSTRUCTION), "{pass}: the instruction to use the verified names");
+        assert!(
+            prompt.contains(
+                "- writes unaff_A2+0x10 = obj.x: x position, whole pixels (s16, confirmed)"
+            ),
+            "{pass}"
+        );
+        assert!(
+            prompt.contains("- calls FUN_00001000 = decompress a blob into RAM (confirmed)"),
+            "{pass}"
+        );
+        assert!(
+            prompt.contains("- constant 0x2c0 = pickup tile (confirmed)"),
+            "{pass}"
+        );
+        assert!(
+            prompt.contains(INSTRUCTION),
+            "{pass}: the instruction to use the verified names"
+        );
     }
 }
 
 #[tokio::test]
 async fn full_mode_prompts_show_the_code_with_fields_named() {
     let p = grounded_prompts(Some(GroundingMode::Full)).await;
-    for (pass, prompt) in [("summarize", &p.summarize), ("purpose", &p.purpose), ("contract", &p.contract)] {
+    for (pass, prompt) in [
+        ("summarize", &p.summarize),
+        ("purpose", &p.purpose),
+        ("contract", &p.contract),
+    ] {
         let code = &prompt[find(prompt, "<code>")..];
         assert!(code.contains("unaff_A2->x"), "{pass}: {code}");
-        assert!(!code.contains("*(short *)(unaff_A2 + 0x10)"), "{pass}: {code}");
+        assert!(
+            !code.contains("*(short *)(unaff_A2 + 0x10)"),
+            "{pass}: {code}"
+        );
     }
 }
 
 #[tokio::test]
 async fn facts_mode_prompts_carry_the_block_but_the_code_is_untouched() {
     let p = grounded_prompts(Some(GroundingMode::Facts)).await;
-    for (pass, prompt) in [("summarize", &p.summarize), ("purpose", &p.purpose), ("contract", &p.contract)] {
+    for (pass, prompt) in [
+        ("summarize", &p.summarize),
+        ("purpose", &p.purpose),
+        ("contract", &p.contract),
+    ] {
         assert!(prompt.contains(HEADER), "{pass}");
         assert!(prompt.contains(INSTRUCTION), "{pass}");
         assert!(prompt.contains("*(short *)(unaff_A2 + 0x10)"), "{pass}");
@@ -138,7 +193,11 @@ async fn facts_mode_prompts_carry_the_block_but_the_code_is_untouched() {
 #[tokio::test]
 async fn the_default_rule_grounds_a_corpus_that_has_facts() {
     let p = grounded_prompts(None).await;
-    for (pass, prompt) in [("summarize", &p.summarize), ("purpose", &p.purpose), ("contract", &p.contract)] {
+    for (pass, prompt) in [
+        ("summarize", &p.summarize),
+        ("purpose", &p.purpose),
+        ("contract", &p.contract),
+    ] {
         assert!(prompt.contains(HEADER), "{pass}");
         assert!(prompt.contains("unaff_A2->x"), "{pass}");
     }
@@ -153,7 +212,10 @@ async fn assert_prompts_match_the_ungrounded_adapter(
     mode: Option<GroundingMode>,
     name: &str,
 ) {
-    let entity = db.entity_get_by_id(&format!("{GAME}:{}", name.to_lowercase())).unwrap().unwrap();
+    let entity = db
+        .entity_get_by_id(&format!("{GAME}:{}", name.to_lowercase()))
+        .unwrap()
+        .unwrap();
     let chunk = db
         .chunk_get_by_uri(&entity.first_location.as_ref().unwrap().uri())
         .unwrap()
@@ -184,13 +246,28 @@ async fn assert_prompts_match_the_ungrounded_adapter(
         .extract_purpose(&entity, &chunk.content, None, &direct)
         .await
         .unwrap();
-    adapter.summarize(&chunk, &direct, "function").await.unwrap();
+    adapter
+        .summarize(&chunk, &direct, "function")
+        .await
+        .unwrap();
 
     let needle = format!("Entity: {name}");
     let sym = format!("Symbol: {name}");
-    assert_eq!(llm.prompt("contract", &needle), direct.prompt("contract", &needle), "contract");
-    assert_eq!(llm.prompt("purpose", &needle), direct.prompt("purpose", &needle), "purpose");
-    assert_eq!(llm.prompt("summarize", &sym), direct.prompt("summarize", &sym), "summarize");
+    assert_eq!(
+        llm.prompt("contract", &needle),
+        direct.prompt("contract", &needle),
+        "contract"
+    );
+    assert_eq!(
+        llm.prompt("purpose", &needle),
+        direct.prompt("purpose", &needle),
+        "purpose"
+    );
+    assert_eq!(
+        llm.prompt("summarize", &sym),
+        direct.prompt("summarize", &sym),
+        "summarize"
+    );
 
     for prompt in [
         llm.prompt("contract", &needle),
@@ -218,6 +295,12 @@ async fn a_corpus_without_facts_gets_byte_identical_prompts_by_default() {
 #[tokio::test]
 async fn a_function_with_no_known_facts_in_a_grounded_corpus_keeps_its_old_prompts() {
     let db = toy_world();
-    add_function_in_language(db.as_ref(), "FUN_00009000", None, "void FUN_00009000(void)\n{\n  return;\n}\n", "c");
+    add_function_in_language(
+        db.as_ref(),
+        "FUN_00009000",
+        None,
+        "void FUN_00009000(void)\n{\n  return;\n}\n",
+        "c",
+    );
     assert_prompts_match_the_ungrounded_adapter(&db, None, "FUN_00009000").await;
 }

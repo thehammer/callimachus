@@ -8,13 +8,11 @@
 
 use std::sync::Arc;
 
+use callimachus_core::Collection;
 use callimachus_core::corrections::fact_import::{ImportReport, import};
 use callimachus_core::corrections::link_addresses::link_addresses;
 use callimachus_core::storage::{SqliteBackend, StorageBackend};
-use callimachus_core::types::{
-    Chunk, CollectionKind, Corpus, Edge, Entity, Location, MemberType,
-};
-use callimachus_core::Collection;
+use callimachus_core::types::{Chunk, CollectionKind, Corpus, Edge, Entity, Location, MemberType};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -77,7 +75,12 @@ pub fn add_entity_with_id(
     kind: &str,
     addr: Option<u64>,
 ) {
-    let mut e = Entity::new(id.to_string(), corpus.to_string(), name.to_string(), kind.to_string());
+    let mut e = Entity::new(
+        id.to_string(),
+        corpus.to_string(),
+        name.to_string(),
+        kind.to_string(),
+    );
     if let Some(a) = addr {
         e.aliases.push(format!("0x{a:x}"));
     }
@@ -145,7 +148,13 @@ pub fn fact(id: &str, kind: &str, summary: &str, confidence: &str, data: Value) 
 }
 
 pub fn var_fact(id: &str, summary: &str, confidence: &str, addr: &str, space: &str) -> Value {
-    fact(id, "variable", summary, confidence, json!({"address": addr, "space": space}))
+    fact(
+        id,
+        "variable",
+        summary,
+        confidence,
+        json!({"address": addr, "space": space}),
+    )
 }
 
 pub fn routine_fact(summary: &str) -> Value {
@@ -159,7 +168,13 @@ pub fn routine_fact(summary: &str) -> Value {
 }
 
 pub fn constant_fact() -> Value {
-    fact("const.pickup-tile", "constant", "pickup tile", "confirmed", json!({"value": "0x2c0"}))
+    fact(
+        "const.pickup-tile",
+        "constant",
+        "pickup tile",
+        "confirmed",
+        json!({"value": "0x2c0"}),
+    )
 }
 
 pub fn layout_fact() -> Value {
@@ -205,13 +220,22 @@ pub fn bare_game() -> Arc<SqliteBackend> {
 pub fn toy_world() -> Arc<SqliteBackend> {
     let db = bare_game();
     add_corpus(db.as_ref(), REF, corpus_config(Some("reference")));
-    db.collection_insert(&Collection::new(COLL, COLL, CollectionKind::Domain)).unwrap();
-    db.collection_add_member(COLL, GAME, MemberType::Corpus).unwrap();
-    db.collection_add_member(COLL, REF, MemberType::Corpus).unwrap();
+    db.collection_insert(&Collection::new(COLL, COLL, CollectionKind::Domain))
+        .unwrap();
+    db.collection_add_member(COLL, GAME, MemberType::Corpus)
+        .unwrap();
+    db.collection_add_member(COLL, REF, MemberType::Corpus)
+        .unwrap();
 
     add_entity(db.as_ref(), GAME, "FUN_00001000", "function", Some(0x1000));
     add_function_with_source(db.as_ref(), FUNC, Some(0x4000), FUNC_SOURCE);
-    add_entity(db.as_ref(), GAME, "DAT_00a10001", "variable", Some(0xa10001));
+    add_entity(
+        db.as_ref(),
+        GAME,
+        "DAT_00a10001",
+        "variable",
+        Some(0xa10001),
+    );
     // Register-style bases are function-qualified: `{name}@{function}`.
     add_entity_with_id(
         db.as_ref(),
@@ -221,7 +245,13 @@ pub fn toy_world() -> Arc<SqliteBackend> {
         "field",
         None,
     );
-    add_edge(db.as_ref(), "e1", FUNC_ID, "game:unaff_a2+0x10@fun_00004000", "writes");
+    add_edge(
+        db.as_ref(),
+        "e1",
+        FUNC_ID,
+        "game:unaff_a2+0x10@fun_00004000",
+        "writes",
+    );
     add_edge(db.as_ref(), "e2", FUNC_ID, "game:dat_00a10001", "reads");
     add_edge(db.as_ref(), "e3", FUNC_ID, "game:fun_00001000", "calls");
 

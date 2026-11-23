@@ -54,7 +54,10 @@ impl RecordingProvider {
 #[async_trait::async_trait]
 impl LlmProvider for RecordingProvider {
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse> {
-        self.seen.lock().unwrap().push((req.pass.clone(), req.prompt));
+        self.seen
+            .lock()
+            .unwrap()
+            .push((req.pass.clone(), req.prompt));
         Ok(CompletionResponse {
             text: "[dry-run]".to_string(),
             input_tokens: 0,

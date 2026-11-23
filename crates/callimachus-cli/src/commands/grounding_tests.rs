@@ -18,8 +18,13 @@ fn inspect_grounding_prints_the_block_and_the_annotated_source() {
     let db = toy_world();
     let out = grounding_text(GAME, FUNC, None, db).unwrap();
 
-    assert!(out.starts_with("FUN_00004000 [function] grounding=full\n"), "{out}");
-    let (block, source) = out.split_once("Annotated source:").expect("annotated source section");
+    assert!(
+        out.starts_with("FUN_00004000 [function] grounding=full\n"),
+        "{out}"
+    );
+    let (block, source) = out
+        .split_once("Annotated source:")
+        .expect("annotated source section");
     assert!(block.contains(HEADER), "{out}");
     for line in [
         "- reads DAT_00a10001 = Version port (reference, confirmed). Variant: region bits 7-6 select 50/60 Hz and language (confirmed)",
@@ -46,7 +51,10 @@ fn inspect_grounding_none_mode_says_there_is_no_context() {
     let out = grounding_text(GAME, FUNC, Some("none"), toy_world()).unwrap();
     assert!(out.contains("grounding=none"), "{out}");
     assert!(out.contains("(no verified context)"), "{out}");
-    assert!(!out.contains(HEADER) && !out.contains("Annotated source:"), "{out}");
+    assert!(
+        !out.contains(HEADER) && !out.contains("Annotated source:"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -60,10 +68,14 @@ fn inspect_grounding_defaults_to_none_for_a_corpus_without_facts() {
 
 #[test]
 fn inspect_grounding_rejects_an_unknown_entity_and_an_unknown_mode() {
-    let err = grounding_text(GAME, "FUN_0000dead", None, toy_world()).unwrap_err().to_string();
+    let err = grounding_text(GAME, "FUN_0000dead", None, toy_world())
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("FUN_0000dead"), "{err}");
 
-    let err = grounding_text(GAME, FUNC, Some("everything"), toy_world()).unwrap_err().to_string();
+    let err = grounding_text(GAME, FUNC, Some("everything"), toy_world())
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("everything") && err.contains("none"), "{err}");
 }
 
@@ -71,15 +83,28 @@ fn inspect_grounding_rejects_an_unknown_entity_and_an_unknown_mode() {
 
 fn applied(grounding: Option<&str>) -> anyhow::Result<IndexOptions> {
     let mut opts = IndexOptions::default();
-    RunControl { grounding: grounding.map(String::from), ..Default::default() }.apply(&mut opts)?;
+    RunControl {
+        grounding: grounding.map(String::from),
+        ..Default::default()
+    }
+    .apply(&mut opts)?;
     Ok(opts)
 }
 
 #[test]
 fn the_grounding_flag_sets_the_index_option() {
-    assert_eq!(applied(Some("none")).unwrap().grounding, Some(GroundingMode::None));
-    assert_eq!(applied(Some("facts")).unwrap().grounding, Some(GroundingMode::Facts));
-    assert_eq!(applied(Some("full")).unwrap().grounding, Some(GroundingMode::Full));
+    assert_eq!(
+        applied(Some("none")).unwrap().grounding,
+        Some(GroundingMode::None)
+    );
+    assert_eq!(
+        applied(Some("facts")).unwrap().grounding,
+        Some(GroundingMode::Facts)
+    );
+    assert_eq!(
+        applied(Some("full")).unwrap().grounding,
+        Some(GroundingMode::Full)
+    );
 }
 
 #[test]
