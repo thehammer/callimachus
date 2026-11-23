@@ -16,10 +16,13 @@ use callimachus_core::{
     storage::StorageBackend,
     types::{Corpus, Pass, parse_passes_list},
 };
-use callimachus_llm::{build_embedding_provider, build_provider};
+use callimachus_llm::{LlmProvider, build_embedding_provider, build_provider};
 
 use crate::commands::index::{
     build_embedding_provider_config, default_registry, resolve_adapter, resolve_provider,
+};
+use crate::commands::run_control::{
+    EstimateProfile, RunControl, print_estimate, reject_estimate_with_history,
 };
 use crate::config::GlobalConfig;
 
@@ -37,6 +40,7 @@ pub async fn run(
     concurrency: Option<usize>,
     passes: Option<String>,
     stable_sampling: bool,
+    control: RunControl,
     provider_override: Option<String>,
     db: Arc<dyn StorageBackend>,
     config: &GlobalConfig,
@@ -46,13 +50,20 @@ pub async fn run(
         bail!("source path does not exist: {path}");
     }
 
+    reject_estimate_with_history(&control, with_history)?;
+
     // Register the corpus, or find an existing one with the same source path.
     let corpus = register_or_find(db.as_ref(), kind, name, path)?;
 
     // Build LLM provider and adapter.
     let provider_config = resolve_provider(provider_override, config)?;
+    let profile = EstimateProfile::for_provider(&provider_config, config, concurrency);
     let llm = build_provider(provider_config)
         .map_err(|e| anyhow::anyhow!("failed to build LLM provider: {e}"))?;
+    let mut llm: Arc<dyn LlmProvider> = Arc::new(llm);
+    if control.estimate {
+        llm = profile.provider(llm);
+    }
     let registry = default_registry();
     let adapter = resolve_adapter(&corpus, &registry)?;
 
@@ -76,7 +87,7 @@ pub async fn run(
     validate_pass_prerequisites(db.as_ref(), &corpus.id, &pass_list)?;
 
     // Fail-fast: if embed was requested, the embedding config must be usable.
-    let embed_requested = pass_list.contains(&Pass::Embed);
+    let embed_requested = pass_list.contains(&Pass::Embed) && !control.estimate;
     let embedder = if embed_requested {
         let embed_cfg = build_embedding_provider_config(config);
         match build_embedding_provider(embed_cfg) {
@@ -95,19 +106,21 @@ pub async fn run(
         None
     };
 
-    let opts = IndexOptions {
+    let mut opts = IndexOptions {
         passes: pass_list,
-        dry_run,
+        dry_run: dry_run && !control.estimate,
         concurrency,
         stable_sampling,
         tier_config: config.model_tiers.clone(),
         ..IndexOptions::default()
     };
+    control.apply(&mut opts)?;
 
+    let report_db = Arc::clone(&db);
     let pipeline = IndexPipeline {
         db,
         adapter,
-        llm: Arc::new(llm),
+        llm,
         embedder,
     };
 
@@ -126,6 +139,11 @@ pub async fn run(
         }
     } else {
         let result = pipeline.run(&corpus, opts).await?;
+        if control.estimate {
+            let summaries_present = !report_db.summary_list(&corpus.id)?.is_empty();
+            print_estimate(&result, &profile, summaries_present);
+            return Ok(());
+        }
         println!("Done.");
         println!("  Chunks:   {}", result.total_chunks);
         println!("  Entities: {}", result.total_entities);
