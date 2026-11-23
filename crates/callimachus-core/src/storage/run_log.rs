@@ -23,6 +23,10 @@ pub struct PassStats {
     /// Peak concurrency observed during this pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peak_concurrency: Option<u32>,
+    /// Set when the pass stopped early (e.g. `"quota_exhausted: <resets_at>"`).
+    /// Re-running the same command resumes the remaining work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

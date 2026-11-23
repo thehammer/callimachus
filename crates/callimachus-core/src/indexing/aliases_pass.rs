@@ -8,7 +8,7 @@ use crate::{
     types::Corpus,
 };
 
-use super::pipeline::IndexOptions;
+use super::{pipeline::IndexOptions, quota::quota_reason};
 
 const MAX_RETRIES: u32 = 8;
 
@@ -72,6 +72,10 @@ pub async fn run(
             } else {
                 tracing::info!("[aliases] {} merges applied", stats.processed);
             }
+        }
+        Err(e) if quota_reason(&e).is_some() => {
+            stats.stopped_reason = quota_reason(&e);
+            tracing::warn!("[aliases] stopping: {e}");
         }
         Err(e) => {
             tracing::warn!("alias resolution failed after retries: {e}");
