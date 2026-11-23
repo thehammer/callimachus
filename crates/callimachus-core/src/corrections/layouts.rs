@@ -7,8 +7,9 @@
 
 use std::collections::BTreeMap;
 
-use callimachus_adapter_contract::FieldName;
+use callimachus_adapter_contract::{FieldArray, FieldName};
 
+use crate::corrections::address::{apply_mask, parse_address};
 use crate::corrections::engine::CorrectionsEngine;
 use crate::corrections::facts::{CONFIDENCE_VALUES, FactRecord};
 
@@ -29,6 +30,56 @@ pub struct Layout {
     pub fields: Vec<LayoutField>,
     /// Optional base → CPU register overrides (lowercase).
     pub registers: BTreeMap<String, String>,
+    /// Set when the layout describes a fixed-address array of records.
+    pub array: Option<LayoutArray>,
+}
+
+/// `data.array`: N records of `stride` bytes at a constant address.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutArray {
+    /// Start address as written (unmasked).
+    pub address: u64,
+    pub stride: u64,
+    pub count: Option<u64>,
+}
+
+impl LayoutArray {
+    fn parse(raw: &serde_json::Value) -> Result<LayoutArray, String> {
+        let obj = raw
+            .as_object()
+            .ok_or("`data.array` must be an object with `address` and `stride`")?;
+        let number = |key: &str| -> Result<u64, String> {
+            match obj.get(key) {
+                Some(serde_json::Value::String(s)) => {
+                    parse_address(s).ok_or_else(|| format!("`data.array.{key}` is not hex: `{s}`"))
+                }
+                Some(_) => Err(format!("`data.array.{key}` must be a hex string")),
+                None => Err(format!("`data.array.{key}` is required")),
+            }
+        };
+        let address = number("address")?;
+        let stride = number("stride")?;
+        if stride == 0 {
+            return Err("`data.array.stride` must be greater than zero".into());
+        }
+        let count = match obj.get("count") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => match v.as_u64() {
+                Some(c) if c > 0 => Some(c),
+                _ => return Err("`data.array.count` must be a positive integer".into()),
+            },
+        };
+        Ok(LayoutArray {
+            address,
+            stride,
+            count,
+        })
+    }
+
+    /// Start address with the corpus mask applied.
+    pub fn masked_address(&self, mask: Option<u64>) -> u64 {
+        apply_mask(self.address, mask)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,9 +106,13 @@ impl Layout {
                 "`data.name` must match [a-z][a-z0-9_]{{0,31}} (got `{name}`)"
             ));
         }
+        let array = match obj.get("array") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(a) => Some(LayoutArray::parse(a)?),
+        };
         let bases = string_list(obj.get("bases"), "data.bases")?;
-        if bases.is_empty() {
-            return Err("`data.bases` must name at least one base".into());
+        if bases.is_empty() && array.is_none() {
+            return Err("`data.bases` must name at least one base (or give `data.array`)".into());
         }
         if let Some(b) = bases.iter().find(|b| !is_identifier(b)) {
             return Err(format!("`data.bases` entry `{b}` is not an identifier"));
@@ -109,6 +164,7 @@ impl Layout {
             exclude,
             fields,
             registers,
+            array,
         })
     }
 
@@ -164,8 +220,36 @@ impl Layout {
         out
     }
 
-    /// The field that `anchor_id` (an entity id in `corpus_id`) names.
-    pub fn field_for_anchor(&self, corpus_id: &str, anchor_id: &str) -> Option<&LayoutField> {
+    /// The field of an array layout at slot-field `(address, offset)` (an
+    /// entity `slot_<address>+0x<offset>`): the address is masked and must lie
+    /// in the first record (`start <= address < start + stride`), so the access
+    /// stands for field `address - start + offset`.
+    pub fn array_field_at(
+        &self,
+        mask: Option<u64>,
+        address: u64,
+        offset: i64,
+    ) -> Option<&LayoutField> {
+        let array = self.array.as_ref()?;
+        let delta = apply_mask(address, mask).checked_sub(array.masked_address(mask))?;
+        if delta >= array.stride {
+            return None;
+        }
+        let effective = i64::try_from(delta).ok()?.checked_add(offset)?;
+        self.fields.iter().find(|f| f.offset == effective)
+    }
+
+    /// The field that `anchor_id` (an entity id in `corpus_id`) names. `mask`
+    /// is the corpus `address_mask`, used by array layouts.
+    pub fn field_for_anchor(
+        &self,
+        corpus_id: &str,
+        anchor_id: &str,
+        mask: Option<u64>,
+    ) -> Option<&LayoutField> {
+        if let Some((address, offset)) = slot_of_entity_id(anchor_id) {
+            return self.array_field_at(mask, address, offset);
+        }
         let anchor_id = anchor_id.rsplit_once('@').map_or(anchor_id, |(a, _)| a);
         self.bases.iter().find_map(|b| {
             self.fields
@@ -227,6 +311,26 @@ impl LayoutField {
             confidence,
         })
     }
+}
+
+/// `(address, offset)` of a slot field entity id `{corpus}:slot_ff8a00+0x1c`.
+pub fn slot_of_entity_id(entity_id: &str) -> Option<(u64, i64)> {
+    let name = entity_id.rsplit_once(':').map_or(entity_id, |(_, n)| n);
+    slot_of_name(name)
+}
+
+/// `(address, offset)` of a slot field name `slot_ff8a00+0x1c`.
+pub fn slot_of_name(name: &str) -> Option<(u64, i64)> {
+    let rest = name.strip_prefix("slot_")?;
+    let (addr, off) = rest.split_once(['+', '-'])?;
+    let sign = if rest.as_bytes()[addr.len()] == b'-' {
+        -1
+    } else {
+        1
+    };
+    let address = u64::from_str_radix(addr, 16).ok()?;
+    let magnitude = i64::from_str_radix(off.strip_prefix("0x")?, 16).ok()?;
+    Some((address, sign * magnitude))
 }
 
 /// Entity id of the field `(base, offset)`: `{corpus}:{base lowercased}+0x{off}`.
@@ -318,12 +422,31 @@ fn names_for(
     function_name: &str,
 ) -> Vec<FieldName> {
     let mut out = Vec::new();
-    for (fact, _) in engine.layout_facts(corpus_id) {
+    for (fact, _, fact_corpus) in engine.layout_facts_with_corpus(corpus_id) {
+        let mask = fact_corpus.and_then(|c| engine.mask_of(c));
         let Some(layout) = Layout::of_fact(fact) else {
             continue;
         };
         if !layout.admits(function_name) {
             continue;
+        }
+        if let Some(array) = &layout.array {
+            let address = array.masked_address(mask);
+            for field in &layout.fields {
+                out.push(FieldName {
+                    base: format!("slot_{address:x}"),
+                    register: None,
+                    offset: field.offset,
+                    layout: layout.name.clone(),
+                    field: field.name.clone(),
+                    ty: field.ty.clone(),
+                    array: Some(FieldArray {
+                        address,
+                        stride: array.stride,
+                        mask,
+                    }),
+                });
+            }
         }
         for field in &layout.fields {
             for base in &layout.bases {
@@ -338,6 +461,7 @@ fn names_for(
                     layout: layout.name.clone(),
                     field: field.name.clone(),
                     ty: field.ty.clone(),
+                    array: None,
                 });
             }
         }

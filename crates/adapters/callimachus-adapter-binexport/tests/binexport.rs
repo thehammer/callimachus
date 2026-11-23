@@ -727,6 +727,30 @@ async fn field_access_in_decompiled_c_becomes_a_field_entity() {
     ));
 }
 
+#[tokio::test]
+async fn walking_pointer_over_a_fixed_address_array_becomes_slot_field_entities() {
+    let dir = tempfile::tempdir().unwrap();
+    write_bundle(dir.path());
+    write(
+        dir.path(),
+        "c/00002000.c",
+        "// FUN_00002000 decompiled\nvoid FUN_00002000(int iVar2)\n{\n  byte *pbVar10;\n  short sVar3;\n  pbVar10 = &RAM_ff8a00;\n  sVar3 = 0x27;\n  do {\n    if (*pbVar10 != 0) {\n      if (*(short *)(pbVar10 + 0x1c) < iVar2) {\n        iVar2 = 0;\n      }\n    }\n    pbVar10 = pbVar10 + 0x40;\n    sVar3 = sVar3 + -1;\n  } while (sVar3 != -1);\n}\n",
+    );
+    let db = Arc::new(SqliteBackend::open_in_memory().unwrap());
+    index(dir.path(), db.clone(), Arc::new(BinExportAdapter::new())).await;
+
+    let f = entity(&db, "slot_ff8a00+0x1c");
+    assert_eq!(f.kind, "field");
+    assert!(
+        f.aliases.contains(&"stride:0x40".to_string()),
+        "{:?}",
+        f.aliases
+    );
+    assert!(has_edge(&db, "reads", "0x2000", "slot_ff8a00+0x1c"));
+    assert_eq!(entity(&db, "slot_ff8a00+0x0").kind, "field");
+    assert!(has_edge(&db, "reads", "0x2000", "slot_ff8a00+0x0"));
+}
+
 fn obj_x(register: Option<&str>) -> callimachus_adapter_contract::FieldName {
     callimachus_adapter_contract::FieldName {
         base: "unaff_A2".into(),
@@ -735,6 +759,7 @@ fn obj_x(register: Option<&str>) -> callimachus_adapter_contract::FieldName {
         layout: "obj".into(),
         field: "x".into(),
         ty: Some("s16".into()),
+        array: None,
     }
 }
 

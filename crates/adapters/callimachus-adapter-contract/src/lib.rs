@@ -43,5 +43,6 @@ pub use registry::AdapterRegistry;
 pub use callimachus_llm::{self, LlmProvider};
 pub use routing::RoutingInputs;
 pub use types::{
-    Chunk, Corpus, CorpusStatus, Edge, Entity, FieldName, Location, LocationUri, hash_content,
+    Chunk, Corpus, CorpusStatus, Edge, Entity, FieldArray, FieldName, Location, LocationUri,
+    hash_content,
 };

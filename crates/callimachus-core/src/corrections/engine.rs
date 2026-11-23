@@ -1,3 +1,4 @@
+use crate::corrections::address::mask_from_config;
 use crate::corrections::facts::{FactRecord, confidence_score};
 use crate::corrections::layouts::{LAYOUT_KIND, Layout};
 use crate::corrections::types::{Correction, CorrectionKind};
@@ -16,12 +17,22 @@ struct FactEntry<'a> {
 /// to a snapshot of entities and summaries. Does not mutate the database.
 pub struct CorrectionsEngine {
     corrections: Vec<Correction>,
+    /// Corpus id -> `address_mask`, for corpora that set one (array layouts).
+    masks: std::collections::HashMap<String, u64>,
 }
 
 impl CorrectionsEngine {
     /// Construct from a pre-loaded, `applied_at`-sorted slice of records.
     pub fn new(corrections: Vec<Correction>) -> Self {
-        Self { corrections }
+        Self {
+            corrections,
+            masks: Default::default(),
+        }
+    }
+
+    /// The corpus `address_mask`, when the engine knows the corpus and it sets one.
+    pub fn mask_of(&self, corpus_id: &str) -> Option<u64> {
+        self.masks.get(corpus_id).copied()
     }
 
     /// Load all corrections for a corpus from the database, already sorted ASC.
@@ -29,7 +40,12 @@ impl CorrectionsEngine {
     /// a corpus_id and are meaningless at the per-corpus level.
     pub fn load(db: &dyn StorageBackend, corpus_id: &str) -> Result<Self> {
         let corrections = db.correction_list(corpus_id)?;
-        Ok(Self { corrections })
+        let masks = db
+            .corpus_get(corpus_id)?
+            .and_then(|c| mask_from_config(&c.config).map(|m| (c.id, m)))
+            .into_iter()
+            .collect();
+        Ok(Self { corrections, masks })
     }
 
     /// Load corrections for ALL corpora from the database, sorted by applied_at ASC.
@@ -42,7 +58,12 @@ impl CorrectionsEngine {
             .into_iter()
             .filter(|c| c.corpus_id.is_some())
             .collect();
-        Ok(Self { corrections })
+        let masks = db
+            .corpus_list()?
+            .into_iter()
+            .filter_map(|c| mask_from_config(&c.config).map(|m| (c.id, m)))
+            .collect();
+        Ok(Self { corrections, masks })
     }
 
     /// Load collection-scoped corrections for a collection. Returns the raw
@@ -197,16 +218,18 @@ impl CorrectionsEngine {
             let layout = Layout::of_fact(entry.fact);
             for anchor in entry.anchors {
                 let (alias, confidence) = match (&layout, entry.corpus_id) {
-                    (Some(l), Some(corpus)) => match l.field_for_anchor(corpus, anchor) {
-                        // A layout field's confidence, else the layout's.
-                        Some(f) => (
-                            l.qualified(f),
-                            Some(confidence_score(
-                                f.confidence.as_deref().unwrap_or(&entry.fact.confidence),
-                            )),
-                        ),
-                        None => continue,
-                    },
+                    (Some(l), Some(corpus)) => {
+                        match l.field_for_anchor(corpus, anchor, self.mask_of(corpus)) {
+                            // A layout field's confidence, else the layout's.
+                            Some(f) => (
+                                l.qualified(f),
+                                Some(confidence_score(
+                                    f.confidence.as_deref().unwrap_or(&entry.fact.confidence),
+                                )),
+                            ),
+                            None => continue,
+                        }
+                    }
                     _ => (entry.fact.id.clone(), None),
                 };
                 let target = find(&parent, anchor);
@@ -255,7 +278,8 @@ impl CorrectionsEngine {
                 let Some(layout) = Layout::of_fact(e.fact) else {
                     return Some((e.fact.clone(), anchors));
                 };
-                let field = layout.field_for_anchor(e.corpus_id?, entity_id)?;
+                let field =
+                    layout.field_for_anchor(e.corpus_id?, entity_id, self.mask_of(e.corpus_id?))?;
                 let qualified = layout.qualified(field);
                 let synthetic = FactRecord {
                     id: format!("{}.{}", e.fact.id, field.name),
@@ -281,6 +305,17 @@ impl CorrectionsEngine {
 
     /// Latest non-retracted `layout` facts, optionally of one corpus.
     pub(crate) fn layout_facts(&self, corpus_id: Option<&str>) -> Vec<(&FactRecord, &[String])> {
+        self.layout_facts_with_corpus(corpus_id)
+            .into_iter()
+            .map(|(f, a, _)| (f, a))
+            .collect()
+    }
+
+    /// As [`Self::layout_facts`], with the corpus each fact belongs to.
+    pub(crate) fn layout_facts_with_corpus(
+        &self,
+        corpus_id: Option<&str>,
+    ) -> Vec<(&FactRecord, &[String], Option<&str>)> {
         self.latest_facts()
             .into_iter()
             .filter(|e| {
@@ -288,7 +323,7 @@ impl CorrectionsEngine {
                     && e.fact.kind == LAYOUT_KIND
                     && corpus_id.is_none_or(|c| e.corpus_id == Some(c))
             })
-            .map(|e| (e.fact, e.anchors))
+            .map(|e| (e.fact, e.anchors, e.corpus_id))
             .collect()
     }
 
@@ -314,7 +349,7 @@ impl CorrectionsEngine {
                     .iter()
                     .filter(|a| {
                         layout
-                            .field_for_anchor(corpus_id, a)
+                            .field_for_anchor(corpus_id, a, self.mask_of(corpus_id))
                             .is_some_and(|f| layout.qualified(f) == qualified)
                     })
                     .cloned(),
