@@ -105,15 +105,19 @@ pub async fn run(
         println!("  Cost:     ${:.4}", result.cost_usd);
     }
     for run in &result.runs {
-        let status_icon = if run.status == "completed" {
-            "✓"
-        } else {
-            "✗"
+        let status_icon = match run.status.as_str() {
+            "completed" => "✓",
+            "stopped" => "■",
+            _ => "✗",
         };
         println!(
             "  {status_icon} pass={:<10} processed={} skipped={} failed={}",
             run.pass, run.stats.processed, run.stats.skipped, run.stats.failed
         );
+    }
+
+    if let Some(reason) = &result.stopped_reason {
+        println!("stopped: {reason} — re-run the same command to resume");
     }
 
     Ok(())
@@ -242,12 +246,18 @@ pub fn resolve_provider(
             model: config.llm.model.clone(),
             max_parallel_calls: None,
         }),
-        Some("claude-code") | Some("claude_code") => Ok(ProviderConfig::ClaudeCode {
-            claude_bin: None,
-            model: config.llm.model.clone(),
-            timeout_secs: None,
-            calls_per_minute: None,
-        }),
+        Some("claude-code") | Some("claude_code") => {
+            let cc = &config.llm.claude_code;
+            Ok(ProviderConfig::ClaudeCode {
+                claude_bin: None,
+                model: cc.model.clone().or_else(|| config.llm.model.clone()),
+                timeout_secs: cc.timeout_secs,
+                calls_per_minute: cc.calls_per_minute,
+                lean: cc.lean,
+                effort: cc.effort.clone(),
+                extra_args: cc.extra_args.clone(),
+            })
+        }
         Some(other) => bail!("unknown provider '{other}'; use: anthropic, claude-code, dry-run"),
         None => {
             // If the config file supplies an api_key, prefer the Anthropic API

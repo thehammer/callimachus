@@ -3,6 +3,12 @@ pub enum LlmError {
     #[error("rate limited; retry after {retry_after_secs}s")]
     RateLimited { retry_after_secs: u64 },
 
+    #[error("subscription quota exhausted: {message}")]
+    QuotaExhausted {
+        message: String,
+        resets_at: Option<String>,
+    },
+
     #[error("request failed ({status}): {message}")]
     ApiError { status: u16, message: String },
 
