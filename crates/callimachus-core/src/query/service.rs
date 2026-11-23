@@ -281,6 +281,20 @@ impl QueryService {
             if let Some(engine) = &self.corrections {
                 engine.apply_to_entities(&mut matches);
             }
+            // Exact (case-insensitive) canonical-name or alias matches outrank
+            // substring matches: `0xc0000` must not shadow `0xc00004`.
+            let needle = input.name_or_id.to_lowercase();
+            let exact: Vec<Entity> = matches
+                .iter()
+                .filter(|e| {
+                    e.canonical_name.to_lowercase() == needle
+                        || e.aliases.iter().any(|a| a.to_lowercase() == needle)
+                })
+                .cloned()
+                .collect();
+            if !exact.is_empty() {
+                matches = exact;
+            }
             // Apply kind filter or tie-break heuristic.
             let matches = if let Some(ref k) = input.kind {
                 // Explicit kind filter: retain only entities of the requested kind.
@@ -1315,6 +1329,28 @@ mod tests {
             panic!("expected Ok")
         };
         assert_eq!(s.data.canonical_name, "Gandalf");
+    }
+
+    #[test]
+    fn entity_alias_exact_match_outranks_substring() {
+        let (svc, db) = make_service();
+        seed_corpus(db.as_ref(), "c1");
+        let mut a = seed_entity(db.as_ref(), "c1", "e1", "_DAT_00c00004", None);
+        a.aliases = vec!["0xc00004".into()];
+        db.entity_upsert(&a).unwrap();
+        let mut b = seed_entity(db.as_ref(), "c1", "e2", "_DAT_00c000040", None);
+        b.aliases = vec!["0xc000040".into()];
+        db.entity_upsert(&b).unwrap();
+
+        let result = svc.entity(EntityInput {
+            corpus_id: "c1".into(),
+            name_or_id: "0xC00004".into(),
+            kind: None,
+        });
+        let ToolResult::Ok(s) = result else {
+            panic!("expected Ok, substring match must not make it ambiguous")
+        };
+        assert_eq!(s.data.canonical_name, "_DAT_00c00004");
     }
 
     #[test]

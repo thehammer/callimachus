@@ -547,3 +547,123 @@ fn extern_declaration_inside_body_keeps_later_call_direct() {
     assert!(has_edge(&r, "calls", "FUN_00001c04", "FUN_b"));
     assert_no_indirect(&r);
 }
+
+// ── Addresses and table use ──────────────────────────────────────────────────
+
+use callimachus_adapter_code::c::{address_of_name, canonical_address};
+
+#[test]
+fn address_of_name_recognises_decompiler_conventions() {
+    assert_eq!(address_of_name("_DAT_00c00004"), Some(0xc00004));
+    assert_eq!(address_of_name("RAM_ff981a"), Some(0xff981a));
+    assert_eq!(address_of_name("PTR_DAT_00014000"), Some(0x14000));
+    assert_eq!(address_of_name("FUN_000071d0"), Some(0x71d0));
+    assert_eq!(address_of_name("fun_000071D0"), Some(0x71d0));
+    assert_eq!(address_of_name("DATA_x"), None);
+    assert_eq!(address_of_name("DAT_"), None);
+    assert_eq!(address_of_name("DAT_zz"), None);
+    assert_eq!(address_of_name("DAT_123"), None);
+    assert_eq!(address_of_name("DAT_00012340x"), None);
+    assert_eq!(canonical_address(0xc00004), "0xc00004");
+    assert_eq!(canonical_address(0), "0x0");
+}
+
+fn aliases_of<'a>(r: &'a ExtractedCodeStructure, name: &str) -> &'a [String] {
+    &r.entities
+        .iter()
+        .find(|e| e.canonical_name == name)
+        .unwrap_or_else(|| panic!("entity {name} missing"))
+        .aliases
+}
+
+#[test]
+fn entities_get_address_aliases() {
+    let r = extract("void FUN_00001000(void) { _DAT_00c00004 = 1; }");
+    assert_eq!(aliases_of(&r, "FUN_00001000"), ["0x1000"]);
+    assert_eq!(aliases_of(&r, "_DAT_00c00004"), ["0xc00004"]);
+}
+
+fn uses_table(r: &ExtractedCodeStructure, from: &str, to: &str) -> bool {
+    has_edge(r, "uses_table", from, to)
+}
+
+#[test]
+fn uses_table_for_address_of_subscript_and_ptr_names() {
+    let r = extract(
+        "void f(int i, int n) {\n\
+         int *p; int x; int y; long q;\n\
+         p = &DAT_00012340;\n\
+         x = (&DAT_00012341)[i];\n\
+         y = DAT_00012342[i];\n\
+         q = (int)&PTR_DAT_00014000 + 4;\n\
+         }",
+    );
+    for t in [
+        "DAT_00012340",
+        "DAT_00012341",
+        "DAT_00012342",
+        "PTR_DAT_00014000",
+    ] {
+        assert!(uses_table(&r, "f", t), "missing uses_table to {t}");
+    }
+}
+
+#[test]
+fn uses_table_for_ptr_prefixed_name_without_address_taken() {
+    let r = extract("void f(void) { g(PTR_DAT_00014000); }");
+    assert!(uses_table(&r, "f", "PTR_DAT_00014000"));
+}
+
+#[test]
+fn pointer_literal_table_shares_id_with_named_reference() {
+    let a = extract_at(
+        "src/a.c",
+        "file",
+        "c",
+        "void f(int n) { short *r; r = (short *)((ushort)(n * 0x800) + 0x18000); }",
+    );
+    assert!(uses_table(&a, "f", "DAT_00018000"));
+    assert_eq!(aliases_of(&a, "DAT_00018000"), ["0x18000"]);
+    let b = extract_at(
+        "src/b.c",
+        "file",
+        "c",
+        "void g(void) { int v; v = DAT_00018000; }",
+    );
+    let stub_a = a
+        .entities
+        .iter()
+        .find(|e| e.canonical_name == "DAT_00018000");
+    let stub_b = b
+        .entities
+        .iter()
+        .find(|e| e.canonical_name == "DAT_00018000");
+    assert_eq!(stub_a.unwrap().id, stub_b.unwrap().id);
+    assert!(reads(&b, "g", "DAT_00018000"));
+}
+
+#[test]
+fn direct_pointer_cast_literal_is_a_table() {
+    let r = extract("void f(void) { int *p; p = (int *)0x18000; }");
+    assert!(uses_table(&r, "f", "DAT_00018000"));
+}
+
+#[test]
+fn uses_table_negative_cases() {
+    let r = extract(
+        "void f(unsigned char *p) {\n\
+         int x; int v;\n\
+         if ((unsigned char *)0xff3fff < p) { x = 1; }\n\
+         x = 0x1234;\n\
+         v = DAT_00012340;\n\
+         }",
+    );
+    assert!(!uses_table(&r, "f", "DAT_00ff3fff"));
+    assert!(
+        !r.edges.iter().any(|e| e.kind == "uses_table"
+            && (e.to_entity_id.contains("ff3fff") || e.to_entity_id.contains("1234"))),
+        "unexpected uses_table edge"
+    );
+    assert!(reads(&r, "f", "DAT_00012340"));
+    assert!(!uses_table(&r, "f", "DAT_00012340"));
+}
