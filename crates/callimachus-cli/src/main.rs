@@ -276,7 +276,12 @@ enum InspectCommand {
         limit: Option<usize>,
     },
     /// Show a specific chunk by location URI.
-    Chunk { location: String },
+    Chunk {
+        location: String,
+        /// Name struct fields in the content from the corpus's layout facts.
+        #[arg(long)]
+        annotate: bool,
+    },
     /// Show indexing run history.
     Runs {
         corpus_id: String,
@@ -713,7 +718,7 @@ fn run_inspect(sub: InspectCommand, db: Arc<dyn StorageBackend>) -> Result<()> {
             table.print();
         }
 
-        InspectCommand::Chunk { location } => {
+        InspectCommand::Chunk { location, annotate } => {
             match commands::inspect::run_chunk(&location, db.as_ref())? {
                 None => {
                     eprintln!("error: chunk not found: {location}");
@@ -728,7 +733,17 @@ fn run_inspect(sub: InspectCommand, db: Arc<dyn StorageBackend>) -> Result<()> {
                         output::print_kv("parent_path", pp);
                     }
                     output::print_kv("byte_length", &chunk.byte_length.to_string());
-                    output::print_kv("content", &chunk.content);
+                    let content = if annotate {
+                        commands::inspect::annotated_content(
+                            &location,
+                            &chunk.corpus_id,
+                            db.clone(),
+                        )?
+                        .unwrap_or_else(|| chunk.content.clone())
+                    } else {
+                        chunk.content.clone()
+                    };
+                    output::print_kv("content", &content);
                 }
             }
         }

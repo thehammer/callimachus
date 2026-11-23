@@ -53,6 +53,29 @@ pub fn run_chunk(location: &str, db: &dyn StorageBackend) -> Result<Option<Chunk
     Ok(db.chunk_get_by_uri(location)?)
 }
 
+/// Chunk content with struct fields named from the corpus's `layout` facts.
+pub fn annotated_content(
+    location: &str,
+    corpus_id: &str,
+    db: Arc<dyn StorageBackend>,
+) -> Result<Option<String>> {
+    use callimachus_core::query::types::{ReadDepth, ReadInput};
+    let engine = CorrectionsEngine::load(db.as_ref(), corpus_id)?;
+    let svc = QueryService::with_corrections(db, engine)
+        .with_adapters(Arc::new(crate::commands::index::default_registry()));
+    Ok(
+        match svc.read(ReadInput {
+            corpus_id: Some(corpus_id.to_string()),
+            location: location.to_string(),
+            depth: ReadDepth::Full,
+            annotate: true,
+        }) {
+            ToolResult::Ok(s) => s.data.content,
+            _ => None,
+        },
+    )
+}
+
 /// Return all correction records for `corpus_id`, ordered by `applied_at ASC`.
 pub fn run_corrections(corpus_id: &str, db: &dyn StorageBackend) -> Result<Vec<Correction>> {
     Ok(db.correction_list(corpus_id)?)

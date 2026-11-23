@@ -115,6 +115,11 @@ pub static TOOL_LIST: Lazy<Vec<ToolDesc>> = Lazy::new(|| {
                         "type": "string",
                         "enum": ["summary", "scenes", "full"],
                         "default": "full"
+                    },
+                    "annotate": {
+                        "type": "boolean",
+                        "description": "Code only: name struct fields from the corpus's layout facts, e.g. `unaff_A2->x /* obj+0x10 s16 */`.",
+                        "default": false
                     }
                 },
                 "required": ["location"]
