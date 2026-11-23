@@ -6,7 +6,7 @@ use crate::corrections::address::{
 };
 use crate::corrections::engine::CorrectionsEngine;
 use crate::corrections::facts::{FactRecord, confidence_score};
-use crate::corrections::layouts::{Layout, is_register_base};
+use crate::corrections::layouts::{Layout, is_register_base, slot_of_name};
 use crate::corrections::types::CorrectionKind;
 use crate::error::{CalError, Result};
 use crate::storage::StorageBackend;
@@ -318,7 +318,10 @@ fn layout_anchors(
         .into_iter()
         .filter(|id| ctx.entity_ids.contains(id.as_str()))
         .collect();
-    if layout.is_scoped() && layout.bases.iter().any(|b| !is_register_base(b)) {
+    ids.extend(array_anchors(layout, fact_id, ctx, warnings));
+    if layout.is_scoped()
+        && (layout.array.is_some() || layout.bases.iter().any(|b| !is_register_base(b)))
+    {
         // Shared (non-register) entities: keep those an in-scope function touches.
         let in_scope: HashSet<&str> = functions.iter().map(|f| f.id.as_str()).collect();
         let touched: HashSet<String> = ctx
@@ -331,6 +334,46 @@ fn layout_anchors(
         ids.retain(|id| id.contains('@') || touched.contains(id));
     }
     Ok(ids.into_iter().collect())
+}
+
+/// Anchors of an array layout: slot field entities (`slot_<addr>+0x<k>`) of the
+/// array's first record whose offset is one of the layout's fields. An entity
+/// that records the stride it was walked with (`stride:0x40`) must agree with
+/// the layout's stride; a mismatch does not anchor and warns.
+fn array_anchors(
+    layout: &Layout,
+    fact_id: &str,
+    ctx: &Anchoring<'_>,
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let Some(array) = &layout.array else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    for e in ctx.entities.iter().filter(|e| e.kind == "field") {
+        let Some((address, offset)) = slot_of_name(&e.canonical_name) else {
+            continue;
+        };
+        if layout.array_field_at(ctx.mask, address, offset).is_none() {
+            continue;
+        }
+        let observed = e
+            .aliases
+            .iter()
+            .find_map(|a| a.strip_prefix("stride:").and_then(parse_address));
+        if let Some(stride) = observed.filter(|s| *s != array.stride) {
+            let msg = format!(
+                "layout {fact_id}: array stride {:#x} differs from stride {stride:#x} walked at {}; not anchored",
+                array.stride, e.canonical_name
+            );
+            if !warnings.contains(&msg) {
+                warnings.push(msg);
+            }
+            continue;
+        }
+        out.push(e.id.clone());
+    }
+    out
 }
 
 fn anchors_for(

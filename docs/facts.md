@@ -125,7 +125,7 @@ offset (see "Field accesses" in `c-free-identifiers.md`):
  "confidence": "inferred", "evidence": ["ev.dec-objects"]}
 ```
 
-Validation: `name` matches `[a-z][a-z0-9_]{0,31}`; `bases` is non-empty; `fields`
+Validation: `name` matches `[a-z][a-z0-9_]{0,31}`; `bases` is non-empty (unless `array` is given, see "Arrays of records"); `fields`
 is non-empty with unique names (same pattern) and hex `offset`s (`-0x4` is
 allowed); `type` is free text (letters, digits, `_`, space, `*`, up to 32
 characters, as for `variable`); a field's `confidence` defaults to the
@@ -166,6 +166,43 @@ C as `unaff_A2->x /* obj+0x10 s16 */`; in binary-export chunks, disassembly
 comments with an operand `$10(a2)`, `0x10(a2)` or `($10,a2)` on a field's
 register get ` ; obj.x` appended. Bare displacements in disassembly are decimal;
 `$` and `0x` mark hex.
+
+### Arrays of records
+
+A layout may describe a fixed-address array of records (a slot table) instead of
+a pointer base:
+
+```json
+{"id": "layout.enemy", "kind": "layout", "topic": "other", "summary": "Enemy slot",
+ "data": {"name": "enemy",
+          "array": {"address": "0xFF8A00", "stride": "0x40", "count": 40},
+          "fields": [{"offset": "0x1c", "name": "h", "type": "s16"}]},
+ "confidence": "inferred", "evidence": []}
+```
+
+`array.address` and `array.stride` are hex strings (or integers); `count` is
+optional and informational. With `array`, `bases` may be omitted (it can still
+be given). The address is masked with the corpus `address_mask`, like address
+aliases, so `RAM_ff8a00`, `DAT_00ff8a00`, `0xff8a00` and mirror spellings match.
+
+The C adapter emits slot fields `slot_ff8a00+0x1c` (function-independent ids;
+see "Arrays of records" in `c-free-identifiers.md`). The layout anchors those
+whose masked address is the array start and whose offset is a field's offset;
+an access through `ADDR_K` (array start plus `K < stride`) counts as field
+`K + offset`. Each anchor gets the alias `enemy.h` and the synthetic field fact,
+as for any layout. A slot field that records the stride it was walked with
+(`stride:0x40` alias) must match `array.stride`; otherwise it is not anchored and
+the import warns `layout <id>: array stride 0x20 differs from stride 0x40 walked
+at slot_ff8a00+0x1c; not anchored` (counted in `warnings`). `data.functions`
+scopes an array layout like any non-register base (only slot fields an in-scope
+function touches anchor).
+
+Annotation renders `p->h /* enemy[].h +0x1c s16 */` for walking pointers and
+`enemy[i].h` / `enemy[3].h` for indexed and constant-slot forms. A walk or
+index whose stride differs from the layout's is left alone.
+
+Not supported: arrays reached through a pointer stored in RAM, records of
+variable size.
 
 ## Reference corpora, linking and variants
 

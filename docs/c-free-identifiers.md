@@ -168,6 +168,38 @@ Layout facts (`docs/facts.md`, kind `layout`) name these entities (`obj.x`) and
 drive source annotation (`unaff_A2->x /* obj+0x10 s16 */`). The adapter itself
 knows nothing about layouts.
 
+### Arrays of records
+
+A fixed-address array of records (a slot table) gives **slot fields**: kind
+`field`, name `slot_<addr>+0x<K>` (`slot_ff8a00+0x1c`), id `{corpus}:slot_ff8a00+0x1c`
+with no function qualifier, since the array is global. `<addr>` is the address
+as written (lowercase hex, no leading zeros; `RAM_ff8a00`, `DAT_00ff8a00` and
+`0xff8a00` all give `ff8a00`). Mirrors are reconciled when a layout anchors
+them (it applies the corpus `address_mask`). One `reads`/`writes` edge per
+(function, field). Width gives `width:{n}` as above; forms that state the
+stride in bytes also give a `stride:0x40` alias. Recognised, and nothing else:
+
+- **Walking pointer.** A non-parameter local `p` whose assignments are all
+  either from one array address (`p = &RAM_ff8a00;`, `p = (byte *)0xff8a00;`,
+  `byte *p = &DAT_00ff8a00;`) or advances `p = p + S;` / `p += S;` with one
+  constant `S`, and at least one advance. Any other assignment, `++`/`--` or
+  `&p` cancels it. Accesses `*(T *)(p + K)`, `*p` (offset 0) and `p[K]` (byte)
+  are field `slot_<addr>+K`. `p + K` is counted in bytes, whatever `p`'s type.
+- **Indexed.** `*(T *)(&ARRAY + i * S + K)` (stride `S`), `(&ARRAY)[i * S]` and
+  `(&ARRAY)[i * S + K]`; `S` and `K` are constants. The subscript's `S` is in
+  elements of unknown width, so those give no `stride:` alias. `(&ADDR_K)[i * S]`
+  with `ADDR_K` = array start + `K` is the same entity `slot_<ADDR_K>+0x0`; a
+  layout resolves it to field `K` (see `facts.md`).
+- **Constant slot.** `*(T *)(&ARRAY + n * S + K)` with all constants is field `K`
+  of slot `n`: the same entity as the indexed form. The slot number is not
+  stored (edges have no properties); only annotation shows it.
+
+Limits: two walking pointers are never aliased to each other; strides computed
+at run time (`p + n`) are not recognised and cancel the pointer; a pointer that
+never advances is an ordinary local; arrays reached through a pointer stored in
+RAM and variable-size records are out of scope. Binary-export corpora get slot
+fields too.
+
 Limitations: aliasing is limited to the single-assignment rule above; array-index forms such as `in_A0[0x20]` are not fields; offsets
 must be number literals. Binary-export corpora get the same entities, since
 the adapter analyses each function's C.

@@ -16,6 +16,21 @@ pub struct FieldName {
     pub layout: String,
     pub field: String,
     pub ty: Option<String>,
+    /// Set for a field of an array layout: `base` is then `slot_<hex>` and the
+    /// field matches slot accesses of the array rather than a register base.
+    #[serde(default)]
+    pub array: Option<FieldArray>,
+}
+
+/// A fixed-address array of records (`data.array` of a layout).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldArray {
+    /// Start address, already masked with the corpus `address_mask`.
+    pub address: u64,
+    /// Record size in bytes.
+    pub stride: u64,
+    /// Corpus `address_mask`, applied to addresses seen in source.
+    pub mask: Option<u64>,
 }
 
 impl FieldName {

@@ -10,6 +10,6 @@ pub use chunk::{Chunk, hash_content};
 pub use corpus::{Corpus, CorpusStatus};
 pub use edge::Edge;
 pub use entity::Entity;
-pub use field::FieldName;
+pub use field::{FieldArray, FieldName};
 pub use location::{Location, LocationUri};
 pub use provenance::Provenance;

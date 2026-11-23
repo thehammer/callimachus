@@ -985,3 +985,262 @@ fn reassigned_local_has_no_alias() {
         assert!(field_names(&r).is_empty(), "{body}: {:?}", field_names(&r));
     }
 }
+
+// ── Fixed-address array slot fields (S5c) ────────────────────────────────────
+
+const WALKING_LOOP: &str = "void FUN_00001c04(int iVar2)\n{\n  byte *pbVar10;\n  short sVar3;\n  pbVar10 = &RAM_ff8a00;\n  sVar3 = 0x27;\n  do {\n    if (*pbVar10 != 0) {\n      if (*(short *)(pbVar10 + 0x1c) < iVar2) {\n        iVar2 = 0;\n      }\n    }\n    pbVar10 = pbVar10 + 0x40;\n    sVar3 = sVar3 + -1;\n  } while (sVar3 != -1);\n}\n";
+
+fn slot_fields(r: &ExtractedCodeStructure) -> Vec<&str> {
+    field_names(r)
+        .into_iter()
+        .filter(|n| n.starts_with("slot_"))
+        .collect()
+}
+
+fn in_fn(body: &str) -> String {
+    format!("void FUN_a(int i)\n{{\n  byte *p;\n  {body}\n}}\n")
+}
+
+#[test]
+fn walking_pointer_loop_yields_slot_fields_read_by_the_function() {
+    let r = extract(WALKING_LOOP);
+    let f = field_entity(&r, "slot_ff8a00+0x1c")
+        .unwrap_or_else(|| panic!("no slot field: {:?}", field_names(&r)));
+    assert_eq!(f.kind, "field");
+    // Function-independent id: shared by every function using the slot.
+    assert_eq!(f.id, format!("{CORP}:slot_ff8a00+0x1c"));
+    assert!(
+        f.aliases.contains(&"width:2".to_string()),
+        "{:?}",
+        f.aliases
+    );
+    assert!(
+        f.aliases.contains(&"stride:0x40".to_string()),
+        "{:?}",
+        f.aliases
+    );
+    assert!(reads(&r, "FUN_00001c04", "slot_ff8a00+0x1c"));
+    assert!(!writes(&r, "FUN_00001c04", "slot_ff8a00+0x1c"));
+
+    // `*pbVar10` is the record's first byte.
+    let z = field_entity(&r, "slot_ff8a00+0x0").expect("offset-zero slot field");
+    assert_eq!(z.id, format!("{CORP}:slot_ff8a00+0x0"));
+    assert!(reads(&r, "FUN_00001c04", "slot_ff8a00+0x0"));
+}
+
+#[test]
+fn slot_field_ids_are_not_function_qualified() {
+    let src =
+        format!("{WALKING_LOOP}void FUN_b(void)\n{{\n  *(short *)(&RAM_ff8a00 + 0x1c) = 1;\n}}\n");
+    let r = extract(&src);
+    let ids: Vec<_> = r
+        .entities
+        .iter()
+        .filter(|e| e.canonical_name == "slot_ff8a00+0x1c")
+        .map(|e| e.id.clone())
+        .collect();
+    assert_eq!(ids, vec![format!("{CORP}:slot_ff8a00+0x1c")], "{ids:?}");
+    assert!(reads(&r, "FUN_00001c04", "slot_ff8a00+0x1c"));
+}
+
+#[test]
+fn walking_pointer_accepts_each_address_spelling() {
+    for init in [
+        "p = &RAM_ff8a00;",
+        "p = (byte *)0xff8a00;",
+        "p = &DAT_00ff8a00;",
+        "p = &DAT_00ff8a00;\n  p += 0x40;",
+    ] {
+        let r = extract(&in_fn(&format!(
+            "{init}\n  p = p + 0x40;\n  return *(short *)(p + 0x1c);"
+        )));
+        assert!(
+            reads(&r, "FUN_a", "slot_ff8a00+0x1c"),
+            "{init}: {:?}",
+            field_names(&r)
+        );
+    }
+    let r = extract(
+        "int FUN_a(void)\n{\n  byte *p = &DAT_00ff8a00;\n  p = p + 0x40;\n  return *(short *)(p + 0x1c);\n}\n",
+    );
+    assert!(
+        reads(&r, "FUN_a", "slot_ff8a00+0x1c"),
+        "{:?}",
+        field_names(&r)
+    );
+}
+
+#[test]
+fn walking_pointer_may_advance_by_compound_assignment() {
+    let r = extract(&in_fn(
+        "p = &RAM_ff8a00;\n  do {\n    *(short *)(p + 0x1c) = 0;\n    p += 0x40;\n  } while (i-- != 0);",
+    ));
+    assert!(
+        writes(&r, "FUN_a", "slot_ff8a00+0x1c"),
+        "{:?}",
+        field_names(&r)
+    );
+    let f = field_entity(&r, "slot_ff8a00+0x1c").unwrap();
+    assert!(
+        f.aliases.contains(&"stride:0x40".to_string()),
+        "{:?}",
+        f.aliases
+    );
+}
+
+#[test]
+fn walking_pointer_subscript_with_byte_offset_is_a_slot_field() {
+    let r = extract(&in_fn("p = &RAM_ff8a00;\n  p += 0x40;\n  return p[0x1c];"));
+    assert!(
+        reads(&r, "FUN_a", "slot_ff8a00+0x1c"),
+        "{:?}",
+        field_names(&r)
+    );
+}
+
+#[test]
+fn write_through_a_walking_pointer_is_a_slot_field_write_only() {
+    let r = extract(&in_fn(
+        "p = &RAM_ff8a00;\n  *(short *)(p + 0x1c) = 5;\n  p = p + 0x40;",
+    ));
+    assert!(
+        writes(&r, "FUN_a", "slot_ff8a00+0x1c"),
+        "{:?}",
+        field_names(&r)
+    );
+    assert!(!reads(&r, "FUN_a", "slot_ff8a00+0x1c"));
+}
+
+#[test]
+fn repeated_slot_accesses_yield_one_edge_per_kind() {
+    let r = extract(&in_fn(
+        "p = &RAM_ff8a00;\n  *(short *)(p + 0x1c) = *(short *)(p + 0x1c) + 1;\n  i = *(short *)(p + 0x1c);\n  p += 0x40;",
+    ));
+    let g = id("slot_ff8a00+0x1c");
+    assert_eq!(count_edges(&r, "reads", "FUN_a", &g), 1);
+    assert_eq!(count_edges(&r, "writes", "FUN_a", &g), 1);
+}
+
+#[test]
+fn pointer_with_any_other_assignment_has_no_slot_fields() {
+    for body in [
+        "p = &RAM_ff8a00;\n  p = other;\n  return *(short *)(p + 0x1c);",
+        "p = &RAM_ff8a00;\n  p = p + i;\n  return *(short *)(p + 0x1c);",
+        "p = &RAM_ff8a00;\n  p++;\n  return *(short *)(p + 0x1c);",
+        "p = &RAM_ff8a00;\n  p += i;\n  return *(short *)(p + 0x1c);",
+        "p = other;\n  p = &RAM_ff8a00;\n  return *(short *)(p + 0x1c);",
+        "p = &RAM_ff8a00;\n  p = p + 0x40;\n  p = other;\n  return p[0x1c];",
+    ] {
+        let r = extract(&in_fn(body));
+        assert!(slot_fields(&r).is_empty(), "{body}: {:?}", slot_fields(&r));
+    }
+}
+
+#[test]
+fn a_parameter_assigned_from_the_array_address_is_not_a_walking_pointer() {
+    let r =
+        extract("int FUN_a(byte *p)\n{\n  p = &RAM_ff8a00;\n  return *(short *)(p + 0x1c);\n}\n");
+    assert!(slot_fields(&r).is_empty(), "{:?}", slot_fields(&r));
+}
+
+#[test]
+fn indexed_access_yields_the_same_slot_entity_as_walking() {
+    let walk = extract(WALKING_LOOP);
+    let r =
+        extract("int FUN_a(int i)\n{\n  return *(short *)(&RAM_ff8a00 + i * 0x40 + 0x1c);\n}\n");
+    let f = field_entity(&r, "slot_ff8a00+0x1c")
+        .unwrap_or_else(|| panic!("no slot field: {:?}", field_names(&r)));
+    assert_eq!(f.id, field_entity(&walk, "slot_ff8a00+0x1c").unwrap().id);
+    assert!(
+        f.aliases.contains(&"width:2".to_string()),
+        "{:?}",
+        f.aliases
+    );
+    assert!(
+        f.aliases.contains(&"stride:0x40".to_string()),
+        "{:?}",
+        f.aliases
+    );
+    assert!(reads(&r, "FUN_a", "slot_ff8a00+0x1c"));
+}
+
+#[test]
+fn indexed_subscript_form_is_the_offset_zero_slot() {
+    let r = extract("int FUN_a(int i)\n{\n  return (&RAM_ff8a00)[i * 0x40];\n}\n");
+    assert!(
+        reads(&r, "FUN_a", "slot_ff8a00+0x0"),
+        "{:?}",
+        field_names(&r)
+    );
+}
+
+#[test]
+fn indexed_write_is_a_slot_field_write() {
+    let r = extract("void FUN_a(int i)\n{\n  *(short *)(&RAM_ff8a00 + i * 0x40 + 0x1c) = 0;\n}\n");
+    assert!(
+        writes(&r, "FUN_a", "slot_ff8a00+0x1c"),
+        "{:?}",
+        field_names(&r)
+    );
+    assert!(!reads(&r, "FUN_a", "slot_ff8a00+0x1c"));
+}
+
+#[test]
+fn constant_slot_access_yields_the_same_entity_with_the_in_record_offset() {
+    let r = extract("int FUN_a(void)\n{\n  return *(short *)(&RAM_ff8a00 + 3 * 0x40 + 0x1c);\n}\n");
+    assert!(
+        reads(&r, "FUN_a", "slot_ff8a00+0x1c"),
+        "{:?}",
+        field_names(&r)
+    );
+    assert!(
+        field_entity(&r, "slot_ff8a00+0xdc").is_none(),
+        "the slot number must not leak into the offset: {:?}",
+        field_names(&r)
+    );
+}
+
+#[test]
+fn slot_address_spellings_all_name_the_same_unmasked_entity() {
+    for access in [
+        "*(short *)(&RAM_ff8a00 + i * 0x40 + 0x1c)",
+        "*(short *)(&DAT_00ff8a00 + i * 0x40 + 0x1c)",
+    ] {
+        let r = extract(&format!("int FUN_a(int i)\n{{\n  return {access};\n}}\n"));
+        assert!(
+            reads(&r, "FUN_a", "slot_ff8a00+0x1c"),
+            "{access}: {:?}",
+            field_names(&r)
+        );
+    }
+    // A mirror spelling keeps its own (unmasked) address in the name.
+    let r =
+        extract("int FUN_a(int i)\n{\n  return *(short *)(&RAM_ffff8a00 + i * 0x40 + 0x1c);\n}\n");
+    assert!(
+        reads(&r, "FUN_a", "slot_ffff8a00+0x1c"),
+        "{:?}",
+        field_names(&r)
+    );
+}
+
+#[test]
+fn slot_fields_coexist_with_register_and_parameter_bases() {
+    let r = extract(
+        "int FUN_a(char *param_1)\n{\n  byte *p;\n  p = &RAM_ff8a00;\n  p += 0x40;\n  *(short *)(unaff_A2 + 0x10) = *(short *)(p + 0x1c);\n  return *(short *)(param_1 + 0x4);\n}\n",
+    );
+    assert!(
+        reads(&r, "FUN_a", "slot_ff8a00+0x1c"),
+        "{:?}",
+        field_names(&r)
+    );
+    assert!(writes(&r, "FUN_a", "unaff_A2+0x10"));
+    assert_eq!(
+        field_entity(&r, "unaff_A2+0x10").unwrap().id,
+        format!("{CORP}:unaff_a2+0x10@fun_a")
+    );
+    assert!(reads(&r, "FUN_a", "param_1+0x4"));
+    assert_eq!(
+        field_entity(&r, "param_1+0x4").unwrap().id,
+        id("param_1+0x4")
+    );
+}

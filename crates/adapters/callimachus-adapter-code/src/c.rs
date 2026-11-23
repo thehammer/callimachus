@@ -231,6 +231,7 @@ pub fn annotate(content: &str, fields: &[FieldName]) -> String {
     // Local aliases (`p = unaff_A2`) of each function, so `p + 0x1c` is named
     // like `unaff_A2 + 0x1c`.
     let mut alias_maps = Vec::new();
+    let mut walker_maps = Vec::new();
     let mut stack = vec![tree.root_node()];
     while let Some(n) = stack.pop() {
         if n.kind() == "function_definition" {
@@ -240,13 +241,26 @@ pub fn annotate(content: &str, fields: &[FieldName]) -> String {
             }
             if let Some(body) = n.child_by_field_name("body") {
                 alias_maps.push((n.byte_range(), local_aliases(body, source, &params)));
+                walker_maps.push((n.byte_range(), walking_pointers(body, source, &params)));
             }
         }
         let mut cursor = n.walk();
         stack.extend(n.named_children(&mut cursor));
     }
+    let no_walkers = Walkers::new();
     let mut stack = vec![tree.root_node()];
     while let Some(n) = stack.pop() {
+        let walkers = walker_maps
+            .iter()
+            .find(|(r, _)| r.contains(&n.start_byte()))
+            .map_or(&no_walkers, |(_, w)| w);
+        if let Some(slot) = match_slot_access(n, source, walkers)
+            && let Some((f, text)) = slot_annotation(&slot, fields)
+        {
+            let _ = f;
+            edits.push((slot.node.byte_range(), text));
+            continue;
+        }
         if let Some(d) = match_field_deref(n, source)
             && let Some(f) = {
                 let resolved = alias_maps
@@ -434,6 +448,8 @@ struct FieldAccess {
     writes: bool,
     /// `(byte position, width)` of the earliest access with a known width.
     width: Option<(usize, u32)>,
+    /// Record stride in bytes of a slot access that knows it.
+    stride: Option<u64>,
 }
 
 fn analyse_function(
@@ -465,6 +481,7 @@ fn analyse_function(
     let mut bound = params.clone();
     collect_locals(body, source, &mut bound);
     let aliases = local_aliases(body, source, &params);
+    let walkers = walking_pointers(body, source, &params);
 
     let mut accesses: BTreeMap<String, Access> = BTreeMap::new();
     let mut fields: BTreeMap<String, FieldAccess> = BTreeMap::new();
@@ -516,7 +533,22 @@ fn analyse_function(
             }
             // `*(T *)(B + K)`: a field access. The children are still visited,
             // so the base identifier is handled exactly as before.
-            "pointer_expression" => {
+            "pointer_expression" | "subscript_expression" => {
+                if let Some(slot) = match_slot_access(n, source, &walkers) {
+                    let name = field_entity_name(&format!("slot_{:x}", slot.address), slot.offset);
+                    let access = fields.entry(name).or_default();
+                    if let Some(w) = slot.ty.as_deref().and_then(field_width)
+                        && access.width.is_none_or(|(pos, _)| n.start_byte() < pos)
+                    {
+                        access.width = Some((n.start_byte(), w));
+                    }
+                    access.stride = access.stride.or(slot.stride);
+                    if is_write_target(n) {
+                        access.writes = true;
+                    } else {
+                        access.reads = true;
+                    }
+                }
                 if let Some(d) = match_field_deref(n, source)
                     && let base = aliases.get(&d.base).unwrap_or(&d.base)
                     && is_field_base(base, &params)
@@ -597,6 +629,9 @@ fn analyse_function(
         push_entity(chunk, result, &to_id, &name, "field", None, 0.5);
         if let (Some((_, width)), Some(entity)) = (access.width, result.entities.last_mut()) {
             entity.aliases.push(format!("width:{width}"));
+        }
+        if let (Some(stride), Some(entity)) = (access.stride, result.entities.last_mut()) {
+            entity.aliases.push(format!("stride:0x{stride:x}"));
         }
         if access.reads {
             push_edge(chunk, result, &from_id, "reads", &to_id, scope.clone());
@@ -713,6 +748,382 @@ pub fn is_register_base(name: &str) -> bool {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| regex::Regex::new(FIELD_BASE_PATTERN).expect("valid pattern"))
         .is_match(name)
+}
+
+// ── Arrays of records ────────────────────────────────────────────────────────
+
+/// Longest `a + b + c ...` chain followed when matching a slot pointer.
+const MAX_SLOT_DEPTH: usize = 64;
+
+/// How a slot access picks its record.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SlotIndex {
+    /// Through a walking pointer, named here.
+    Walking(String),
+    /// `i * S`: the index expression as written.
+    Indexed(String),
+    /// `n * S` with a constant `n`.
+    Constant(u64),
+}
+
+/// A local that walks a fixed-address array: assigned from the array address,
+/// otherwise only advanced by `p = p + S` / `p += S`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Walker {
+    pub address: u64,
+    pub stride: Option<u64>,
+}
+
+pub type Walkers = std::collections::HashMap<String, Walker>;
+
+/// An access to field `offset` of a record of the array at `address`.
+pub struct SlotAccess<'t> {
+    /// The node to replace when annotating.
+    pub node: Node<'t>,
+    /// Array address as written in the source (unmasked).
+    pub address: u64,
+    pub offset: i64,
+    /// Pointee type of the cast, e.g. `short`.
+    pub ty: Option<String>,
+    /// Record stride in bytes, when the source states it.
+    pub stride: Option<u64>,
+    /// `S` of `(&ARRAY)[i * S]`: a stride in elements of unknown width.
+    pub scaled_stride: Option<u64>,
+    pub index: SlotIndex,
+}
+
+/// Locals of a function that walk a fixed-address array. A local qualifies
+/// when every assignment is either from one array address (`&RAM_ff8a00`,
+/// `(byte *)0xff8a00`, with any casts) or an advance `p = p + S` / `p += S`
+/// by one constant `S` (at least one advance: a pointer that never moves is an
+/// ordinary local); any other assignment, `++`/`--` or `&p` disqualifies it.
+pub fn walking_pointers(body: Node<'_>, source: &[u8], params: &HashSet<String>) -> Walkers {
+    #[derive(Default)]
+    struct Seen {
+        starts: Vec<u64>,
+        advances: Vec<u64>,
+        spoiled: bool,
+    }
+    let mut seen: BTreeMap<String, Seen> = BTreeMap::new();
+    let assign =
+        |seen: &mut BTreeMap<String, Seen>, name: String, value: Option<Node<'_>>, add: bool| {
+            let entry = seen.entry(name.clone()).or_default();
+            let Some(value) = value else {
+                entry.spoiled = true;
+                return;
+            };
+            if add {
+                match const_value(value, source) {
+                    Some(s) => entry.advances.push(s),
+                    None => entry.spoiled = true,
+                }
+            } else if let Some(a) = array_address(value, source) {
+                entry.starts.push(a);
+            } else if let Some(s) = advance_of(value, &name, source) {
+                entry.advances.push(s);
+            } else {
+                entry.spoiled = true;
+            }
+        };
+    let mut stack = vec![body];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "assignment_expression" => {
+                if let Some(left) = n.child_by_field_name("left")
+                    && left.kind() == "identifier"
+                {
+                    let op = n
+                        .child_by_field_name("operator")
+                        .map(|o| o.kind().to_string())
+                        .unwrap_or_default();
+                    let right = n.child_by_field_name("right");
+                    let name = text_of(left, source);
+                    match op.as_str() {
+                        "=" => assign(&mut seen, name, right, false),
+                        "+=" => assign(&mut seen, name, right, true),
+                        _ => assign(&mut seen, name, None, false),
+                    }
+                }
+            }
+            "update_expression" => {
+                if let Some(arg) = n.child_by_field_name("argument")
+                    && arg.kind() == "identifier"
+                {
+                    assign(&mut seen, text_of(arg, source), None, false);
+                }
+            }
+            "pointer_expression" if n.child(0).is_some_and(|c| c.kind() == "&") => {
+                if let Some(arg) = n.child_by_field_name("argument")
+                    && arg.kind() == "identifier"
+                {
+                    assign(&mut seen, text_of(arg, source), None, false);
+                }
+            }
+            "init_declarator" => {
+                if let Some(name) = n
+                    .child_by_field_name("declarator")
+                    .and_then(|d| declarator_name(d, source))
+                {
+                    assign(&mut seen, name, n.child_by_field_name("value"), false);
+                }
+            }
+            _ => {}
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    seen.into_iter()
+        .filter_map(|(name, s)| {
+            let address = *s.starts.first()?;
+            let stride = Some(*s.advances.first()?);
+            let consistent = !s.spoiled
+                && !params.contains(&name)
+                && s.starts.iter().all(|a| *a == address)
+                && s.advances.iter().all(|a| Some(*a) == stride);
+            consistent.then_some((name, Walker { address, stride }))
+        })
+        .collect()
+}
+
+/// `p + S` or `S + p` with a constant `S`, for the local `name`.
+fn advance_of(value: Node<'_>, name: &str, source: &[u8]) -> Option<u64> {
+    let v = unwrap_casts(value);
+    if v.kind() != "binary_expression" || v.child_by_field_name("operator")?.kind() != "+" {
+        return None;
+    }
+    let (l, r) = (
+        unwrap_casts(v.child_by_field_name("left")?),
+        unwrap_casts(v.child_by_field_name("right")?),
+    );
+    let is_p = |n: Node<'_>| n.kind() == "identifier" && text_of(n, source) == name;
+    match (is_p(l), is_p(r)) {
+        (true, false) => const_value(r, source),
+        (false, true) => const_value(l, source),
+        _ => None,
+    }
+}
+
+/// Address of a fixed array: `&RAM_ff8a00`, `&DAT_00ff8a00` or a number literal
+/// (`0xff8a00`), under any casts and parentheses.
+fn array_address(node: Node<'_>, source: &[u8]) -> Option<u64> {
+    let v = unwrap_casts(node);
+    match v.kind() {
+        "pointer_expression" if v.child(0)?.kind() == "&" => {
+            let arg = unwrap_casts(v.child_by_field_name("argument")?);
+            if arg.kind() != "identifier" {
+                return None;
+            }
+            let name = text_of(arg, source);
+            let code = ["FUN_", "LAB_", "SUB_"]
+                .iter()
+                .any(|p| name.to_ascii_uppercase().starts_with(p));
+            if code {
+                return None;
+            }
+            address_of_name(&name)
+        }
+        "number_literal" => parse_int_literal(&text_of(v, source)).filter(|a| *a >= 0x100),
+        _ => None,
+    }
+}
+
+fn const_value(node: Node<'_>, source: &[u8]) -> Option<u64> {
+    let v = unwrap_casts(node);
+    (v.kind() == "number_literal")
+        .then(|| parse_int_literal(&text_of(v, source)))
+        .flatten()
+}
+
+fn unwrap_parens(mut node: Node<'_>) -> Node<'_> {
+    while node.kind() == "parenthesized_expression" {
+        match node.named_child(0) {
+            Some(n) => node = n,
+            None => break,
+        }
+    }
+    node
+}
+
+/// `i * S`, `S * i` or `n * S` as `(index, stride)`: the stride is the constant
+/// operand, the right one when both are constants.
+fn scaled_term<'t>(node: Node<'t>, source: &[u8]) -> Option<(SlotIndex, u64)> {
+    let v = unwrap_parens(node);
+    if v.kind() != "binary_expression" || v.child_by_field_name("operator")?.kind() != "*" {
+        return None;
+    }
+    let (l, r) = (
+        v.child_by_field_name("left")?,
+        v.child_by_field_name("right")?,
+    );
+    match (const_value(l, source), const_value(r, source)) {
+        (Some(n), Some(s)) => Some((SlotIndex::Constant(n), s)),
+        (None, Some(s)) => Some((SlotIndex::Indexed(text_of(unwrap_parens(l), source)), s)),
+        (Some(s), None) => Some((SlotIndex::Indexed(text_of(unwrap_parens(r), source)), s)),
+        (None, None) => None,
+    }
+}
+
+/// `(address, offset, stride, index)` of a pointer expression into an array:
+/// a walking pointer (plus constants) or the array address plus one scaled
+/// index term plus constants.
+fn slot_pointer(
+    node: Node<'_>,
+    source: &[u8],
+    walkers: &Walkers,
+    depth: usize,
+) -> Option<(u64, i64, Option<u64>, Option<SlotIndex>)> {
+    // Nesting depth is attacker-controlled in source files.
+    if depth > MAX_SLOT_DEPTH {
+        return None;
+    }
+    let v = unwrap_casts(node);
+    if v.kind() == "identifier" {
+        let name = text_of(v, source);
+        let w = walkers.get(&name)?;
+        return Some((w.address, 0, w.stride, Some(SlotIndex::Walking(name))));
+    }
+    if let Some(address) = array_address(v, source) {
+        return Some((address, 0, None, None));
+    }
+    if v.kind() != "binary_expression" {
+        return None;
+    }
+    let op = v.child_by_field_name("operator")?.kind().to_string();
+    let (left, right) = (
+        v.child_by_field_name("left")?,
+        v.child_by_field_name("right")?,
+    );
+    if !matches!(op.as_str(), "+" | "-") {
+        return None;
+    }
+    let (address, offset, stride, index) = slot_pointer(left, source, walkers, depth + 1)?;
+    if let Some(k) = const_value(right, source) {
+        let k = i64::try_from(k).ok()?;
+        let k = if op == "+" { k } else { -k };
+        return Some((address, offset.checked_add(k)?, stride, index));
+    }
+    if op == "+" && index.is_none() {
+        let (idx, s) = scaled_term(right, source)?;
+        return Some((address, offset, Some(s), Some(idx)));
+    }
+    None
+}
+
+/// Match an access into a fixed-address array of records:
+/// `*(T *)(p + K)`, `*p`, `p[K]` for a walking pointer `p`;
+/// `*(T *)(&ARRAY + i * S + K)`, `(&ARRAY)[i * S]` and `(&ARRAY)[i * S + K]`
+/// indexed; `*(T *)(&ARRAY + n * S + K)` for a constant slot `n`.
+pub fn match_slot_access<'t>(
+    node: Node<'t>,
+    source: &[u8],
+    walkers: &Walkers,
+) -> Option<SlotAccess<'t>> {
+    match node.kind() {
+        "pointer_expression" if node.child(0)?.kind() == "*" => {
+            let mut arg = unwrap_parens(node.child_by_field_name("argument")?);
+            let mut ty = None;
+            if arg.kind() == "cast_expression" {
+                let t = text_of(arg.child_by_field_name("type")?, source);
+                if !t.contains('*') {
+                    return None;
+                }
+                ty = Some(t.replace('*', "").trim().to_string());
+                arg = arg.child_by_field_name("value")?;
+            }
+            let (address, offset, stride, index) = slot_pointer(arg, source, walkers, 0)?;
+            Some(SlotAccess {
+                node,
+                address,
+                offset,
+                ty,
+                stride,
+                scaled_stride: None,
+                index: index?,
+            })
+        }
+        "subscript_expression" => {
+            let base = unwrap_parens(node.child_by_field_name("argument")?);
+            let idx = unwrap_parens(node.child_by_field_name("index")?);
+            if base.kind() == "identifier" {
+                let name = text_of(base, source);
+                let w = walkers.get(&name)?;
+                let k = i64::try_from(const_value(idx, source)?).ok()?;
+                return Some(SlotAccess {
+                    node,
+                    address: w.address,
+                    offset: k,
+                    ty: Some("byte".into()),
+                    stride: w.stride,
+                    scaled_stride: None,
+                    index: SlotIndex::Walking(name),
+                });
+            }
+            let address =
+                array_address(base, source).filter(|_| base.kind() == "pointer_expression")?;
+            let (term, k) = if idx.kind() == "binary_expression"
+                && idx.child_by_field_name("operator")?.kind() == "+"
+                && let Some(k) = const_value(idx.child_by_field_name("right")?, source)
+            {
+                (idx.child_by_field_name("left")?, i64::try_from(k).ok()?)
+            } else {
+                (idx, 0)
+            };
+            let (index, s) = scaled_term(term, source)?;
+            Some(SlotAccess {
+                node,
+                address,
+                offset: k,
+                ty: None,
+                stride: None,
+                scaled_stride: Some(s),
+                index,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The layout field a slot access names and its annotation text:
+/// `p->h /* enemy[].h +0x1e s16 */` through a walking pointer, `enemy[i].h`
+/// indexed.
+fn slot_annotation<'f>(
+    slot: &SlotAccess<'_>,
+    fields: &'f [FieldName],
+) -> Option<(&'f FieldName, String)> {
+    let f = fields.iter().find(|f| {
+        let Some(array) = &f.array else {
+            return false;
+        };
+        let masked = |a: u64| array.mask.map_or(a, |m| a & m);
+        let stride_ok = match (slot.stride, slot.scaled_stride) {
+            (Some(s), _) => s == array.stride,
+            (None, Some(s)) => [1, 2, 4].iter().any(|w| s * w == array.stride),
+            (None, None) => true,
+        };
+        masked(slot.address)
+            .checked_sub(array.address)
+            .filter(|d| *d < array.stride)
+            .and_then(|d| i64::try_from(d).ok())
+            .and_then(|d| d.checked_add(slot.offset))
+            == Some(f.offset)
+            && stride_ok
+    })?;
+    let text = match &slot.index {
+        SlotIndex::Walking(p) => {
+            let ty = f.ty.as_deref().map(|t| format!(" {t}")).unwrap_or_default();
+            let sign = if f.offset < 0 { '-' } else { '+' };
+            format!(
+                "{p}->{} /* {}[].{} {sign}0x{:x}{ty} */",
+                f.field,
+                f.layout,
+                f.field,
+                f.offset.unsigned_abs()
+            )
+        }
+        SlotIndex::Indexed(i) => format!("{}[{i}].{}", f.layout, f.field),
+        SlotIndex::Constant(n) => format!("{}[{n}].{}", f.layout, f.field),
+    };
+    Some((f, text))
 }
 
 /// Simple local aliases of a function body: `p = unaff_A2;`, `p = (byte *)unaff_A2;`
